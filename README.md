@@ -25,7 +25,9 @@ curl -fsSL \
 The installer downloads the latest stable GitHub release and verifies its
 SHA-256 checksum, arm64 architecture, Developer ID signature, and Gatekeeper
 assessment before changing the current installation. Activation is staged and
-restores the previous version if it fails. It never uses `sudo`.
+restores the previous version if it fails. During an update, it stops the
+running menu app and bootstraps a fresh LaunchAgent registration so the new
+signed binary is actually running. It never uses `sudo`.
 
 Restart terminal login shells and Codex after the first install so their PATH
 starts with:
@@ -151,6 +153,7 @@ the underlying custom AXe.
 swift test
 scripts/package-app.sh
 zsh Tests/InstallationTests/install-app.zsh
+zsh Tests/InstallationTests/install-relaunch.zsh
 zsh Tests/InstallationTests/install-release.zsh
 zsh Tests/InstallationTests/package-release.zsh
 ```
