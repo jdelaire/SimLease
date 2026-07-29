@@ -86,6 +86,7 @@ public struct CleanupTarget: Codable, Equatable, Sendable {
 
 public enum CleanupProtectionReason: String, Codable, Equatable, Sendable {
     case activeTests
+    case activePath
     case booted
     case bootedRuntime
     case invalidDataPath
@@ -93,6 +94,9 @@ public enum CleanupProtectionReason: String, Codable, Equatable, Sendable {
     case missingLastUsedAt
     case notOldEnough
     case notOutdated
+    case changedSinceReview
+    case invalidCleanupPath
+    case simulatorLeased
 }
 
 public struct ProtectedCleanupTarget: Codable, Equatable, Sendable {
