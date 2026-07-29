@@ -106,8 +106,12 @@ public struct PreviewStatusProvider: MenuStatusProviding {
                 threadID: "019faaef-c552-7933",
                 threadTitle: "[AnimAtlas] Validate the complete onboarding and camera rescue experience"
             )
-            let waiters = (1...10).map { index in
-                LeaseWaiter(
+            let waiters: [LeaseWaiter] = (1...10).map { index -> LeaseWaiter in
+                let threadID = String(format: "019f%04d-c552-7933", index)
+                let threadTitle: String? = index == 1
+                    ? "[Set] Release validation"
+                    : nil
+                return LeaseWaiter(
                     id: "preview-\(index)",
                     pid: Int32(100 + index),
                     waitingSince: now.addingTimeInterval(Double(index)),
@@ -115,8 +119,8 @@ public struct PreviewStatusProvider: MenuStatusProviding {
                     project: "Project\(index)",
                     command: ["xcrun", "simctl", "list"],
                     source: .codex,
-                    threadID: String(format: "019f%04d-c552-7933", index),
-                    threadTitle: index == 1 ? "[Set] Release validation" : nil
+                    threadID: threadID,
+                    threadTitle: threadTitle
                 )
             }
             status = LeaseStatus(state: .leased, owner: owner, waiters: waiters, error: nil)
