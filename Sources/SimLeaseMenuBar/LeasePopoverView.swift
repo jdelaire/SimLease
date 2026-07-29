@@ -30,6 +30,15 @@ func presentCleanupWindow(
     activateApplication()
 }
 
+@MainActor
+func performQuitAction(
+    terminateApplication: () -> Void = {
+        NSApplication.shared.terminate(nil)
+    }
+) {
+    terminateApplication()
+}
+
 struct LeasePopoverView: View {
     @ObservedObject var viewModel: MenuViewModel
     @Environment(\.openWindow) private var openWindow
@@ -185,6 +194,12 @@ struct LeasePopoverView: View {
 
     private var footerActions: some View {
         HStack(spacing: 8) {
+            Button {
+                performQuitAction()
+            } label: {
+                Label("Quit", systemImage: "power")
+            }
+
             Spacer()
 
             Button {
