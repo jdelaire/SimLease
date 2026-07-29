@@ -37,9 +37,19 @@ public final class MenuViewModel: ObservableObject {
                 "Project: \(state.projectAndSource ?? "Unknown")",
                 "Command: \(state.command ?? "Unknown")",
                 "Elapsed: \(state.elapsed ?? "Unknown")",
-                "Waiting: \(state.waiterNames.count)",
+                "Waiting: \(state.waiters.count)",
             ]
-            lines.append(contentsOf: state.waiterNames.map { "- \($0)" })
+            for waiter in state.waiters {
+                lines.append("- \(waiter.name)")
+                lines.append(
+                    "  \(waiter.projectAndSource) · \(waiter.elapsed)"
+                )
+                lines.append("  \(waiter.command)")
+                if let threadID = waiter.threadID {
+                    lines.append("  Thread: \(threadID)")
+                }
+                lines.append("  Path: \(waiter.cwd)")
+            }
             return lines.joined(separator: "\n")
         }
     }

@@ -11,7 +11,12 @@ final class MenuDisplayStateTests: XCTestCase {
                 threadID: "019faaef-c552-7933",
                 threadTitle: "[AnimAtlas] Onboarding"
             ),
-            waiters: [waiter(title: "[Set] Release validation")],
+            waiters: [
+                waiter(
+                    title: "[Set] Release validation",
+                    waitingSince: Date(timeIntervalSince1970: 202)
+                ),
+            ],
             error: nil
         )
 
@@ -22,7 +27,20 @@ final class MenuDisplayStateTests: XCTestCase {
 
         XCTAssertEqual(state.menuTitle, "Simulator · 06:42")
         XCTAssertEqual(state.ownerName, "[AnimAtlas] Onboarding")
-        XCTAssertEqual(state.waiterNames, ["[Set] Release validation"])
+        XCTAssertEqual(
+            state.waiters,
+            [
+                WaiterDisplayItem(
+                    id: "waiter-1",
+                    name: "[Set] Release validation",
+                    projectAndSource: "Set · Codex",
+                    elapsed: "05:00",
+                    command: "xcrun simctl list",
+                    threadID: "019fbb00-c552-7933",
+                    cwd: "/tmp/Set"
+                ),
+            ]
+        )
         XCTAssertEqual(state.kind, .leased)
     }
 
@@ -94,11 +112,14 @@ final class MenuDisplayStateTests: XCTestCase {
         )
     }
 
-    private func waiter(title: String?) -> LeaseWaiter {
+    private func waiter(
+        title: String?,
+        waitingSince: Date = Date()
+    ) -> LeaseWaiter {
         LeaseWaiter(
             id: "waiter-1",
             pid: 2,
-            waitingSince: Date(),
+            waitingSince: waitingSince,
             cwd: "/tmp/Set",
             project: "Set",
             command: ["xcrun", "simctl", "list"],

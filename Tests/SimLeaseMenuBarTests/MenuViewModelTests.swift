@@ -14,7 +14,7 @@ final class MenuViewModelTests: XCTestCase {
 
         XCTAssertEqual(model.state.kind, .leased)
         XCTAssertEqual(model.state.ownerName, "Owner task")
-        XCTAssertEqual(model.state.waiterNames, ["Waiting task"])
+        XCTAssertEqual(model.state.waiters.map(\.name), ["Waiting task"])
     }
 
     func testProviderErrorPublishesExactMessage() async {
@@ -37,6 +37,10 @@ final class MenuViewModelTests: XCTestCase {
         XCTAssertTrue(model.copyDetailsText.contains("xcodebuild test"))
         XCTAssertTrue(model.copyDetailsText.contains("06:42"))
         XCTAssertTrue(model.copyDetailsText.contains("Waiting task"))
+        XCTAssertTrue(model.copyDetailsText.contains("Set · Codex · 00:00"))
+        XCTAssertTrue(model.copyDetailsText.contains("xcrun simctl list"))
+        XCTAssertTrue(model.copyDetailsText.contains("Thread: 019fbb00-c552-7933"))
+        XCTAssertTrue(model.copyDetailsText.contains("Path: /tmp/Set"))
     }
 
     func testRepeatedRefreshReplacesWaiters() async {
@@ -49,7 +53,7 @@ final class MenuViewModelTests: XCTestCase {
         await model.refresh()
         await model.refresh()
 
-        XCTAssertEqual(model.state.waiterNames, ["Second"])
+        XCTAssertEqual(model.state.waiters.map(\.name), ["Second"])
     }
 
     func testCLIProviderRunsOnlyStatusJSON() async throws {
