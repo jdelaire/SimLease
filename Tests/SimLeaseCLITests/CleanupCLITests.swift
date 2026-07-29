@@ -25,10 +25,13 @@ final class CleanupCLITests: XCTestCase {
         fixture.output.clear()
         XCTAssertEqual(
             fixture.run([
-                "simlease", "clean", "apply", "ABC123", "--json",
+                "simlease", "clean", "apply", "ABC123",
+                "--target", "DEVICE-1",
+                "--json",
             ]),
             0
         )
+        XCTAssertEqual(stub.selectedTargetIDs, ["DEVICE-1"])
         XCTAssertEqual(
             try JSONDecoder.simLease.decode(
                 CleanupResult.self,
@@ -51,6 +54,9 @@ final class CleanupCLITests: XCTestCase {
         let output = fixture.output.value
         XCTAssertTrue(output.contains("Devices"))
         XCTAssertTrue(output.contains("Runtimes"))
+        XCTAssertTrue(output.contains("Rebuildable Caches"))
+        XCTAssertTrue(output.contains("Guarded Storage"))
+        XCTAssertTrue(output.contains("Deferred"))
         XCTAssertTrue(output.contains("Protected"))
         XCTAssertTrue(output.contains("Estimated"))
         XCTAssertTrue(output.contains("ABC123"))
@@ -72,7 +78,7 @@ final class CleanupCLITests: XCTestCase {
         XCTAssertEqual(fixture.run(["simlease", "clean", "plan"]), 0)
         XCTAssertEqual(
             fixture.output.value,
-            "No stale simulator storage is eligible\n"
+            "No eligible Xcode storage cleanup is available\n"
         )
     }
 
@@ -99,7 +105,10 @@ final class CleanupCLITests: XCTestCase {
         )
 
         XCTAssertEqual(
-            fixture.run(["simlease", "clean", "apply", "ABC123"]),
+            fixture.run([
+                "simlease", "clean", "apply", "ABC123",
+                "--target", "DEVICE-1",
+            ]),
             76
         )
     }
@@ -175,14 +184,55 @@ private func makeReview() -> CleanupReview {
         expiresAt: Date(timeIntervalSince1970: 1_600),
         devices: [device],
         runtimes: [runtime],
+        storage: [
+            makeStorageTarget(
+                id: "derivedData:/cache",
+                category: .derivedData,
+                action: .deletePermanently
+            ),
+            makeStorageTarget(
+                id: "archive:/archive",
+                category: .archive,
+                action: .moveToTrash
+            ),
+        ],
         protected: [protected],
+        deferred: [.simulatorRuntime],
         estimatedBytes: 300,
         availableBytesBefore: 1_000
     )
     return CleanupReview(
         plan: plan,
         protected: [protected],
+        deferred: [.simulatorRuntime],
         estimatedBytes: 300
+    )
+}
+
+private func makeStorageTarget(
+    id: String,
+    category: CleanupCategory,
+    action: CleanupAction
+) -> CleanupTarget {
+    let path = "/" + id.replacingOccurrences(of: ":", with: "/")
+    return CleanupTarget(
+        kind: .filesystem,
+        identifier: id,
+        name: id,
+        detail: path,
+        category: category,
+        riskTier: action == .moveToTrash ? .guarded : .rebuildable,
+        action: action,
+        path: path,
+        runtimeIdentifier: "",
+        lastUsedAt: Date(timeIntervalSince1970: 100),
+        sizeBytes: 100,
+        fingerprint: .filesystem(
+            path: path,
+            sizeBytes: 100,
+            modifiedAt: Date(timeIntervalSince1970: 100)
+        ),
+        selectedByDefault: action == .deletePermanently
     )
 }
 
@@ -222,6 +272,7 @@ private final class CleanupServiceStub:
 {
     let plan: Result<CleanupReview, Error>
     let apply: Result<CleanupResult, Error>
+    private(set) var selectedTargetIDs = Set<String>()
 
     init(
         plan: Result<CleanupReview, Error>,
@@ -235,8 +286,12 @@ private final class CleanupServiceStub:
         try plan.get()
     }
 
-    func apply(planID: String) throws -> CleanupResult {
-        try apply.get()
+    func apply(
+        planID: String,
+        selectedTargetIDs: Set<String>
+    ) throws -> CleanupResult {
+        self.selectedTargetIDs = selectedTargetIDs
+        return try apply.get()
     }
 }
 

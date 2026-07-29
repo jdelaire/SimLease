@@ -4,6 +4,19 @@ import SimLeaseCore
 public protocol MenuCleanupProviding: Sendable {
     func plan() async throws -> CleanupReview
     func apply(id: String) async throws -> CleanupResult
+    func apply(
+        id: String,
+        selectedTargetIDs: Set<String>
+    ) async throws -> CleanupResult
+}
+
+public extension MenuCleanupProviding {
+    func apply(
+        id: String,
+        selectedTargetIDs: Set<String>
+    ) async throws -> CleanupResult {
+        try await apply(id: id)
+    }
 }
 
 public enum MenuCleanupError: LocalizedError, Equatable {
@@ -57,8 +70,20 @@ public actor CLICleanupProvider: MenuCleanupProviding {
     }
 
     public func apply(id: String) async throws -> CleanupResult {
-        try run(
-            arguments: ["clean", "apply", id, "--json"],
+        try await apply(id: id, selectedTargetIDs: [])
+    }
+
+    public func apply(
+        id: String,
+        selectedTargetIDs: Set<String>
+    ) async throws -> CleanupResult {
+        var arguments = ["clean", "apply", id]
+        for targetID in selectedTargetIDs.sorted() {
+            arguments.append(contentsOf: ["--target", targetID])
+        }
+        arguments.append("--json")
+        return try run(
+            arguments: arguments,
             acceptedCodes: [0, 76],
             as: CleanupResult.self
         )

@@ -24,7 +24,8 @@ public final class XcodeStorageInventoryProvider:
     private let homeDirectory: URL
     private let temporaryDirectory: URL
     private let configuredWorkspaceRoots: [URL]
-    private let activePaths: [URL]
+    private let fixedActivePaths: [URL]
+    private let activeUseProvider: (any ActiveUseProviding)?
     private let fileManager: FileManager
 
     public init(
@@ -32,20 +33,27 @@ public final class XcodeStorageInventoryProvider:
         temporaryDirectory: URL = FileManager.default.temporaryDirectory,
         workspaceRoots: [URL] = [],
         activePaths: [String] = [],
+        activeUseProvider: (any ActiveUseProviding)? = nil,
         fileManager: FileManager = .default
     ) {
         self.homeDirectory = Self.canonical(homeDirectory)
         self.temporaryDirectory = Self.canonical(temporaryDirectory)
         configuredWorkspaceRoots = workspaceRoots.map(Self.canonical)
-        self.activePaths = activePaths.map {
+        fixedActivePaths = activePaths.map {
             Self.canonical(URL(fileURLWithPath: $0))
         }
+        self.activeUseProvider = activeUseProvider
         self.fileManager = fileManager
     }
 
     public func inventory(now: Date) throws -> XcodeStorageInventory {
         var targets = [CleanupTarget]()
         var protected = [ProtectedCleanupTarget]()
+        let activePaths = fixedActivePaths + (
+            try activeUseProvider?.activePaths() ?? []
+        ).map {
+            Self.canonical(URL(fileURLWithPath: $0))
+        }
         let xcode = homeDirectory.appending(path: "Library/Developer/Xcode")
         let derivedData = xcode.appending(path: "DerivedData")
 
@@ -55,14 +63,28 @@ public final class XcodeStorageInventoryProvider:
             threshold: 14 * 86_400,
             now: now,
             dateOverride: derivedDataLastAccessed
-        ) { append($0, targets: &targets, protected: &protected) }
+        ) {
+            append(
+                $0,
+                activePaths: activePaths,
+                targets: &targets,
+                protected: &protected
+            )
+        }
 
         scanImmediateDirectories(
             at: xcode.appending(path: "UserData/Previews"),
             category: .previews,
             threshold: 7 * 86_400,
             now: now
-        ) { append($0, targets: &targets, protected: &protected) }
+        ) {
+            append(
+                $0,
+                activePaths: activePaths,
+                targets: &targets,
+                protected: &protected
+            )
+        }
 
         scanImmediateDirectories(
             at: temporaryDirectory,
@@ -70,12 +92,20 @@ public final class XcodeStorageInventoryProvider:
             threshold: 24 * 60 * 60,
             now: now,
             filter: isStructuredDerivedData
-        ) { append($0, targets: &targets, protected: &protected) }
+        ) {
+            append(
+                $0,
+                activePaths: activePaths,
+                targets: &targets,
+                protected: &protected
+            )
+        }
 
         for root in workspaceRoots(derivedData: derivedData) {
             scanWorkspace(
                 root,
                 now: now,
+                activePaths: activePaths,
                 targets: &targets,
                 protected: &protected
             )
@@ -87,14 +117,28 @@ public final class XcodeStorageInventoryProvider:
             category: .archive,
             threshold: 90 * 86_400,
             now: now
-        ) { append($0, targets: &targets, protected: &protected) }
+        ) {
+            append(
+                $0,
+                activePaths: activePaths,
+                targets: &targets,
+                protected: &protected
+            )
+        }
 
         scanImmediateDirectories(
             at: xcode.appending(path: "iOS DeviceSupport"),
             category: .deviceSupport,
             threshold: 0,
             now: now
-        ) { append($0, targets: &targets, protected: &protected) }
+        ) {
+            append(
+                $0,
+                activePaths: activePaths,
+                targets: &targets,
+                protected: &protected
+            )
+        }
 
         return XcodeStorageInventory(
             targets: deduplicate(targets).sorted(by: targetOrder),
@@ -107,6 +151,7 @@ public final class XcodeStorageInventoryProvider:
     private func scanWorkspace(
         _ root: URL,
         now: Date,
+        activePaths: [URL],
         targets: inout [CleanupTarget],
         protected: inout [ProtectedCleanupTarget]
     ) {
@@ -116,14 +161,28 @@ public final class XcodeStorageInventoryProvider:
             category: .resultBundle,
             threshold: 30 * 86_400,
             now: now
-        ) { append($0, targets: &targets, protected: &protected) }
+        ) {
+            append(
+                $0,
+                activePaths: activePaths,
+                targets: &targets,
+                protected: &protected
+            )
+        }
         scanNamedDirectories(
             at: root,
             name: ".build",
             category: .swiftBuild,
             threshold: 14 * 86_400,
             now: now
-        ) { append($0, targets: &targets, protected: &protected) }
+        ) {
+            append(
+                $0,
+                activePaths: activePaths,
+                targets: &targets,
+                protected: &protected
+            )
+        }
     }
 
     private func scanImmediateDirectories(
@@ -272,10 +331,11 @@ public final class XcodeStorageInventoryProvider:
 
     private func append(
         _ target: CleanupTarget,
+        activePaths: [URL],
         targets: inout [CleanupTarget],
         protected: inout [ProtectedCleanupTarget]
     ) {
-        if isActive(target.path) {
+        if isActive(target.path, activePaths: activePaths) {
             protected.append(
                 ProtectedCleanupTarget(
                     target: target,
@@ -355,7 +415,10 @@ public final class XcodeStorageInventoryProvider:
         }
     }
 
-    private func isActive(_ path: String?) -> Bool {
+    private func isActive(
+        _ path: String?,
+        activePaths: [URL]
+    ) -> Bool {
         guard let path else { return false }
         let target = Self.canonical(URL(fileURLWithPath: path))
         return activePaths.contains {

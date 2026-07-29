@@ -46,9 +46,16 @@ final class CommandParserTests: XCTestCase {
         )
         XCTAssertEqual(
             try CommandParser.parse([
-                "simlease", "clean", "apply", "ABC123", "--json",
+                "simlease", "clean", "apply", "ABC123",
+                "--target", "DEVICE-1",
+                "--target", "archive:/tmp/App.xcarchive",
+                "--json",
             ]),
-            .cleanApply(id: "ABC123", json: true)
+            .cleanApply(
+                id: "ABC123",
+                targetIDs: ["DEVICE-1", "archive:/tmp/App.xcarchive"],
+                json: true
+            )
         )
     }
 
@@ -57,7 +64,10 @@ final class CommandParserTests: XCTestCase {
             ["simlease", "clean"],
             ["simlease", "clean", "plan", "--apply"],
             ["simlease", "clean", "apply"],
+            ["simlease", "clean", "apply", "ABC123"],
             ["simlease", "clean", "apply", "ABC123", "--yes"],
+            ["simlease", "clean", "apply", "ABC123", "--target"],
+            ["simlease", "clean", "apply", "ABC123", "--target", "--json"],
             ["simlease", "clean", "apply", "device-uuid"],
         ]
 

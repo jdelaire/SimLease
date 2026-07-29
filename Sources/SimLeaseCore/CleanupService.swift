@@ -2,7 +2,10 @@ import Foundation
 
 public protocol CleanupServicing: Sendable {
     func createPlan() throws -> CleanupReview
-    func apply(planID: String) throws -> CleanupResult
+    func apply(
+        planID: String,
+        selectedTargetIDs: Set<String>
+    ) throws -> CleanupResult
 }
 
 public enum CleanupServiceError: Error, Equatable {

@@ -112,9 +112,10 @@ public enum SimLeaseCLI {
                     environment: environment,
                     configuration: configuration
                 )
-            case .cleanApply(let id, let json):
+            case .cleanApply(let id, let targetIDs, let json):
                 return try runCleanApply(
                     id: id,
+                    targetIDs: targetIDs,
                     json: json,
                     arguments: arguments,
                     environment: environment,
@@ -185,6 +186,7 @@ public enum SimLeaseCLI {
 
     private static func runCleanApply(
         id: String,
+        targetIDs: [String],
         json: Bool,
         arguments: [String],
         environment: [String: String],
@@ -195,7 +197,10 @@ public enum SimLeaseCLI {
             environment: environment,
             configuration: configuration
         )
-        let result = try service.apply(planID: id)
+        let result = try service.apply(
+            planID: id,
+            selectedTargetIDs: Set(targetIDs)
+        )
         if json {
             let data = try JSONEncoder.simLease.encode(result)
             configuration.standardOutput(
@@ -228,20 +233,97 @@ public enum SimLeaseCLI {
             store: store
         )
         #if DEBUG || SIMLEASE_TESTING
+        let xcrunURL: URL
+        if let path = environment["SIMLEASE_XCRUN_PATH"] {
+            xcrunURL = URL(fileURLWithPath: path)
+        } else {
+            xcrunURL = try ExecutableResolver.resolve(
+                name: "xcrun",
+                path: environment["PATH"] ?? "/usr/bin:/bin",
+                excluding: URL(
+                    fileURLWithPath: "/__simlease_no_exclusion__"
+                )
+            )
+        }
+        let psURL = environment["SIMLEASE_PS_PATH"].map {
+            URL(fileURLWithPath: $0)
+        } ?? URL(fileURLWithPath: "/bin/ps")
         let provider = ProcessCleanupInventoryProvider(
-            xcrunURL: environment["SIMLEASE_XCRUN_PATH"].map {
-                URL(fileURLWithPath: $0)
-            } ?? URL(fileURLWithPath: "/usr/bin/xcrun"),
-            psURL: environment["SIMLEASE_PS_PATH"].map {
-                URL(fileURLWithPath: $0)
-            } ?? URL(fileURLWithPath: "/bin/ps"),
+            xcrunURL: xcrunURL,
+            psURL: psURL,
             environment: environment
         )
         #else
-        let provider = ProcessCleanupInventoryProvider()
+        let xcrunURL = try ExecutableResolver.resolve(
+            name: "xcrun",
+            path: environment["PATH"] ?? "/usr/bin:/bin",
+            excluding: URL(fileURLWithPath: "/__simlease_no_exclusion__")
+        )
+        let psURL = URL(fileURLWithPath: "/bin/ps")
+        let provider = ProcessCleanupInventoryProvider(
+            xcrunURL: xcrunURL,
+            psURL: psURL,
+            environment: environment
+        )
         #endif
+        #if DEBUG || SIMLEASE_TESTING
+        let cleanupHome = environment["SIMLEASE_CLEANUP_HOME"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? FileManager.default.homeDirectoryForCurrentUser
+        let cleanupTemporary = environment["SIMLEASE_CLEANUP_TMP"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+        #else
+        let cleanupHome = FileManager.default.homeDirectoryForCurrentUser
+        let cleanupTemporary = URL(
+            fileURLWithPath: "/private/tmp",
+            isDirectory: true
+        )
+        #endif
+        var workspaceRoots = [URL]()
+        if let owner = try? store.readOwner() {
+            workspaceRoots.append(
+                URL(fileURLWithPath: owner.cwd, isDirectory: true)
+            )
+        }
+        if let waiters = try? store.readWaiters() {
+            workspaceRoots.append(
+                contentsOf: waiters.map {
+                    URL(fileURLWithPath: $0.cwd, isDirectory: true)
+                }
+            )
+        }
+        workspaceRoots.append(
+            URL(
+                fileURLWithPath: FileManager.default.currentDirectoryPath,
+                isDirectory: true
+            )
+        )
+        let activeUseProvider = ProcessActiveUseProvider(
+            psURL: psURL,
+            environment: environment
+        )
+        let storageProvider = XcodeStorageInventoryProvider(
+            homeDirectory: cleanupHome,
+            temporaryDirectory: cleanupTemporary,
+            workspaceRoots: workspaceRoots,
+            activeUseProvider: activeUseProvider
+        )
+        let xcodeRoot = cleanupHome.appending(
+            path: "Library/Developer/Xcode",
+            directoryHint: .isDirectory
+        )
+        let fileOperator = CleanupFileOperator(
+            allowedRoots: [
+                xcodeRoot.appending(path: "DerivedData"),
+                xcodeRoot.appending(path: "UserData/Previews"),
+                xcodeRoot.appending(path: "Archives"),
+                xcodeRoot.appending(path: "iOS DeviceSupport"),
+                cleanupTemporary,
+            ] + workspaceRoots
+        )
         let planner = CleanupPlanner(
-            devicesRoot: FileManager.default.homeDirectoryForCurrentUser
+            devicesRoot: cleanupHome
                 .appendingPathComponent(
                     "Library/Developer/CoreSimulator/Devices",
                     isDirectory: true
@@ -250,7 +332,9 @@ public enum SimLeaseCLI {
         let planStore = try CleanupPlanStore(paths: configuration.paths)
         let executor = CleanupExecutor(
             provider: provider,
-            planner: planner
+            planner: planner,
+            storageProvider: storageProvider,
+            fileOperator: fileOperator
         )
         return CleanupService(
             coordinator: coordinator,
@@ -258,7 +342,8 @@ public enum SimLeaseCLI {
             provider: provider,
             planner: planner,
             store: planStore,
-            executor: executor
+            executor: executor,
+            storageProvider: storageProvider
         )
     }
 
