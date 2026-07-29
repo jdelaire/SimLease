@@ -5,19 +5,25 @@ import XCTest
 final class CleanupServiceTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 3_000_000)
 
-    func testBusyLeaseFailsImmediatelyWithoutInventory() throws {
+    func testBusyLeaseDefersSimulatorButStillReturnsStorageReview() throws {
         let fixture = try ServiceFixture(now: now)
         defer { fixture.stopHolder() }
         try fixture.startHolder()
         try fixture.metadata.writeOwner(fixture.owner)
+        fixture.storageProvider.inventoryValue = XcodeStorageInventory(
+            targets: [fixture.storageTarget()],
+            protected: []
+        )
 
-        XCTAssertThrowsError(try fixture.service().createPlan()) {
-            guard case CleanupServiceError.leaseBusy(let status) = $0 else {
-                return XCTFail("Expected busy status")
-            }
-            XCTAssertEqual(status.state, .leased)
-        }
+        let review = try fixture.service().createPlan()
+
+        XCTAssertEqual(review.plan?.storage.map(\.identifier), ["storage"])
+        XCTAssertEqual(
+            review.deferred,
+            [.simulatorDevice, .simulatorRuntime]
+        )
         XCTAssertEqual(fixture.provider.inventoryCallCount, 0)
+        XCTAssertEqual(fixture.storageProvider.inventoryCallCount, 1)
     }
 
     func testEmptyReviewIsReturnedWithoutSaving() throws {
@@ -104,6 +110,8 @@ private final class ServiceFixture {
     let coordinator: LeaseCoordinator
     let store: CleanupPlanStore
     let provider = ServiceCleanupProvider()
+    let storageProvider = ServiceStorageProvider()
+    let fileOperator = ServiceFileOperator()
     let identity: LeaseIdentity
     let owner: LeaseOwner
     let now: Date
@@ -156,9 +164,37 @@ private final class ServiceFixture {
             provider: provider,
             planner: planner,
             store: store,
-            executor: CleanupExecutor(provider: provider, planner: planner),
+            executor: CleanupExecutor(
+                provider: provider,
+                planner: planner,
+                storageProvider: storageProvider,
+                fileOperator: fileOperator
+            ),
+            storageProvider: storageProvider,
             now: { [now] in now },
             idGenerator: idGenerator
+        )
+    }
+
+    func storageTarget() -> CleanupTarget {
+        CleanupTarget(
+            kind: .filesystem,
+            identifier: "storage",
+            name: "Storage",
+            detail: "/allowed/storage",
+            category: .derivedData,
+            riskTier: .rebuildable,
+            action: .deletePermanently,
+            path: "/allowed/storage",
+            runtimeIdentifier: "",
+            lastUsedAt: now.addingTimeInterval(-15 * 86_400),
+            sizeBytes: 100,
+            fingerprint: .filesystem(
+                path: "/allowed/storage",
+                sizeBytes: 100,
+                modifiedAt: now.addingTimeInterval(-15 * 86_400)
+            ),
+            selectedByDefault: true
         )
     }
 
@@ -200,7 +236,16 @@ private final class ServiceFixture {
             id: id,
             createdAt: now.addingTimeInterval(-60),
             expiresAt: expiresAt ?? now.addingTimeInterval(600),
-            devices: [],
+            devices: [
+                CleanupTarget(
+                    kind: .device,
+                    identifier: "DEVICE-1",
+                    name: "Device",
+                    runtimeIdentifier: "runtime.current",
+                    lastUsedAt: now.addingTimeInterval(-31 * 86_400),
+                    sizeBytes: 100
+                ),
+            ],
             runtimes: [],
             protected: [],
             estimatedBytes: 0,
@@ -237,6 +282,24 @@ private final class ServiceFixture {
         }
         self.holder = nil
     }
+}
+
+private final class ServiceStorageProvider:
+    XcodeStorageInventoryProviding,
+    @unchecked Sendable
+{
+    var inventoryValue = XcodeStorageInventory(targets: [], protected: [])
+    private(set) var inventoryCallCount = 0
+
+    func inventory(now: Date) throws -> XcodeStorageInventory {
+        inventoryCallCount += 1
+        return inventoryValue
+    }
+}
+
+private struct ServiceFileOperator: CleanupFileOperating {
+    func delete(_ url: URL) throws {}
+    func trash(_ url: URL) throws {}
 }
 
 private final class ServiceCleanupProvider:

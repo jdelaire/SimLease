@@ -5,6 +5,17 @@ import XCTest
 
 final class LeasePopoverPresentationTests: XCTestCase {
     @MainActor
+    func testQuitActionTerminatesApplication() {
+        var didTerminate = false
+
+        performQuitAction {
+            didTerminate = true
+        }
+
+        XCTAssertTrue(didTerminate)
+    }
+
+    @MainActor
     func testCleanupWindowPresentationOpensThenActivatesApplication() {
         var events: [String] = []
 

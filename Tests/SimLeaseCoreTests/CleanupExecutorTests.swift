@@ -143,6 +143,117 @@ final class CleanupExecutorTests: XCTestCase {
         XCTAssertTrue(result.isPartial)
     }
 
+    func testFilesystemApplyUsesExactSelectionAndAction() throws {
+        let deleted = storageTarget(
+            id: "derived",
+            path: "/allowed/derived",
+            action: .deletePermanently
+        )
+        let trashed = storageTarget(
+            id: "archive",
+            path: "/allowed/archive",
+            action: .moveToTrash
+        )
+        let plan = CleanupPlan(
+            id: "ABC123",
+            createdAt: now,
+            expiresAt: now.addingTimeInterval(600),
+            devices: [],
+            runtimes: [],
+            storage: [deleted, trashed],
+            protected: [],
+            estimatedBytes: 200,
+            availableBytesBefore: nil
+        )
+        let storage = SequenceStorageProvider(
+            inventories: [
+                XcodeStorageInventory(
+                    targets: [deleted, trashed],
+                    protected: []
+                ),
+            ]
+        )
+        let files = RecordingFileOperator()
+        let executor = CleanupExecutor(
+            provider: SequenceCleanupProvider(inventories: []),
+            planner: CleanupPlanner(
+                devicesRoot: URL(fileURLWithPath: "/Devices")
+            ),
+            storageProvider: storage,
+            fileOperator: files
+        )
+
+        let result = try executor.apply(
+            plan: plan,
+            selectedTargetIDs: ["archive"],
+            now: now
+        )
+
+        XCTAssertEqual(files.calls, [.trash("/allowed/archive")])
+        XCTAssertEqual(result.items.map(\.outcome), [.movedToTrash])
+    }
+
+    func testChangedFilesystemFingerprintIsSkipped() throws {
+        let planned = storageTarget(
+            id: "derived",
+            path: "/allowed/derived",
+            action: .deletePermanently
+        )
+        let changed = CleanupTarget(
+            kind: .filesystem,
+            identifier: planned.identifier,
+            name: planned.name,
+            detail: planned.detail,
+            category: planned.category,
+            riskTier: planned.riskTier,
+            action: planned.action,
+            path: planned.path,
+            runtimeIdentifier: "",
+            lastUsedAt: planned.lastUsedAt,
+            sizeBytes: 999,
+            fingerprint: .filesystem(
+                path: "/allowed/derived",
+                sizeBytes: 999,
+                modifiedAt: now
+            ),
+            selectedByDefault: true
+        )
+        let storage = SequenceStorageProvider(
+            inventories: [
+                XcodeStorageInventory(targets: [changed], protected: []),
+            ]
+        )
+        let files = RecordingFileOperator()
+        let executor = CleanupExecutor(
+            provider: SequenceCleanupProvider(inventories: []),
+            planner: CleanupPlanner(
+                devicesRoot: URL(fileURLWithPath: "/Devices")
+            ),
+            storageProvider: storage,
+            fileOperator: files
+        )
+        let plan = CleanupPlan(
+            id: "ABC123",
+            createdAt: now,
+            expiresAt: now.addingTimeInterval(600),
+            devices: [],
+            runtimes: [],
+            storage: [planned],
+            protected: [],
+            estimatedBytes: 100,
+            availableBytesBefore: nil
+        )
+
+        let result = try executor.apply(
+            plan: plan,
+            selectedTargetIDs: ["derived"],
+            now: now
+        )
+
+        XCTAssertEqual(result.items.map(\.outcome), [.skipped])
+        XCTAssertTrue(files.calls.isEmpty)
+    }
+
     private func executor(_ provider: SequenceCleanupProvider) -> CleanupExecutor {
         CleanupExecutor(
             provider: provider,
@@ -181,6 +292,32 @@ final class CleanupExecutorTests: XCTestCase {
         )
     }
 
+    private func storageTarget(
+        id: String,
+        path: String,
+        action: CleanupAction
+    ) -> CleanupTarget {
+        CleanupTarget(
+            kind: .filesystem,
+            identifier: id,
+            name: id,
+            detail: path,
+            category: action == .moveToTrash ? .archive : .derivedData,
+            riskTier: action == .moveToTrash ? .guarded : .rebuildable,
+            action: action,
+            path: path,
+            runtimeIdentifier: "",
+            lastUsedAt: now,
+            sizeBytes: 100,
+            fingerprint: .filesystem(
+                path: path,
+                sizeBytes: 100,
+                modifiedAt: now
+            ),
+            selectedByDefault: action == .deletePermanently
+        )
+    }
+
     private func inventory(
         deviceIDs: [String] = [],
         runtimeIDs: [String] = [],
@@ -214,6 +351,42 @@ final class CleanupExecutorTests: XCTestCase {
             hasActiveXcodeTests: hasActiveTests,
             availableBytes: available
         )
+    }
+}
+
+private final class SequenceStorageProvider:
+    XcodeStorageInventoryProviding,
+    @unchecked Sendable
+{
+    private var inventories: [XcodeStorageInventory]
+
+    init(inventories: [XcodeStorageInventory]) {
+        self.inventories = inventories
+    }
+
+    func inventory(now: Date) throws -> XcodeStorageInventory {
+        guard !inventories.isEmpty else { throw TestError.inventory }
+        return inventories.removeFirst()
+    }
+}
+
+private final class RecordingFileOperator:
+    CleanupFileOperating,
+    @unchecked Sendable
+{
+    enum Call: Equatable {
+        case delete(String)
+        case trash(String)
+    }
+
+    private(set) var calls = [Call]()
+
+    func delete(_ url: URL) throws {
+        calls.append(.delete(url.path))
+    }
+
+    func trash(_ url: URL) throws {
+        calls.append(.trash(url.path))
     }
 }
 

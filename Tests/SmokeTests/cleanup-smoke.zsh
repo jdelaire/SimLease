@@ -29,7 +29,7 @@ case "$*" in
     runtime=""
     [[ -f "$state/device-stale" ]] && stale='
       {
-        "dataPath": "'"$HOME"'/Library/Developer/CoreSimulator/Devices/DEVICE-STALE/data",
+        "dataPath": "'"$SIMLEASE_CLEANUP_HOME"'/Library/Developer/CoreSimulator/Devices/DEVICE-STALE/data",
         "dataPathSize": 4000,
         "udid": "DEVICE-STALE",
         "lastUsedAt": "2000-01-01T00:00:00Z",
@@ -45,7 +45,7 @@ case "$*" in
     "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
       $stale
       {
-        "dataPath": "$HOME/Library/Developer/CoreSimulator/Devices/DEVICE-BOOTED/data",
+        "dataPath": "$SIMLEASE_CLEANUP_HOME/Library/Developer/CoreSimulator/Devices/DEVICE-BOOTED/data",
         "dataPathSize": 5000,
         "udid": "DEVICE-BOOTED",
         "lastUsedAt": "2000-01-01T00:00:00Z",
@@ -54,7 +54,7 @@ case "$*" in
         "name": "Booted iPhone"
       },
       {
-        "dataPath": "$HOME/Library/Developer/CoreSimulator/Devices/DEVICE-RECENT/data",
+        "dataPath": "$SIMLEASE_CLEANUP_HOME/Library/Developer/CoreSimulator/Devices/DEVICE-RECENT/data",
         "dataPathSize": 6000,
         "udid": "DEVICE-RECENT",
         "lastUsedAt": "2099-01-01T00:00:00Z",
@@ -128,6 +128,9 @@ export SIMLEASE_CACHE_ROOT="$cache"
 export SIMLEASE_XCRUN_PATH="$fake_xcrun"
 export SIMLEASE_PS_PATH="$fake_ps"
 export SIMLEASE_FAKE_ROOT="$smoke_root"
+export SIMLEASE_CLEANUP_HOME="$smoke_root/home"
+export SIMLEASE_CLEANUP_TMP="$smoke_root/tmp"
+mkdir -p "$SIMLEASE_CLEANUP_HOME" "$SIMLEASE_CLEANUP_TMP"
 simlease="$PWD/.build/debug/simlease"
 plan_json="$smoke_root/plan.json"
 result_json="$smoke_root/result.json"
@@ -147,20 +150,25 @@ PY
 plan_id="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan"]["id"])' "$plan_json")"
 wrong_id="ZZZZZZ"
 [[ "$plan_id" != "$wrong_id" ]] || wrong_id="YYYYYY"
-if "$simlease" clean apply "$wrong_id" --json >/dev/null 2>&1; then
+if "$simlease" clean apply "$wrong_id" \
+  --target DEVICE-STALE --json >/dev/null 2>&1; then
   fail "wrong plan ID unexpectedly applied"
 else
   [[ "$?" == 73 ]] || fail "wrong plan ID did not return 73"
 fi
 [[ ! -f "$state/delete.log" ]] || fail "wrong plan ID deleted state"
 
-"$simlease" clean apply "$plan_id" --json >"$result_json"
+"$simlease" clean apply "$plan_id" \
+  --target DEVICE-STALE \
+  --target RUNTIME-OUTDATED \
+  --json >"$result_json"
 expected="$smoke_root/expected.log"
 print -- "simctl delete DEVICE-STALE" >"$expected"
 print -- "simctl runtime delete RUNTIME-OUTDATED" >>"$expected"
 cmp -s "$expected" "$state/delete.log" || fail "delete order changed"
 
-if "$simlease" clean apply "$plan_id" --json >/dev/null 2>&1; then
+if "$simlease" clean apply "$plan_id" \
+  --target DEVICE-STALE --json >/dev/null 2>&1; then
   fail "plan applied twice"
 else
   [[ "$?" == 73 ]] || fail "second apply did not return 73"

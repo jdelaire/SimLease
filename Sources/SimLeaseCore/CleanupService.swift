@@ -2,7 +2,10 @@ import Foundation
 
 public protocol CleanupServicing: Sendable {
     func createPlan() throws -> CleanupReview
-    func apply(planID: String) throws -> CleanupResult
+    func apply(
+        planID: String,
+        selectedTargetIDs: Set<String>
+    ) throws -> CleanupResult
 }
 
 public enum CleanupServiceError: Error, Equatable {
@@ -18,6 +21,7 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
     private let planner: CleanupPlanner
     private let store: CleanupPlanStore
     private let executor: CleanupExecutor
+    private let storageProvider: (any XcodeStorageInventoryProviding)?
     private let now: @Sendable () -> Date
     private let idGenerator: @Sendable () -> String
 
@@ -28,6 +32,7 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
         planner: CleanupPlanner,
         store: CleanupPlanStore,
         executor: CleanupExecutor,
+        storageProvider: (any XcodeStorageInventoryProviding)? = nil,
         now: @escaping @Sendable () -> Date = Date.init,
         idGenerator: @escaping @Sendable () -> String = {
             CleanupService.makeID()
@@ -39,25 +44,36 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
         self.planner = planner
         self.store = store
         self.executor = executor
+        self.storageProvider = storageProvider
         self.now = now
         self.idGenerator = idGenerator
     }
 
     public func createPlan() throws -> CleanupReview {
-        let handle = try acquireLease()
-        defer { handle.release() }
         let currentNow = now()
         try store.prune(now: currentNow)
-        let inventory: CleanupInventory
-        do {
-            inventory = try provider.inventory()
-        } catch let error as CleanupInventoryError {
-            throw CleanupServiceError.inventory(error)
+        let storage = try storageProvider?.inventory(now: currentNow)
+            ?? XcodeStorageInventory(targets: [], protected: [])
+        var simulatorInventory: CleanupInventory?
+        var deferred = [CleanupCategory]()
+        let status = try coordinator.status()
+        if status.state == .free,
+           let handle = try coordinator.tryAcquire(identity: identity) {
+            defer { handle.release() }
+            do {
+                simulatorInventory = try provider.inventory()
+            } catch let error as CleanupInventoryError {
+                throw CleanupServiceError.inventory(error)
+            }
+        } else {
+            deferred = [.simulatorDevice, .simulatorRuntime]
         }
 
         while true {
             let review = planner.makeReview(
-                inventory: inventory,
+                inventory: simulatorInventory,
+                storage: storage,
+                deferred: deferred,
                 now: currentNow,
                 id: idGenerator()
             )
@@ -74,8 +90,23 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
     }
 
     public func apply(planID: String) throws -> CleanupResult {
-        let handle = try acquireLease()
-        defer { handle.release() }
+        try apply(planID: planID, selectedTargetIDs: nil)
+    }
+
+    public func apply(
+        planID: String,
+        selectedTargetIDs: Set<String>
+    ) throws -> CleanupResult {
+        try apply(
+            planID: planID,
+            selectedTargetIDs: Optional(selectedTargetIDs)
+        )
+    }
+
+    private func apply(
+        planID: String,
+        selectedTargetIDs: Set<String>?
+    ) throws -> CleanupResult {
         let currentNow = now()
         let plan: CleanupPlan
         do {
@@ -83,18 +114,46 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
         } catch let error as CleanupPlanStoreError {
             throw CleanupServiceError.plan(error)
         }
+        var selection = selectedTargetIDs
+            ?? Set(plan.targets.map(\.identifier))
+        let simulatorIDs = Set(
+            (plan.devices + plan.runtimes).map(\.identifier)
+        ).intersection(selection)
+        var deferredItems = [CleanupItemResult]()
+        var handle: LeaseHandle?
+        if !simulatorIDs.isEmpty {
+            handle = try coordinator.tryAcquire(identity: identity)
+            if handle == nil {
+                selection.subtract(simulatorIDs)
+                deferredItems = plan.targets
+                    .filter { simulatorIDs.contains($0.identifier) }
+                    .map {
+                        CleanupItemResult(
+                            target: $0,
+                            outcome: .skipped,
+                            message: "Simulator lease is in use"
+                        )
+                    }
+            }
+        }
+        defer { handle?.release() }
         do {
-            return try executor.apply(plan: plan, now: currentNow)
+            let result = try executor.apply(
+                plan: plan,
+                selectedTargetIDs: selection,
+                now: currentNow
+            )
+            guard !deferredItems.isEmpty else { return result }
+            return CleanupResult(
+                planID: result.planID,
+                items: deferredItems + result.items,
+                estimatedBytes: result.estimatedBytes,
+                availableBytesBefore: result.availableBytesBefore,
+                availableBytesAfter: result.availableBytesAfter
+            )
         } catch let error as CleanupInventoryError {
             throw CleanupServiceError.inventory(error)
         }
-    }
-
-    private func acquireLease() throws -> LeaseHandle {
-        if let handle = try coordinator.tryAcquire(identity: identity) {
-            return handle
-        }
-        throw CleanupServiceError.leaseBusy(try coordinator.status())
     }
 
     @usableFromInline

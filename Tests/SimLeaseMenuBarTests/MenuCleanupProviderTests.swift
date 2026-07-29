@@ -32,12 +32,20 @@ final class MenuCleanupProviderTests: XCTestCase {
         )
 
         let loadedReview = try await provider.plan()
-        let loadedResult = try await provider.apply(id: "ABC123")
+        let loadedResult = try await provider.apply(
+            id: "ABC123",
+            selectedTargetIDs: ["RUNTIME-1", "ARCHIVE-1"]
+        )
         XCTAssertEqual(loadedReview, review)
         XCTAssertEqual(loadedResult, result)
         XCTAssertEqual(runner.arguments, [
             ["clean", "plan", "--json"],
-            ["clean", "apply", "ABC123", "--json"],
+            [
+                "clean", "apply", "ABC123",
+                "--target", "ARCHIVE-1",
+                "--target", "RUNTIME-1",
+                "--json",
+            ],
         ])
     }
 

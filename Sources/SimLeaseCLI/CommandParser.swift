@@ -7,7 +7,7 @@ enum ParsedCommand: Equatable {
     case name(String)
     case hold(title: String, project: String)
     case cleanPlan(json: Bool)
-    case cleanApply(id: String, json: Bool)
+    case cleanApply(id: String, targetIDs: [String], json: Bool)
     case shim(arguments: [String])
 }
 
@@ -85,15 +85,41 @@ enum CommandParser {
                 }
                 return .cleanPlan(json: arguments.count == 4)
             case "apply":
-                guard arguments.count == 4
-                        || (arguments.count == 5 && arguments[4] == "--json"),
-                      validPlanID(arguments[3])
-                else {
+                guard arguments.count >= 6,
+                      validPlanID(arguments[3]) else {
+                    throw CommandParserError.usage
+                }
+                var targetIDs = [String]()
+                var json = false
+                var index = 4
+                while index < arguments.count {
+                    switch arguments[index] {
+                    case "--target":
+                        guard index + 1 < arguments.count,
+                              !arguments[index + 1].isEmpty,
+                              !arguments[index + 1].hasPrefix("--")
+                        else {
+                            throw CommandParserError.usage
+                        }
+                        targetIDs.append(arguments[index + 1])
+                        index += 2
+                    case "--json":
+                        guard !json else {
+                            throw CommandParserError.usage
+                        }
+                        json = true
+                        index += 1
+                    default:
+                        throw CommandParserError.usage
+                    }
+                }
+                guard !targetIDs.isEmpty else {
                     throw CommandParserError.usage
                 }
                 return .cleanApply(
                     id: arguments[3],
-                    json: arguments.count == 5
+                    targetIDs: targetIDs,
+                    json: json
                 )
             default:
                 throw CommandParserError.usage

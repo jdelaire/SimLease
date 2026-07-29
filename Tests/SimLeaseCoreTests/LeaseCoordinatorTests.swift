@@ -95,6 +95,46 @@ final class LeaseCoordinatorTests: XCTestCase {
         XCTAssertEqual(status.state, .metadataError)
         XCTAssertNotNil(status.error)
     }
+
+    func testStatusPrunesStaleWaiters() throws {
+        let inspector = StubProcessIdentityInspector(
+            states: [
+                101: .matching,
+                102: .missing,
+                103: .reused,
+                104: .unknown,
+            ]
+        )
+        let fixture = try ProcessLeaseFixture(processInspector: inspector)
+        let waitingSince = Date(timeIntervalSince1970: 100)
+        let waiters = (101...104).map { pid in
+            LeaseWaiter(
+                id: "\(pid)-waiter",
+                pid: Int32(pid),
+                waitingSince: waitingSince,
+                cwd: "/Projects/SimLease",
+                project: "SimLease",
+                command: ["xcrun", "simctl", "list"],
+                source: .codex,
+                threadID: "thread-\(pid)",
+                threadTitle: nil
+            )
+        }
+        for waiter in waiters {
+            try fixture.store.writeWaiter(waiter)
+        }
+
+        let status = try fixture.coordinator.status()
+
+        XCTAssertEqual(
+            status.waiters.map(\.id),
+            ["101-waiter", "104-waiter"]
+        )
+        XCTAssertEqual(
+            try fixture.store.readWaiters().map(\.id),
+            ["101-waiter", "104-waiter"]
+        )
+    }
 }
 
 private final class ProcessLeaseFixture {
@@ -105,7 +145,11 @@ private final class ProcessLeaseFixture {
     let owner: LeaseOwner
     private var holder: Process?
 
-    init(reportInterval: Duration = .milliseconds(50)) throws {
+    init(
+        reportInterval: Duration = .milliseconds(50),
+        processInspector: any ProcessIdentityInspecting =
+            SystemProcessIdentityInspector()
+    ) throws {
         paths = LeasePaths(
             root: FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -118,7 +162,8 @@ private final class ProcessLeaseFixture {
                 timeout: .milliseconds(120),
                 reportInterval: reportInterval,
                 pollInterval: .milliseconds(10)
-            )
+            ),
+            processInspector: processInspector
         )
         identity = LeaseIdentity(
             pid: 52,
@@ -176,6 +221,17 @@ private final class ProcessLeaseFixture {
             holder.waitUntilExit()
         }
         self.holder = nil
+    }
+}
+
+private struct StubProcessIdentityInspector: ProcessIdentityInspecting {
+    let states: [Int32: ProcessIdentityState]
+
+    func identityState(
+        pid: Int32,
+        waitingSince: Date
+    ) -> ProcessIdentityState {
+        states[pid] ?? .unknown
     }
 }
 

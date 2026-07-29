@@ -4,9 +4,9 @@ SimLease coordinates shared iOS Simulator access across agents and terminal
 sessions. Its command shims acquire one atomic lease before simulator work,
 while the menu-bar app shows the owner and every waiting thread.
 
-Simulator cleanup is separate and always explicit: SimLease inventories stale
-devices and outdated runtimes, shows the exact protected and eligible targets,
-then requires the generated plan ID before deleting anything.
+Storage cleanup is separate and always explicit. SimLease reviews stale
+simulators, rebuildable Xcode caches, and guarded artifacts, then applies only
+the selected target IDs from a short-lived plan.
 
 ## Requirements
 
@@ -25,7 +25,9 @@ curl -fsSL \
 The installer downloads the latest stable GitHub release and verifies its
 SHA-256 checksum, arm64 architecture, Developer ID signature, and Gatekeeper
 assessment before changing the current installation. Activation is staged and
-restores the previous version if it fails. It never uses `sudo`.
+restores the previous version if it fails. During an update, it stops the
+running menu app and bootstraps a fresh LaunchAgent registration so the new
+signed binary is actually running. It never uses `sudo`.
 
 Restart terminal login shells and Codex after the first install so their PATH
 starts with:
@@ -64,7 +66,7 @@ simlease hold --title "Manual Xcode" --project "Project"
 
 SimLease has no force-release command.
 
-## Stale simulator cleanup
+## Xcode storage cleanup
 
 Review without deleting:
 
@@ -73,10 +75,12 @@ simlease clean plan
 simlease clean plan --json
 ```
 
-Apply only the exact reviewed plan:
+Apply only selected targets from the exact reviewed plan:
 
 ```sh
-simlease clean apply ABC123
+simlease clean apply ABC123 \
+  --target 'derivedData:/path/from-plan' \
+  --target 'DEVICE-UUID'
 ```
 
 A device is eligible only when shut down and reported unused for at least 30
@@ -84,9 +88,30 @@ days. Booted devices, devices with unknown age, and devices whose data path
 does not exactly match their UUID are protected. A runtime is eligible only
 when Apple's dry run identifies its exact image and no booted device uses it.
 
-Plans expire after ten minutes and can be used once. Apply rechecks the entire
-inventory before processing devices first and runtimes second. Cleanup is
-never automatic or scheduled.
+Rebuildable cache thresholds are:
+
+- temporary/custom DerivedData: 24 hours;
+- Xcode previews: 7 days;
+- standard DerivedData and project `.build`: 14 days.
+
+Result bundles older than 30 days, Archives older than 90 days, and every
+Device Support folder appear as guarded storage. They are never preselected
+and move to Trash instead of being permanently deleted. SimLease never empties
+Trash.
+
+Plans expire after ten minutes and can be used once. Apply requires one or
+more `--target` flags, rechecks fingerprints and active build paths, and skips
+anything changed or newly protected. A leased simulator lane defers simulator
+inventory without blocking filesystem review. Cleanup never force-releases a
+lease, stops tests, deletes worktrees, or runs automatically.
+
+Simulator testing still begins only after:
+
+```sh
+simlease status --json
+```
+
+reports `free`.
 
 ## Update
 
@@ -128,6 +153,7 @@ the underlying custom AXe.
 swift test
 scripts/package-app.sh
 zsh Tests/InstallationTests/install-app.zsh
+zsh Tests/InstallationTests/install-relaunch.zsh
 zsh Tests/InstallationTests/install-release.zsh
 zsh Tests/InstallationTests/package-release.zsh
 ```

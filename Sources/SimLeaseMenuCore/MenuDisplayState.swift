@@ -1,6 +1,34 @@
 import Foundation
 import SimLeaseCore
 
+public struct WaiterDisplayItem: Equatable, Sendable, Identifiable {
+    public let id: String
+    public let name: String
+    public let projectAndSource: String
+    public let elapsed: String
+    public let command: String
+    public let threadID: String?
+    public let cwd: String
+
+    public init(
+        id: String,
+        name: String,
+        projectAndSource: String,
+        elapsed: String,
+        command: String,
+        threadID: String?,
+        cwd: String
+    ) {
+        self.id = id
+        self.name = name
+        self.projectAndSource = projectAndSource
+        self.elapsed = elapsed
+        self.command = command
+        self.threadID = threadID
+        self.cwd = cwd
+    }
+}
+
 public struct MenuDisplayState: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case free
@@ -15,8 +43,12 @@ public struct MenuDisplayState: Equatable, Sendable {
     public let projectAndSource: String?
     public let command: String?
     public let elapsed: String?
-    public let waiterNames: [String]
+    public let waiters: [WaiterDisplayItem]
     public let error: String?
+
+    public var waiterNames: [String] {
+        waiters.map(\.name)
+    }
 
     public init(status: LeaseStatus, now: Date) {
         switch status.state {
@@ -43,12 +75,21 @@ public struct MenuDisplayState: Equatable, Sendable {
             projectAndSource = "\(owner.project) · \(Self.sourceName(owner.source))"
             command = owner.command.joined(separator: " ")
             self.elapsed = elapsed
-            waiterNames = status.waiters.map {
-                Self.name(
-                    title: $0.threadTitle,
-                    threadID: $0.threadID,
-                    source: $0.source,
-                    project: $0.project
+            waiters = status.waiters.map { waiter in
+                WaiterDisplayItem(
+                    id: waiter.id,
+                    name: Self.name(
+                        title: waiter.threadTitle,
+                        threadID: waiter.threadID,
+                        source: waiter.source,
+                        project: waiter.project
+                    ),
+                    projectAndSource:
+                        "\(waiter.project) · \(Self.sourceName(waiter.source))",
+                    elapsed: Self.elapsed(from: waiter.waitingSince, to: now),
+                    command: waiter.command.joined(separator: " "),
+                    threadID: waiter.threadID,
+                    cwd: waiter.cwd
                 )
             }
             error = nil
@@ -64,7 +105,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             projectAndSource: nil,
             command: nil,
             elapsed: nil,
-            waiterNames: [],
+            waiters: [],
             error: nil
         )
     }
@@ -78,7 +119,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             projectAndSource: nil,
             command: nil,
             elapsed: nil,
-            waiterNames: [],
+            waiters: [],
             error: message
         )
     }
@@ -91,7 +132,7 @@ public struct MenuDisplayState: Equatable, Sendable {
         projectAndSource: String?,
         command: String?,
         elapsed: String?,
-        waiterNames: [String],
+        waiters: [WaiterDisplayItem],
         error: String?
     ) {
         self.kind = kind
@@ -101,7 +142,7 @@ public struct MenuDisplayState: Equatable, Sendable {
         self.projectAndSource = projectAndSource
         self.command = command
         self.elapsed = elapsed
-        self.waiterNames = waiterNames
+        self.waiters = waiters
         self.error = error
     }
 

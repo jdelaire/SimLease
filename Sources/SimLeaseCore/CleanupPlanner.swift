@@ -112,6 +112,53 @@ public struct CleanupPlanner: Sendable {
         )
     }
 
+    public func makeReview(
+        inventory: CleanupInventory?,
+        storage: XcodeStorageInventory,
+        deferred: [CleanupCategory],
+        now: Date,
+        id: String
+    ) -> CleanupReview {
+        let simulatorReview = inventory.map {
+            makeReview(inventory: $0, now: now, id: id)
+        }
+        let devices = simulatorReview?.plan?.devices ?? []
+        let runtimes = simulatorReview?.plan?.runtimes ?? []
+        let protected = (simulatorReview?.protected ?? []) + storage.protected
+        let targets = devices + runtimes + storage.targets
+        let estimatedBytes = targets.reduce(Int64(0)) {
+            $0 + ($1.sizeBytes ?? 0)
+        }
+
+        guard !targets.isEmpty else {
+            return CleanupReview(
+                plan: nil,
+                protected: protected,
+                deferred: deferred,
+                estimatedBytes: 0
+            )
+        }
+
+        let plan = CleanupPlan(
+            id: id,
+            createdAt: now,
+            expiresAt: now.addingTimeInterval(planLifetime),
+            devices: devices,
+            runtimes: runtimes,
+            storage: storage.targets,
+            protected: protected,
+            deferred: deferred,
+            estimatedBytes: estimatedBytes,
+            availableBytesBefore: inventory?.availableBytes
+        )
+        return CleanupReview(
+            plan: plan,
+            protected: protected,
+            deferred: deferred,
+            estimatedBytes: estimatedBytes
+        )
+    }
+
     private func deviceProtection(
         _ record: CleanupDeviceRecord,
         target: CleanupTarget,

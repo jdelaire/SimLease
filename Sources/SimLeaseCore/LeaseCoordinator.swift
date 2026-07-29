@@ -43,17 +43,21 @@ public final class LeaseCoordinator: @unchecked Sendable {
     private let store: MetadataStore
     private let timing: LeaseTiming
     private let clock: any LeaseClock
+    private let processInspector: any ProcessIdentityInspecting
 
     public init(
         paths: LeasePaths,
         store: MetadataStore,
         timing: LeaseTiming = .production,
-        clock: any LeaseClock = SystemLeaseClock()
+        clock: any LeaseClock = SystemLeaseClock(),
+        processInspector: any ProcessIdentityInspecting =
+            SystemProcessIdentityInspector()
     ) {
         self.paths = paths
         self.store = store
         self.timing = timing
         self.clock = clock
+        self.processInspector = processInspector
     }
 
     public func acquire(
@@ -185,7 +189,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
 
         let waiters: [LeaseWaiter]
         do {
-            waiters = try store.readWaiters()
+            waiters = try activeWaiters(from: store.readWaiters())
         } catch {
             return LeaseStatus(
                 state: .metadataError,
@@ -228,6 +232,24 @@ public final class LeaseCoordinator: @unchecked Sendable {
             )
         }
         return LeaseStatus(state: .leased, owner: owner, waiters: waiters, error: nil)
+    }
+
+    private func activeWaiters(
+        from recordedWaiters: [LeaseWaiter]
+    ) throws -> [LeaseWaiter] {
+        var active: [LeaseWaiter] = []
+        for waiter in recordedWaiters {
+            switch processInspector.identityState(
+                pid: waiter.pid,
+                waitingSince: waiter.waitingSince
+            ) {
+            case .missing, .reused:
+                try store.removeWaiter(id: waiter.id)
+            case .matching, .unknown:
+                active.append(waiter)
+            }
+        }
+        return active
     }
 
     private func openLock() throws -> Int32 {

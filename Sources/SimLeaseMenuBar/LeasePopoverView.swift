@@ -30,6 +30,15 @@ func presentCleanupWindow(
     activateApplication()
 }
 
+@MainActor
+func performQuitAction(
+    terminateApplication: () -> Void = {
+        NSApplication.shared.terminate(nil)
+    }
+) {
+    terminateApplication()
+}
+
 struct LeasePopoverView: View {
     @ObservedObject var viewModel: MenuViewModel
     @Environment(\.openWindow) private var openWindow
@@ -121,26 +130,47 @@ struct LeasePopoverView: View {
 
             Divider()
 
-            Text("Waiting · \(viewModel.state.waiterNames.count)")
+            Text("Waiting · \(viewModel.state.waiters.count)")
                 .font(.subheadline.weight(.semibold))
 
-            if !viewModel.state.waiterNames.isEmpty {
+            if !viewModel.state.waiters.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(
-                        Array(viewModel.state.waiterNames.enumerated()),
-                        id: \.offset
-                    ) { _, name in
-                        Text(name)
+                    ForEach(viewModel.state.waiters) { waiter in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(waiter.name)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(
+                                "\(waiter.projectAndSource) · \(waiter.elapsed)"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .help(name)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .help(waiterHelp(waiter))
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(waiter.name)
+                        .accessibilityValue(waiterHelp(waiter))
                     }
                 }
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Waiting tasks")
             }
         }
+    }
+
+    private func waiterHelp(_ waiter: WaiterDisplayItem) -> String {
+        var details = [
+            "\(waiter.projectAndSource) · \(waiter.elapsed)",
+            waiter.command,
+        ]
+        if let threadID = waiter.threadID {
+            details.append("Thread: \(threadID)")
+        }
+        details.append("Path: \(waiter.cwd)")
+        return details.joined(separator: "\n")
     }
 
     private var cleanupAction: some View {
@@ -164,6 +194,12 @@ struct LeasePopoverView: View {
 
     private var footerActions: some View {
         HStack(spacing: 8) {
+            Button {
+                performQuitAction()
+            } label: {
+                Label("Quit", systemImage: "power")
+            }
+
             Spacer()
 
             Button {
