@@ -128,6 +128,39 @@ final class CleanupPlannerTests: XCTestCase {
         XCTAssertEqual(review.estimatedBytes, 0)
     }
 
+    func testStorageTargetsRemainAvailableWhenSimulatorSectionsAreDeferred() {
+        let target = CleanupTarget(
+            kind: .filesystem,
+            identifier: "derivedData:/cache",
+            name: "Cache",
+            detail: "/cache",
+            category: .derivedData,
+            riskTier: .rebuildable,
+            action: .deletePermanently,
+            path: "/cache",
+            runtimeIdentifier: "",
+            lastUsedAt: now.addingTimeInterval(-15 * 86_400),
+            sizeBytes: 700,
+            fingerprint: nil,
+            selectedByDefault: true
+        )
+
+        let review = planner.makeReview(
+            inventory: nil,
+            storage: XcodeStorageInventory(targets: [target], protected: []),
+            deferred: [.simulatorDevice, .simulatorRuntime],
+            now: now,
+            id: "ABC123"
+        )
+
+        XCTAssertEqual(review.plan?.storage, [target])
+        XCTAssertEqual(
+            review.deferred,
+            [.simulatorDevice, .simulatorRuntime]
+        )
+        XCTAssertEqual(review.estimatedBytes, 700)
+    }
+
     private var planner: CleanupPlanner {
         CleanupPlanner(devicesRoot: devicesRoot)
     }

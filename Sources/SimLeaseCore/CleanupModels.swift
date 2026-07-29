@@ -163,15 +163,18 @@ public struct CleanupPlan: Codable, Equatable, Sendable {
 public struct CleanupReview: Codable, Equatable, Sendable {
     public let plan: CleanupPlan?
     public let protected: [ProtectedCleanupTarget]
+    public let deferred: [CleanupCategory]
     public let estimatedBytes: Int64
 
     public init(
         plan: CleanupPlan?,
         protected: [ProtectedCleanupTarget],
+        deferred: [CleanupCategory] = [],
         estimatedBytes: Int64
     ) {
         self.plan = plan
         self.protected = protected
+        self.deferred = deferred
         self.estimatedBytes = estimatedBytes
     }
 }
