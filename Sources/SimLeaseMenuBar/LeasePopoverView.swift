@@ -21,6 +21,15 @@ struct LeasePopoverPresentation: Equatable {
     }
 }
 
+@MainActor
+func presentCleanupWindow(
+    openWindow: () -> Void,
+    activateApplication: () -> Void = { NSApplication.shared.activate() }
+) {
+    openWindow()
+    activateApplication()
+}
+
 struct LeasePopoverView: View {
     @ObservedObject var viewModel: MenuViewModel
     @Environment(\.openWindow) private var openWindow
@@ -136,7 +145,9 @@ struct LeasePopoverView: View {
 
     private var cleanupAction: some View {
         Button {
-            openWindow(id: "cleanup")
+            presentCleanupWindow {
+                openWindow(id: "cleanup")
+            }
         } label: {
             HStack {
                 Label("Review Cleanup…", systemImage: "internaldrive")

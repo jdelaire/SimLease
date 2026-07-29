@@ -4,6 +4,18 @@ import XCTest
 @testable import SimLeaseMenuCore
 
 final class LeasePopoverPresentationTests: XCTestCase {
+    @MainActor
+    func testCleanupWindowPresentationOpensThenActivatesApplication() {
+        var events: [String] = []
+
+        presentCleanupWindow(
+            openWindow: { events.append("open") },
+            activateApplication: { events.append("activate") }
+        )
+
+        XCTAssertEqual(events, ["open", "activate"])
+    }
+
     func testFreeStateExplainsThatTestingCanStart() {
         let presentation = LeasePopoverPresentation(state: .free)
 
