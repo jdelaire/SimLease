@@ -68,7 +68,7 @@ final class LeasePopoverRenderingTests: XCTestCase {
             waiterNames: (1...20).map { "Waiting simulator thread \($0)" }
         )
 
-        XCTAssertGreaterThanOrEqual(populatedHeight - emptyHeight, 300)
+        XCTAssertGreaterThanOrEqual(populatedHeight - emptyHeight, 650)
     }
 
     private func renderedHeight(waiterNames: [String]) async throws -> CGFloat {
