@@ -3,30 +3,84 @@ import Foundation
 public enum CleanupTargetKind: String, Codable, Equatable, Sendable {
     case device
     case runtime
+    case filesystem
+}
+
+public enum CleanupCategory: String, Codable, Equatable, Sendable {
+    case simulatorDevice
+    case simulatorRuntime
+    case temporaryDerivedData
+    case previews
+    case derivedData
+    case swiftBuild
+    case resultBundle
+    case archive
+    case deviceSupport
+}
+
+public enum CleanupRiskTier: String, Codable, Equatable, Sendable {
+    case rebuildable
+    case guarded
+}
+
+public enum CleanupAction: String, Codable, Equatable, Sendable {
+    case deletePermanently
+    case moveToTrash
+}
+
+public enum CleanupFingerprint: Codable, Equatable, Sendable {
+    case filesystem(path: String, sizeBytes: Int64, modifiedAt: Date)
 }
 
 public struct CleanupTarget: Codable, Equatable, Sendable {
     public let kind: CleanupTargetKind
     public let identifier: String
     public let name: String
+    public let detail: String
+    public let category: CleanupCategory
+    public let riskTier: CleanupRiskTier
+    public let action: CleanupAction
+    public let path: String?
     public let runtimeIdentifier: String
     public let lastUsedAt: Date?
     public let sizeBytes: Int64?
+    public let fingerprint: CleanupFingerprint?
+    public let selectedByDefault: Bool
 
     public init(
         kind: CleanupTargetKind,
         identifier: String,
         name: String,
+        detail: String = "",
+        category: CleanupCategory? = nil,
+        riskTier: CleanupRiskTier = .rebuildable,
+        action: CleanupAction = .deletePermanently,
+        path: String? = nil,
         runtimeIdentifier: String,
         lastUsedAt: Date?,
-        sizeBytes: Int64?
+        sizeBytes: Int64?,
+        fingerprint: CleanupFingerprint? = nil,
+        selectedByDefault: Bool = true
     ) {
         self.kind = kind
         self.identifier = identifier
         self.name = name
+        self.detail = detail
+        self.category = category ?? {
+            switch kind {
+            case .device: .simulatorDevice
+            case .runtime: .simulatorRuntime
+            case .filesystem: .derivedData
+            }
+        }()
+        self.riskTier = riskTier
+        self.action = action
+        self.path = path
         self.runtimeIdentifier = runtimeIdentifier
         self.lastUsedAt = lastUsedAt
         self.sizeBytes = sizeBytes
+        self.fingerprint = fingerprint
+        self.selectedByDefault = selectedByDefault
     }
 }
 
@@ -63,7 +117,9 @@ public struct CleanupPlan: Codable, Equatable, Sendable {
     public let expiresAt: Date
     public let devices: [CleanupTarget]
     public let runtimes: [CleanupTarget]
+    public let storage: [CleanupTarget]
     public let protected: [ProtectedCleanupTarget]
+    public let deferred: [CleanupCategory]
     public let estimatedBytes: Int64
     public let availableBytesBefore: Int64?
 
@@ -73,7 +129,9 @@ public struct CleanupPlan: Codable, Equatable, Sendable {
         expiresAt: Date,
         devices: [CleanupTarget],
         runtimes: [CleanupTarget],
+        storage: [CleanupTarget] = [],
         protected: [ProtectedCleanupTarget],
+        deferred: [CleanupCategory] = [],
         estimatedBytes: Int64,
         availableBytesBefore: Int64?
     ) {
@@ -82,9 +140,19 @@ public struct CleanupPlan: Codable, Equatable, Sendable {
         self.expiresAt = expiresAt
         self.devices = devices
         self.runtimes = runtimes
+        self.storage = storage
         self.protected = protected
+        self.deferred = deferred
         self.estimatedBytes = estimatedBytes
         self.availableBytesBefore = availableBytesBefore
+    }
+
+    public var targets: [CleanupTarget] {
+        devices + runtimes + storage
+    }
+
+    public var defaultSelectedTargetIDs: Set<String> {
+        Set(targets.filter(\.selectedByDefault).map(\.identifier))
     }
 }
 
@@ -106,6 +174,7 @@ public struct CleanupReview: Codable, Equatable, Sendable {
 
 public enum CleanupItemOutcome: String, Codable, Equatable, Sendable {
     case deleted
+    case movedToTrash
     case skipped
     case failed
 }
@@ -148,6 +217,8 @@ public struct CleanupResult: Codable, Equatable, Sendable {
     }
 
     public var isPartial: Bool {
-        items.contains { $0.outcome != .deleted }
+        items.contains {
+            $0.outcome != .deleted && $0.outcome != .movedToTrash
+        }
     }
 }

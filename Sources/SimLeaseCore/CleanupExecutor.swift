@@ -122,6 +122,8 @@ public final class CleanupExecutor: @unchecked Sendable {
             return review.plan?.runtimes.contains {
                 $0.kind == target.kind && $0.identifier == target.identifier
             } == true
+        case .filesystem:
+            return false
         }
     }
 
