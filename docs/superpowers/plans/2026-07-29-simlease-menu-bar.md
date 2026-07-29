@@ -580,8 +580,9 @@ printf '%s\n' "$CODEX_THREAD_ID"
 simlease name "[SimLease] Verification"
 ```
 
-Expected: shims resolve under `~/.local/bin`; thread ID is non-empty; title
-registration succeeds.
+Expected: shims resolve under `~/.local/lib/simlease/shims`; thread ID is
+non-empty; title registration succeeds. Excluding the shim directory resolves
+the preserved custom AXe binary.
 
 - [ ] **Step 4: Run real read-only owner/waiter proof**
 

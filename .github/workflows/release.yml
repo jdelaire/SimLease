@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_NAME" == v<->.<->.<-> ]]
+          plist_version="$(plutil -extract CFBundleShortVersionString raw Resources/SimLease-Info.plist)"
+          [[ "$version" == "$plist_version" ]]
+
+      - name: Run tests
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          swift test
+          scripts/package-app.sh
+          zsh Tests/InstallationTests/install-app.zsh
+          zsh Tests/InstallationTests/install-release.zsh
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/simlease-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          print -rn -- "$CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/developer-id.p12" \
+            -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain"
+          security list-keychains -d user -s "$keychain"
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/Developer ID Application/ {print $2; exit}')"
+          [[ -n "$identity" ]]
+          print -- "SIMLEASE_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Package signed release
+        env:
+          SIMLEASE_VERSION: ${{ github.ref_name }}
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          SIMLEASE_VERSION="${SIMLEASE_VERSION#v}" scripts/package-release.sh
+
+      - name: Notarize and staple
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          print -rn -- "$APPLE_API_PRIVATE_KEY" > "$key"
+          chmod 600 "$key"
+          ditto -c -k --keepParent \
+            dist/release/SimLease.app \
+            "$RUNNER_TEMP/SimLease-notary.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/SimLease-notary.zip" \
+            --key "$key" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple dist/release/SimLease.app
+          xcrun stapler validate dist/release/SimLease.app
+          codesign --verify --deep --strict dist/release/SimLease.app
+          spctl --assess --type execute dist/release/SimLease.app
+          archive="dist/SimLease-$version-arm64.zip"
+          checksum="dist/SimLease-$version-arm64.sha256"
+          rm -f "$archive" "$checksum"
+          (cd dist/release && zip -qry "$OLDPWD/$archive" .)
+          (cd dist && shasum -a 256 "${archive:t}" > "${checksum:t}")
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/SimLease-$version-arm64.zip" \
+            "dist/SimLease-$version-arm64.sha256" \
+            --generate-notes \
+            --title "SimLease $version"
+
+      - name: Remove credentials
+        if: always()
+        shell: zsh {0}
+        run: |
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8
+          security delete-keychain "$RUNNER_TEMP/simlease-signing.keychain-db" 2>/dev/null || true

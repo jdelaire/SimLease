@@ -790,7 +790,8 @@ git commit -m "feat: add SimLease command interface"
 
 **Interfaces:**
 - Consumes: release `simlease` binary
-- Produces: `~/.local/lib/simlease/simlease`, shims in `~/.local/bin`, marked `.zprofile` PATH block
+- Produces: `~/.local/lib/simlease/simlease`, shims in
+  `~/.local/lib/simlease/shims`, marked `.zprofile` PATH block
 
 - [ ] **Step 1: Write failing installation fixture**
 
@@ -806,8 +807,10 @@ Assert:
 
 - executable exists at
   `$SIMLEASE_TEST_ROOT/home/.local/lib/simlease/simlease`
-- `simlease`, `xcodebuild`, `xcrun`, and `axe` in `.local/bin` are symlinks to
-  that executable
+- `simlease`, `xcodebuild`, `xcrun`, and `axe` in
+  `.local/lib/simlease/shims` are symlinks to that executable
+- a pre-existing `.local/bin/axe` remains unchanged and is the executable found
+  after excluding the SimLease shim directory
 - `.zprofile` contains exactly one marked SimLease PATH block after two installs
 - uninstall removes only those symlinks, binary, and marked block
 - a pre-existing unrelated `.zprofile` line remains byte-for-byte
@@ -830,7 +833,7 @@ Use:
 ```sh
 SIMLEASE_USER_HOME="${SIMLEASE_INSTALL_HOME:-${HOME:?}}"
 SIMLEASE_LIB_DIR="$SIMLEASE_USER_HOME/.local/lib/simlease"
-SIMLEASE_BIN_DIR="$SIMLEASE_USER_HOME/.local/bin"
+SIMLEASE_SHIM_DIR="$SIMLEASE_LIB_DIR/shims"
 SIMLEASE_PROFILE="$SIMLEASE_USER_HOME/.zprofile"
 ```
 
@@ -839,12 +842,13 @@ explicit paths. Insert exactly this marked profile block:
 
 ```text
 # >>> SimLease PATH >>>
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/lib/simlease/shims:$PATH"
 # <<< SimLease PATH <<<
 ```
 
-Reject an install when an existing target is not a symlink owned by SimLease.
-Do not overwrite unrelated executables.
+Reject an install when an existing target inside the SimLease-owned shim
+directory is not a symlink to the installed binary. Never modify commands under
+the user's existing PATH directories.
 
 - [ ] **Step 4: Implement surgical uninstaller**
 
@@ -879,7 +883,9 @@ command -v axe
 simlease status --json
 ```
 
-Expected: all four commands resolve under `~/.local/bin`; status is valid JSON.
+Expected: all four commands resolve under
+`~/.local/lib/simlease/shims`; status is valid JSON. Excluding that directory
+still resolves the same pre-installation AXe binary.
 Codex desktop must be restarted later before existing threads inherit the PATH.
 
 - [ ] **Step 7: Run one real read-only contention smoke**

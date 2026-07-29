@@ -205,15 +205,20 @@ stable JSON response. It never calls `simctl`, AXe, or `xcodebuild`.
 
 Installation creates:
 
-- the `simlease` executable and three shims in one user-owned bin directory
+- the `simlease` executable under `~/.local/lib/simlease/`
+- `simlease`, `xcodebuild`, `xcrun`, and `axe` shims under
+  `~/.local/lib/simlease/shims/`
 - `~/Library/Caches/SimLease/` for lock and ephemeral metadata
 - the menu-bar application
 - a user LaunchAgent for login startup
 - the required PATH entry for new login shells and Codex processes
 
-Installation must be idempotent. It preserves existing PATH content and reports
-the resolved underlying executables. Existing Codex processes must be restarted
-before they inherit the new PATH.
+The shim directory is prepended before the user's existing PATH. This leaves
+existing commands under `~/.local/bin/` untouched; after excluding its own shim
+directory, SimLease delegates to the same underlying command that the user
+previously resolved. Installation must be idempotent. It preserves existing
+PATH content and reports the resolved underlying executables. Existing Codex
+processes must be restarted before they inherit the new PATH.
 
 Uninstallation removes only files installed by SimLease. It does not delete
 simulators, runtimes, Xcode data, application data, or unrelated shell

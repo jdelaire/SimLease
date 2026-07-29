@@ -1,0 +1,272 @@
+import Foundation
+import XCTest
+@testable import SimLeaseCore
+
+final class CleanupServiceTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 3_000_000)
+
+    func testBusyLeaseFailsImmediatelyWithoutInventory() throws {
+        let fixture = try ServiceFixture(now: now)
+        defer { fixture.stopHolder() }
+        try fixture.startHolder()
+        try fixture.metadata.writeOwner(fixture.owner)
+
+        XCTAssertThrowsError(try fixture.service().createPlan()) {
+            guard case CleanupServiceError.leaseBusy(let status) = $0 else {
+                return XCTFail("Expected busy status")
+            }
+            XCTAssertEqual(status.state, .leased)
+        }
+        XCTAssertEqual(fixture.provider.inventoryCallCount, 0)
+    }
+
+    func testEmptyReviewIsReturnedWithoutSaving() throws {
+        let fixture = try ServiceFixture(now: now)
+        fixture.provider.inventories = [.success(fixture.emptyInventory())]
+
+        let review = try fixture.service().createPlan()
+
+        XCTAssertNil(review.plan)
+        XCTAssertThrowsError(
+            try fixture.store.consume(id: "ABC123", now: now)
+        ) {
+            XCTAssertEqual($0 as? CleanupPlanStoreError, .missing)
+        }
+    }
+
+    func testCollisionRetriesAndSavesNonemptyPlan() throws {
+        let fixture = try ServiceFixture(now: now)
+        try fixture.store.save(fixture.plan(id: "ABC123"))
+        fixture.provider.inventories = [.success(fixture.deviceInventory())]
+        let ids = IDSequence(["ABC123", "DEF456"])
+
+        let review = try fixture.service(idGenerator: ids.next).createPlan()
+
+        XCTAssertEqual(review.plan?.id, "DEF456")
+        XCTAssertEqual(
+            try fixture.store.consume(id: "DEF456", now: now).id,
+            "DEF456"
+        )
+    }
+
+    func testApplyConsumesBeforeExecutorErrorAndReleasesLease() throws {
+        let fixture = try ServiceFixture(now: now)
+        try fixture.store.save(fixture.plan(id: "ABC123"))
+        fixture.provider.inventories = [.failure(
+            CleanupInventoryError.invalidDevicesJSON
+        )]
+
+        XCTAssertThrowsError(
+            try fixture.service().apply(planID: "ABC123")
+        ) {
+            XCTAssertEqual(
+                $0 as? CleanupServiceError,
+                .inventory(.invalidDevicesJSON)
+            )
+        }
+        XCTAssertThrowsError(
+            try fixture.store.consume(id: "ABC123", now: now)
+        ) {
+            XCTAssertEqual($0 as? CleanupPlanStoreError, .missing)
+        }
+        let handle = try XCTUnwrap(
+            fixture.coordinator.tryAcquire(identity: fixture.identity)
+        )
+        handle.release()
+    }
+
+    func testExpiredPlanMapsWithoutInvokingExecutorAndReleasesLease() throws {
+        let fixture = try ServiceFixture(now: now)
+        try fixture.store.save(fixture.plan(
+            id: "ABC123",
+            expiresAt: now.addingTimeInterval(-1)
+        ))
+
+        XCTAssertThrowsError(
+            try fixture.service().apply(planID: "ABC123")
+        ) {
+            XCTAssertEqual(
+                $0 as? CleanupServiceError,
+                .plan(.expired)
+            )
+        }
+        XCTAssertEqual(fixture.provider.inventoryCallCount, 0)
+        let handle = try XCTUnwrap(
+            fixture.coordinator.tryAcquire(identity: fixture.identity)
+        )
+        handle.release()
+    }
+}
+
+private final class ServiceFixture {
+    let paths: LeasePaths
+    let metadata: MetadataStore
+    let coordinator: LeaseCoordinator
+    let store: CleanupPlanStore
+    let provider = ServiceCleanupProvider()
+    let identity: LeaseIdentity
+    let owner: LeaseOwner
+    let now: Date
+    private var holder: Process?
+
+    init(now: Date) throws {
+        self.now = now
+        paths = LeasePaths(
+            root: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        )
+        metadata = try MetadataStore(paths: paths)
+        coordinator = LeaseCoordinator(paths: paths, store: metadata)
+        store = try CleanupPlanStore(paths: paths)
+        identity = LeaseIdentity(
+            pid: 50,
+            cwd: "/Projects/SimLease",
+            project: "SimLease",
+            command: ["simlease", "clean", "plan"],
+            source: .terminal,
+            threadID: nil,
+            threadTitle: nil
+        )
+        owner = LeaseOwner(
+            pid: 40,
+            acquiredAt: now,
+            cwd: "/Projects/Other",
+            project: "Other",
+            command: ["xcodebuild", "test"],
+            source: .terminal,
+            threadID: nil,
+            threadTitle: nil
+        )
+    }
+
+    deinit {
+        stopHolder()
+        try? FileManager.default.removeItem(at: paths.root)
+    }
+
+    func service(
+        idGenerator: @escaping @Sendable () -> String = { "ABC123" }
+    ) -> CleanupService {
+        let planner = CleanupPlanner(
+            devicesRoot: URL(fileURLWithPath: "/Devices")
+        )
+        return CleanupService(
+            coordinator: coordinator,
+            identity: identity,
+            provider: provider,
+            planner: planner,
+            store: store,
+            executor: CleanupExecutor(provider: provider, planner: planner),
+            now: { [now] in now },
+            idGenerator: idGenerator
+        )
+    }
+
+    func emptyInventory() -> CleanupInventory {
+        CleanupInventory(
+            devices: [],
+            runtimes: [],
+            outdatedRuntimeIDs: [],
+            hasActiveXcodeTests: false,
+            availableBytes: 100
+        )
+    }
+
+    func deviceInventory() -> CleanupInventory {
+        CleanupInventory(
+            devices: [
+                CleanupDeviceRecord(
+                    identifier: "DEVICE-1",
+                    name: "Device",
+                    runtimeIdentifier: "runtime.current",
+                    state: "Shutdown",
+                    lastUsedAt: now.addingTimeInterval(-31 * 24 * 60 * 60),
+                    dataPath: "/Devices/DEVICE-1/data",
+                    sizeBytes: 100
+                ),
+            ],
+            runtimes: [],
+            outdatedRuntimeIDs: [],
+            hasActiveXcodeTests: false,
+            availableBytes: 100
+        )
+    }
+
+    func plan(
+        id: String,
+        expiresAt: Date? = nil
+    ) -> CleanupPlan {
+        CleanupPlan(
+            id: id,
+            createdAt: now.addingTimeInterval(-60),
+            expiresAt: expiresAt ?? now.addingTimeInterval(600),
+            devices: [],
+            runtimes: [],
+            protected: [],
+            estimatedBytes: 0,
+            availableBytesBefore: 100
+        )
+    }
+
+    func startHolder() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/lockf")
+        process.arguments = [paths.lock.path, "/bin/sleep", "5"]
+        try process.run()
+        holder = process
+
+        let deadline = Date(timeIntervalSinceNow: 1)
+        while Date() < deadline {
+            let probe = Process()
+            probe.executableURL = URL(fileURLWithPath: "/usr/bin/lockf")
+            probe.arguments = ["-t", "0", paths.lock.path, "/usr/bin/true"]
+            probe.standardError = Pipe()
+            try probe.run()
+            probe.waitUntilExit()
+            if probe.terminationStatus != 0 { return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTFail("holder did not acquire lock")
+    }
+
+    func stopHolder() {
+        guard let holder else { return }
+        if holder.isRunning {
+            holder.terminate()
+            holder.waitUntilExit()
+        }
+        self.holder = nil
+    }
+}
+
+private final class ServiceCleanupProvider:
+    CleanupInventoryProviding,
+    @unchecked Sendable
+{
+    var inventories: [Result<CleanupInventory, Error>] = []
+    private(set) var inventoryCallCount = 0
+
+    func inventory() throws -> CleanupInventory {
+        inventoryCallCount += 1
+        guard !inventories.isEmpty else {
+            throw CleanupInventoryError.invalidDevicesJSON
+        }
+        return try inventories.removeFirst().get()
+    }
+
+    func deleteDevice(id: String) throws {}
+    func deleteRuntime(id: String) throws {}
+}
+
+private final class IDSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String]
+
+    init(_ values: [String]) {
+        self.values = values
+    }
+
+    func next() -> String {
+        lock.withLock { values.removeFirst() }
+    }
+}
