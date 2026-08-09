@@ -4,22 +4,27 @@ public struct CleanupPlanner: Sendable {
     public let devicesRoot: URL
     public let staleAge: TimeInterval
     public let planLifetime: TimeInterval
+    public let laneProtection: LaneProtectionSnapshot
 
     public init(
         devicesRoot: URL,
         staleAge: TimeInterval = 30 * 24 * 60 * 60,
-        planLifetime: TimeInterval = 10 * 60
+        planLifetime: TimeInterval = 10 * 60,
+        laneProtection: LaneProtectionSnapshot = .empty
     ) {
         self.devicesRoot = devicesRoot.standardizedFileURL
         self.staleAge = staleAge
         self.planLifetime = planLifetime
+        self.laneProtection = laneProtection
     }
 
     public func makeReview(
         inventory: CleanupInventory,
         now: Date,
-        id: String
+        id: String,
+        laneProtection: LaneProtectionSnapshot? = nil
     ) -> CleanupReview {
+        let laneProtection = laneProtection ?? self.laneProtection
         var devices = [CleanupTarget]()
         var runtimes = [CleanupTarget]()
         var protectedDevices = [ProtectedCleanupTarget]()
@@ -44,7 +49,8 @@ public struct CleanupPlanner: Sendable {
                 record,
                 target: target,
                 inventory: inventory,
-                staleBoundary: staleBoundary
+                staleBoundary: staleBoundary,
+                laneProtection: laneProtection
             ) {
                 protectedDevices.append(protection)
             } else {
@@ -117,15 +123,41 @@ public struct CleanupPlanner: Sendable {
         storage: XcodeStorageInventory,
         deferred: [CleanupCategory],
         now: Date,
-        id: String
+        id: String,
+        laneProtection: LaneProtectionSnapshot? = nil
     ) -> CleanupReview {
+        let laneProtection = laneProtection ?? self.laneProtection
         let simulatorReview = inventory.map {
-            makeReview(inventory: $0, now: now, id: id)
+            makeReview(
+                inventory: $0,
+                now: now,
+                id: id,
+                laneProtection: laneProtection
+            )
         }
         let devices = simulatorReview?.plan?.devices ?? []
         let runtimes = simulatorReview?.plan?.runtimes ?? []
-        let protected = (simulatorReview?.protected ?? []) + storage.protected
-        let targets = devices + runtimes + storage.targets
+        let laneStorageProtection: [ProtectedCleanupTarget] = storage.targets.compactMap { target in
+            guard let path = target.path,
+                  isProtectedLanePath(path, snapshot: laneProtection) else {
+                return nil
+            }
+            return protection(
+                target,
+                .managedLane,
+                "Path belongs to an active managed simulator lane"
+            )
+        }
+        let laneProtectedIDs = Set(
+            laneStorageProtection.map(\.target.identifier)
+        )
+        let storageTargets = storage.targets.filter {
+            !laneProtectedIDs.contains($0.identifier)
+        }
+        let protected = (simulatorReview?.protected ?? [])
+            + storage.protected
+            + laneStorageProtection
+        let targets = devices + runtimes + storageTargets
         let estimatedBytes = targets.reduce(Int64(0)) {
             $0 + ($1.sizeBytes ?? 0)
         }
@@ -145,7 +177,7 @@ public struct CleanupPlanner: Sendable {
             expiresAt: now.addingTimeInterval(planLifetime),
             devices: devices,
             runtimes: runtimes,
-            storage: storage.targets,
+            storage: storageTargets,
             protected: protected,
             deferred: deferred,
             estimatedBytes: estimatedBytes,
@@ -163,8 +195,16 @@ public struct CleanupPlanner: Sendable {
         _ record: CleanupDeviceRecord,
         target: CleanupTarget,
         inventory: CleanupInventory,
-        staleBoundary: Date
+        staleBoundary: Date,
+        laneProtection: LaneProtectionSnapshot
     ) -> ProtectedCleanupTarget? {
+        if laneProtection.reservedDeviceIDs.contains(record.identifier) {
+            return protection(
+                target,
+                .managedLane,
+                "Device is reserved by a managed simulator lane"
+            )
+        }
         if inventory.hasActiveXcodeTests {
             return protection(target, .activeTests, "An Xcode test action is active")
         }
@@ -227,6 +267,26 @@ public struct CleanupPlanner: Sendable {
             reason: reason,
             explanation: explanation
         )
+    }
+
+    private func isProtectedLanePath(
+        _ path: String,
+        snapshot: LaneProtectionSnapshot
+    ) -> Bool {
+        let candidate = URL(fileURLWithPath: path)
+            .standardizedFileURL.pathComponents
+        return snapshot.activeDerivedDataPaths
+            .union(snapshot.activeResultBundlePaths)
+            .contains { activePath in
+            let active = URL(fileURLWithPath: activePath)
+                .standardizedFileURL.pathComponents
+            return isPrefix(candidate, of: active) || isPrefix(active, of: candidate)
+        }
+    }
+
+    private func isPrefix(_ prefix: [String], of value: [String]) -> Bool {
+        prefix.count <= value.count
+            && zip(prefix, value).allSatisfy { $0 == $1 }
     }
 
     private func deviceOrder(_ lhs: CleanupTarget, _ rhs: CleanupTarget) -> Bool {

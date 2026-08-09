@@ -9,6 +9,7 @@ public struct CLIConfiguration: Sendable {
     public let standardOutput: @Sendable (String) -> Void
     public let standardError: @Sendable (String) -> Void
     public let cleanupService: (any CleanupServicing)?
+    public let laneService: (any LaneServicing)?
     public let updateRunner: (any UpdateRunning)?
 
     public init(
@@ -17,6 +18,7 @@ public struct CLIConfiguration: Sendable {
         standardOutput: @escaping @Sendable (String) -> Void,
         standardError: @escaping @Sendable (String) -> Void,
         cleanupService: (any CleanupServicing)? = nil,
+        laneService: (any LaneServicing)? = nil,
         updateRunner: (any UpdateRunning)? = nil
     ) {
         self.paths = paths
@@ -24,6 +26,7 @@ public struct CLIConfiguration: Sendable {
         self.standardOutput = standardOutput
         self.standardError = standardError
         self.cleanupService = cleanupService
+        self.laneService = laneService
         self.updateRunner = updateRunner
     }
 
@@ -121,6 +124,68 @@ public enum SimLeaseCLI {
                     environment: environment,
                     configuration: configuration
                 )
+            case .laneAcquire(let project, let deviceType, let runtime, let json):
+                return try runLaneAcquire(
+                    project: project,
+                    deviceType: deviceType,
+                    runtime: runtime,
+                    json: json,
+                    arguments: arguments,
+                    environment: environment,
+                    configuration: configuration
+                )
+            case .laneStatus(let json):
+                return try runLaneStatus(
+                    json: json,
+                    arguments: arguments,
+                    environment: environment,
+                    configuration: configuration
+                )
+            case .laneConfig(let maxActive, let json):
+                return try runLaneConfig(
+                    maxActive: maxActive,
+                    json: json,
+                    arguments: arguments,
+                    environment: environment,
+                    configuration: configuration
+                )
+            case .laneRelease(let json):
+                return try runLaneRelease(
+                    json: json,
+                    arguments: arguments,
+                    environment: environment,
+                    configuration: configuration
+                )
+            case .laneRecoverPlan(let laneID, let json):
+                return try runLaneRecoveryPlan(
+                    laneID: laneID,
+                    json: json,
+                    environment: environment,
+                    configuration: configuration
+                )
+            case .laneRecoverApply(let planID, let laneID, let json):
+                return try runLaneRecoveryApply(
+                    planID: planID,
+                    laneID: laneID,
+                    json: json,
+                    environment: environment,
+                    configuration: configuration
+                )
+            case .laneDisposePlan(let udid, let json):
+                return try runLaneDisposalPlan(
+                    udid: udid,
+                    json: json,
+                    environment: environment,
+                    configuration: configuration
+                )
+            case .laneDisposeApply(let planID, let udid, let json):
+                return try runLaneDisposalApply(
+                    planID: planID,
+                    udid: udid,
+                    json: json,
+                    environment: environment,
+                    configuration: configuration
+                )
             case .shim(let invocation):
                 return try runShim(
                     invocation: invocation,
@@ -130,7 +195,7 @@ public enum SimLeaseCLI {
             }
         } catch CommandParserError.usage {
             configuration.standardError(
-                "Usage: simlease <status|name|hold|clean|update|--version>\n"
+                "Usage: simlease <status|name|hold|lane|clean|update|--version>\n"
             )
             return 64
         } catch UpdateRunnerError.missingUpdater {
@@ -147,6 +212,30 @@ public enum SimLeaseCLI {
         } catch CleanupServiceError.leaseBusy(let status) {
             configuration.standardError(busyMessage(status))
             return 75
+        } catch LaneLockError.timedOut {
+            configuration.standardError("SimLease: timed out waiting for simulator lane\n")
+            return 75
+        } catch let error as LanePlanStoreError {
+            configuration.standardError(
+                "SimLease: refused lane lifecycle plan: \(error)\n"
+            )
+            return 76
+        } catch let error as LaneServiceError {
+            switch error {
+            case .capacityFull:
+                configuration.standardError("SimLease: simulator lane capacity is full\n")
+                return 75
+            case .targetMismatch, .derivedDataMismatch,
+                 .laneOwnershipMismatch, .globalMutationBusy,
+                 .laneRecoveryTooRecent, .unsupportedAXeTargeting,
+                 .recoveryRequired:
+                configuration.standardError("SimLease: refused unsafe lane operation: \(error)\n")
+                return 76
+            case .runtimeUnavailable, .deviceTypeUnavailable,
+                 .invalidLaneDescriptor, .metadataError:
+                configuration.standardError("SimLease: lane metadata unavailable: \(error)\n")
+                return 74
+            }
         } catch ExecutableResolutionError.notFound(let name) {
             configuration.standardError("SimLease: underlying executable not found: \(name)\n")
             return 127
@@ -212,6 +301,303 @@ public enum SimLeaseCLI {
         return result.isPartial ? 76 : 0
     }
 
+    private static func runLaneAcquire(
+        project: String,
+        deviceType: String,
+        runtime: String,
+        json: Bool,
+        arguments: [String],
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> Int32 {
+        let service = try laneService(
+            environment: environment,
+            configuration: configuration
+        )
+        let identity = try laneIdentity(
+            arguments: arguments,
+            environment: environment,
+            configuration: configuration
+        )
+        do {
+            let result = try service.acquire(
+                request: LaneAcquireRequest(
+                    project: project,
+                    deviceType: deviceType,
+                    runtime: runtime
+                ),
+                identity: identity
+            )
+            try writeLaneResult(
+                result,
+                json: json,
+                human: LaneFormatting.acquire,
+                configuration: configuration
+            )
+            return 0
+        } catch LaneServiceError.capacityFull(let report) {
+            let result = LaneAcquireResult(
+                state: .capacityFull,
+                lane: nil,
+                environment: [:],
+                xcodebuildArguments: [],
+                derivedDataPath: nil,
+                resultBundlePath: nil,
+                releaseCommand: [],
+                nextActions: report.reserved.map {
+                    let owner = $0.threadTitle ?? $0.threadID ?? $0.project
+                    return "wait for \($0.laneID): \(owner) (\($0.project))"
+                } + ["simlease lane status", "retry the acquire command"]
+            )
+            if json {
+                try writeJSON(result, configuration: configuration)
+            } else {
+                configuration.standardError(LaneFormatting.capacityFull(report))
+            }
+            return 75
+        } catch LaneServiceError.runtimeUnavailable(let requested, let available) {
+            configuration.standardError(
+                LaneFormatting.unavailable(
+                    kind: "runtime",
+                    requested: requested,
+                    available: available
+                )
+            )
+            return 74
+        } catch LaneServiceError.deviceTypeUnavailable(let requested, let available) {
+            configuration.standardError(
+                LaneFormatting.unavailable(
+                    kind: "device type",
+                    requested: requested,
+                    available: available
+                )
+            )
+            return 74
+        }
+    }
+
+    private static func runLaneStatus(
+        json: Bool,
+        arguments: [String],
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> Int32 {
+        _ = arguments
+        let report = try laneService(
+            environment: environment,
+            configuration: configuration
+        ).status(now: Date())
+        if json {
+            try writeJSON(report, configuration: configuration)
+        } else {
+            configuration.standardOutput(LaneFormatting.status(report))
+        }
+        return 0
+    }
+
+    private static func runLaneConfig(
+        maxActive: Int?,
+        json: Bool,
+        arguments: [String],
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> Int32 {
+        _ = arguments
+        let report = try laneService(
+            environment: environment,
+            configuration: configuration
+        ).configure(maxActive: maxActive)
+        if json {
+            try writeJSON(report, configuration: configuration)
+        } else {
+            configuration.standardOutput(LaneFormatting.configuration(report))
+        }
+        return 0
+    }
+
+    private static func runLaneRelease(
+        json: Bool,
+        arguments: [String],
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> Int32 {
+        guard let descriptorPath = environment["SIMLEASE_LANE_FILE"],
+              !descriptorPath.isEmpty else {
+            throw CommandParserError.usage
+        }
+        let identity = try laneIdentity(
+            arguments: arguments,
+            environment: environment,
+            configuration: configuration
+        )
+        let result = try laneService(
+            environment: environment,
+            configuration: configuration
+        ).release(
+            descriptorURL: URL(fileURLWithPath: descriptorPath),
+            identity: identity
+        )
+        if json {
+            try writeJSON(result, configuration: configuration)
+        } else {
+            configuration.standardOutput(LaneFormatting.release(result))
+        }
+        return 0
+    }
+
+    private static func runLaneRecoveryPlan(
+        laneID: String,
+        json: Bool,
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> Int32 {
+        let plan = try laneService(
+            environment: environment,
+            configuration: configuration
+        ).createRecoveryPlan(laneID: laneID, now: Date())
+        if json {
+            try writeJSON(plan, configuration: configuration)
+        } else {
+            configuration.standardOutput(LaneFormatting.lifecyclePlan(plan))
+        }
+        return 0
+    }
+
+    private static func runLaneRecoveryApply(
+        planID: String,
+        laneID: String,
+        json: Bool,
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> Int32 {
+        let result = try laneService(
+            environment: environment,
+            configuration: configuration
+        ).applyRecovery(planID: planID, laneID: laneID, now: Date())
+        if json {
+            try writeJSON(result, configuration: configuration)
+        } else {
+            configuration.standardOutput(LaneFormatting.recovery(result))
+        }
+        return 0
+    }
+
+    private static func runLaneDisposalPlan(
+        udid: String,
+        json: Bool,
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> Int32 {
+        let plan = try laneService(
+            environment: environment,
+            configuration: configuration
+        ).createDisposalPlan(udid: udid, now: Date())
+        if json {
+            try writeJSON(plan, configuration: configuration)
+        } else {
+            configuration.standardOutput(LaneFormatting.lifecyclePlan(plan))
+        }
+        return 0
+    }
+
+    private static func runLaneDisposalApply(
+        planID: String,
+        udid: String,
+        json: Bool,
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> Int32 {
+        let result = try laneService(
+            environment: environment,
+            configuration: configuration
+        ).applyDisposal(planID: planID, udid: udid, now: Date())
+        if json {
+            try writeJSON(result, configuration: configuration)
+        } else {
+            configuration.standardOutput(LaneFormatting.disposal(result))
+        }
+        return 0
+    }
+
+    private static func writeLaneResult(
+        _ result: LaneAcquireResult,
+        json: Bool,
+        human: (LaneAcquireResult) -> String,
+        configuration: CLIConfiguration
+    ) throws {
+        if json {
+            try writeJSON(result, configuration: configuration)
+        } else {
+            configuration.standardOutput(human(result))
+        }
+    }
+
+    private static func writeJSON<Value: Encodable>(
+        _ value: Value,
+        configuration: CLIConfiguration
+    ) throws {
+        let data = try JSONEncoder.simLease.encode(value)
+        configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
+    }
+
+    private static func laneService(
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> any LaneServicing {
+        if let service = configuration.laneService {
+            return service
+        }
+        let metadata = try MetadataStore(paths: configuration.paths)
+        let store = try LaneStore(paths: configuration.paths)
+        #if DEBUG || SIMLEASE_TESTING
+        let xcrunURL = try environment["SIMLEASE_XCRUN_PATH"].map {
+            URL(fileURLWithPath: $0)
+        } ?? ExecutableResolver.resolve(
+            name: "xcrun",
+            path: environment["PATH"] ?? "/usr/bin:/bin",
+            excluding: URL(fileURLWithPath: "/__simlease_no_exclusion__")
+        )
+        #else
+        let xcrunURL = try ExecutableResolver.resolve(
+            name: "xcrun",
+            path: environment["PATH"] ?? "/usr/bin:/bin",
+            excluding: URL(fileURLWithPath: "/__simlease_no_exclusion__")
+        )
+        #endif
+        return LaneService(
+            paths: configuration.paths,
+            store: store,
+            provider: ProcessLaneSimulatorProvider(
+                xcrunURL: xcrunURL,
+                environment: environment
+            ),
+            coordinator: LeaseCoordinator(
+                paths: configuration.paths,
+                store: metadata,
+                timing: configuration.timing
+            ),
+            laneLocks: LaneLockCoordinator(
+                paths: configuration.paths,
+                timing: configuration.timing
+            ),
+            planStore: try LanePlanStore(paths: configuration.paths)
+        )
+    }
+
+    private static func laneIdentity(
+        arguments: [String],
+        environment: [String: String],
+        configuration: CLIConfiguration
+    ) throws -> LeaseIdentity {
+        let store = try MetadataStore(paths: configuration.paths)
+        return try LeaseIdentity.resolve(
+            environment: environment,
+            cwd: FileManager.default.currentDirectoryPath,
+            command: arguments,
+            store: store
+        )
+    }
+
     private static func cleanupService(
         arguments: [String],
         environment: [String: String],
@@ -232,6 +618,40 @@ public enum SimLeaseCLI {
             command: arguments,
             store: store
         )
+        var laneProtection = LaneProtectionSnapshot.empty
+        var forceDeferredSimulatorCleanup = false
+        if let handle = try coordinator.tryAcquire(identity: identity) {
+            do {
+                let laneStore = try LaneStore(paths: configuration.paths)
+                let state = try laneStore.readState()
+                var derivedDataPaths = Set<String>()
+                for reservation in state.reservations {
+                    let descriptor = try laneStore.readDescriptor(
+                        at: URL(fileURLWithPath: reservation.descriptorPath)
+                    )
+                    guard descriptor.laneID == reservation.laneID,
+                          descriptor.token == reservation.token,
+                          descriptor.udid == reservation.udid else {
+                        throw LaneServiceError.metadataError(
+                            "lane descriptor does not match reservation"
+                        )
+                    }
+                    derivedDataPaths.insert(descriptor.derivedDataPath)
+                }
+                laneProtection = LaneProtectionSnapshot(
+                    reservedDeviceIDs: Set(state.reservations.map(\.udid)),
+                    activeDerivedDataPaths: derivedDataPaths,
+                    activeResultBundlePaths: state.reservations.isEmpty
+                        ? []
+                        : [configuration.paths.laneResultBundles.path]
+                )
+            } catch {
+                forceDeferredSimulatorCleanup = true
+            }
+            handle.release()
+        } else {
+            forceDeferredSimulatorCleanup = true
+        }
         #if DEBUG || SIMLEASE_TESTING
         let xcrunURL: URL
         if let path = environment["SIMLEASE_XCRUN_PATH"] {
@@ -307,6 +727,10 @@ public enum SimLeaseCLI {
             homeDirectory: cleanupHome,
             temporaryDirectory: cleanupTemporary,
             workspaceRoots: workspaceRoots,
+            activePaths: Array(
+                laneProtection.activeDerivedDataPaths
+                    .union(laneProtection.activeResultBundlePaths)
+            ),
             activeUseProvider: activeUseProvider
         )
         let xcodeRoot = cleanupHome.appending(
@@ -327,7 +751,8 @@ public enum SimLeaseCLI {
                 .appendingPathComponent(
                     "Library/Developer/CoreSimulator/Devices",
                     isDirectory: true
-                )
+                ),
+            laneProtection: laneProtection
         )
         let planStore = try CleanupPlanStore(paths: configuration.paths)
         let executor = CleanupExecutor(
@@ -343,7 +768,8 @@ public enum SimLeaseCLI {
             planner: planner,
             store: planStore,
             executor: executor,
-            storageProvider: storageProvider
+            storageProvider: storageProvider,
+            forceDeferredSimulatorCleanup: forceDeferredSimulatorCleanup
         )
     }
 
@@ -403,11 +829,22 @@ public enum SimLeaseCLI {
             onWaitReport: waitReporter(configuration.standardError),
             cancellationSignal: { signals.current }
         )
+        let laneStore = try LaneStore(paths: configuration.paths)
+        let laneState = try laneStore.readState()
+        let highestReservedSlot = laneState.reservations.map(\.slot).max() ?? 0
+        let laneHandle = try LaneLockCoordinator(
+            paths: configuration.paths,
+            timing: configuration.timing
+        ).acquireAll(maxSlot: max(
+            laneState.configuration.maxActive,
+            highestReservedSlot
+        ))
         configuration.standardOutput("SimLease: acquired for \(title) (\(project)); press Ctrl-C to release\n")
         while signals.current == nil {
             Thread.sleep(forTimeInterval: 0.1)
         }
         let signal = signals.current ?? SIGINT
+        laneHandle.release()
         handle.release()
         return 128 + signal
     }
@@ -438,35 +875,138 @@ public enum SimLeaseCLI {
             ).exitCode
         }
 
-        let store = try MetadataStore(paths: configuration.paths)
+        let metadataStore = try MetadataStore(paths: configuration.paths)
         let coordinator = LeaseCoordinator(
             paths: configuration.paths,
-            store: store,
+            store: metadataStore,
             timing: configuration.timing
         )
         let identity = try LeaseIdentity.resolve(
             environment: environment,
             cwd: FileManager.default.currentDirectoryPath,
             command: invocation,
-            store: store
+            store: metadataStore
         )
-        let handle: LeaseHandle = try {
-            let signals = SignalLatch()
-            return try coordinator.acquire(
-                identity: identity,
-                onWaitReport: waitReporter(configuration.standardError),
-                cancellationSignal: { signals.current }
+        let laneStore = try LaneStore(paths: configuration.paths)
+        let descriptorURL = environment["SIMLEASE_LANE_FILE"].map {
+            URL(fileURLWithPath: $0)
+        }
+        let descriptor = try descriptorURL.map { try laneStore.readDescriptor(at: $0) }
+        let scope = try LaneCommandPolicy.validate(
+            invocation: invocation,
+            descriptor: descriptor
+        )
+
+        switch scope {
+        case .passThrough:
+            return try ChildProcessRunner.run(
+                executable: executable,
+                arguments: childArguments,
+                environment: environment
+            ).exitCode
+        case .lane(let slot):
+            guard let descriptorURL, let descriptor,
+                  descriptor.slot == slot else {
+                throw LaneServiceError.invalidLaneDescriptor(
+                    descriptorURL?.path ?? "missing SIMLEASE_LANE_FILE"
+                )
+            }
+            let service = try laneService(
+                environment: environment,
+                configuration: configuration
             )
-        }()
+            let global = try acquireGlobalLease(
+                coordinator: coordinator,
+                identity: identity,
+                configuration: configuration
+            )
+            let freshDescriptor: LaneDescriptor
+            let laneHandle: LaneLockHandle
+            do {
+                freshDescriptor = try laneStore.readDescriptor(at: descriptorURL)
+                guard freshDescriptor.slot == slot,
+                      freshDescriptor.token == descriptor.token else {
+                    throw LaneServiceError.laneOwnershipMismatch(
+                        laneID: descriptor.laneID
+                    )
+                }
+                laneHandle = try LaneLockCoordinator(
+                    paths: configuration.paths,
+                    timing: configuration.timing
+                ).acquire(slot: slot)
+                _ = try service.renew(descriptorURL: descriptorURL, now: Date())
+            } catch {
+                global.release()
+                throw error
+            }
+            global.release()
+            defer { laneHandle.release() }
+            return try runProtectedChild(
+                executable: executable,
+                arguments: childArguments,
+                environment: environment
+            )
+        case .global:
+            let global = try acquireGlobalLease(
+                coordinator: coordinator,
+                identity: identity,
+                configuration: configuration
+            )
+            defer { global.release() }
+            let state = try laneStore.readState()
+            let highestReservedSlot = state.reservations.map(\.slot).max() ?? 0
+            let allLanes = try LaneLockCoordinator(
+                paths: configuration.paths,
+                timing: configuration.timing
+            ).acquireAll(maxSlot: max(
+                state.configuration.maxActive,
+                highestReservedSlot
+            ))
+            defer { allLanes.release() }
+            if descriptor == nil,
+               let reservedTarget = state.reservations.first(where: {
+                   LaneCommandPolicy.explicitlyTargets(
+                       invocation: invocation,
+                       udid: $0.udid
+                   )
+               }) {
+                throw LaneServiceError.laneOwnershipMismatch(
+                    laneID: reservedTarget.laneID
+                )
+            }
+            return try runProtectedChild(
+                executable: executable,
+                arguments: childArguments,
+                environment: environment
+            )
+        }
+    }
+
+    private static func acquireGlobalLease(
+        coordinator: LeaseCoordinator,
+        identity: LeaseIdentity,
+        configuration: CLIConfiguration
+    ) throws -> LeaseHandle {
+        let signals = SignalLatch()
+        return try coordinator.acquire(
+            identity: identity,
+            onWaitReport: waitReporter(configuration.standardError),
+            cancellationSignal: { signals.current }
+        )
+    }
+
+    private static func runProtectedChild(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String]
+    ) throws -> Int32 {
         var childEnvironment = environment
         childEnvironment["SIMLEASE_HELD"] = "1"
-        let result = try ChildProcessRunner.run(
+        return try ChildProcessRunner.run(
             executable: executable,
-            arguments: childArguments,
+            arguments: arguments,
             environment: childEnvironment
-        )
-        handle.release()
-        return result.exitCode
+        ).exitCode
     }
 
     private static func makeCoordinator(

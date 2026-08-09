@@ -75,4 +75,86 @@ final class CommandParserTests: XCTestCase {
             XCTAssertThrowsError(try CommandParser.parse(arguments))
         }
     }
+
+    func testParsesLaneCommands() throws {
+        XCTAssertEqual(
+            try CommandParser.parse([
+                "simlease", "lane", "acquire",
+                "--project", "ExplorerDex",
+                "--device-type", "iPhone 17 Pro",
+                "--runtime", "latest",
+                "--json",
+            ]),
+            .laneAcquire(
+                project: "ExplorerDex",
+                deviceType: "iPhone 17 Pro",
+                runtime: "latest",
+                json: true
+            )
+        )
+        XCTAssertEqual(
+            try CommandParser.parse(["simlease", "lane", "status", "--json"]),
+            .laneStatus(json: true)
+        )
+        XCTAssertEqual(
+            try CommandParser.parse([
+                "simlease", "lane", "config", "--max-active", "2", "--json",
+            ]),
+            .laneConfig(maxActive: 2, json: true)
+        )
+        XCTAssertEqual(
+            try CommandParser.parse(["simlease", "lane", "release"]),
+            .laneRelease(json: false)
+        )
+        XCTAssertEqual(
+            try CommandParser.parse([
+                "simlease", "lane", "recover", "plan", "lane-1", "--json",
+            ]),
+            .laneRecoverPlan(laneID: "lane-1", json: true)
+        )
+        XCTAssertEqual(
+            try CommandParser.parse([
+                "simlease", "lane", "recover", "apply", "ABC123",
+                "--lane", "lane-1", "--json",
+            ]),
+            .laneRecoverApply(planID: "ABC123", laneID: "lane-1", json: true)
+        )
+        XCTAssertEqual(
+            try CommandParser.parse([
+                "simlease", "lane", "dispose", "plan", "UDID-1",
+            ]),
+            .laneDisposePlan(udid: "UDID-1", json: false)
+        )
+        XCTAssertEqual(
+            try CommandParser.parse([
+                "simlease", "lane", "dispose", "apply", "ABC123",
+                "--target", "UDID-1",
+            ]),
+            .laneDisposeApply(planID: "ABC123", udid: "UDID-1", json: false)
+        )
+    }
+
+    func testRejectsUnsafeLaneShapes() {
+        let invalid = [
+            ["simlease", "lane"],
+            ["simlease", "lane", "acquire", "--project", "App"],
+            ["simlease", "lane", "acquire", "--project", "App", "--project", "Other", "--device-type", "Phone", "--runtime", "latest"],
+            ["simlease", "lane", "acquire", "--project", "App", "--device-type", "Phone", "--runtime", "latest", "--json", "--json"],
+            ["simlease", "lane", "acquire", "--project", "--device-type", "Phone", "--runtime", "latest"],
+            ["simlease", "lane", "config", "--max-active", "0"],
+            ["simlease", "lane", "config", "--max-active", "2", "--max-active", "3"],
+            ["simlease", "lane", "status", "--verbose"],
+            ["simlease", "lane", "release", "extra"],
+            ["simlease", "lane", "recover"],
+            ["simlease", "lane", "recover", "plan"],
+            ["simlease", "lane", "recover", "apply", "bad", "--lane", "lane-1"],
+            ["simlease", "lane", "recover", "apply", "ABC123", "--target", "lane-1"],
+            ["simlease", "lane", "dispose", "plan", "--json"],
+            ["simlease", "lane", "dispose", "apply", "ABC123", "--target"],
+            ["simlease", "lane", "dispose", "apply", "ABC123", "--target", "UDID-1", "--target", "UDID-2"],
+        ]
+        for arguments in invalid {
+            XCTAssertThrowsError(try CommandParser.parse(arguments), "\(arguments)")
+        }
+    }
 }

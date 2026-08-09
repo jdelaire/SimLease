@@ -161,6 +161,51 @@ final class CleanupPlannerTests: XCTestCase {
         XCTAssertEqual(review.estimatedBytes, 700)
     }
 
+    func testReservedManagedDeviceIsProtectedEvenWhenOldAndShutdown() {
+        let old = now.addingTimeInterval(-31 * 86_400)
+        let review = planner.makeReview(
+            inventory: inventory(devices: [
+                device(id: "LANE-DEVICE", lastUsedAt: old),
+                device(id: "IDLE-DEVICE", lastUsedAt: old),
+            ]),
+            now: now,
+            id: "ABC123",
+            laneProtection: LaneProtectionSnapshot(
+                reservedDeviceIDs: ["LANE-DEVICE"],
+                activeDerivedDataPaths: [],
+                activeResultBundlePaths: []
+            )
+        )
+
+        XCTAssertEqual(reason(for: "LANE-DEVICE", in: review), .managedLane)
+        XCTAssertEqual(review.plan?.devices.map(\.identifier), ["IDLE-DEVICE"])
+    }
+
+    func testActiveLaneStoragePathsAreProtectedFromParentOrExactCleanup() {
+        let derived = storageTarget(id: "derived", path: "/lane/DerivedData")
+        let resultsParent = storageTarget(id: "results", path: "/lane/Results")
+        let unrelated = storageTarget(id: "other", path: "/other/cache")
+        let review = planner.makeReview(
+            inventory: nil,
+            storage: XcodeStorageInventory(
+                targets: [derived, resultsParent, unrelated],
+                protected: []
+            ),
+            deferred: [],
+            now: now,
+            id: "ABC123",
+            laneProtection: LaneProtectionSnapshot(
+                reservedDeviceIDs: [],
+                activeDerivedDataPaths: ["/lane/DerivedData"],
+                activeResultBundlePaths: ["/lane/Results/run.xcresult"]
+            )
+        )
+
+        XCTAssertEqual(review.plan?.storage.map(\.identifier), ["other"])
+        XCTAssertEqual(reason(for: "derived", in: review), .managedLane)
+        XCTAssertEqual(reason(for: "results", in: review), .managedLane)
+    }
+
     private var planner: CleanupPlanner {
         CleanupPlanner(devicesRoot: devicesRoot)
     }
@@ -212,6 +257,19 @@ final class CleanupPlannerTests: XCTestCase {
             outdatedRuntimeIDs: outdatedRuntimeIDs,
             hasActiveXcodeTests: hasActiveXcodeTests,
             availableBytes: 5_000
+        )
+    }
+
+    private func storageTarget(id: String, path: String) -> CleanupTarget {
+        CleanupTarget(
+            kind: .filesystem,
+            identifier: id,
+            name: id,
+            category: .derivedData,
+            path: path,
+            runtimeIdentifier: "",
+            lastUsedAt: now.addingTimeInterval(-31 * 86_400),
+            sizeBytes: 100
         )
     }
 

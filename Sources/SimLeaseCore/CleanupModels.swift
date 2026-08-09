@@ -97,6 +97,29 @@ public enum CleanupProtectionReason: String, Codable, Equatable, Sendable {
     case changedSinceReview
     case invalidCleanupPath
     case simulatorLeased
+    case managedLane
+}
+
+public struct LaneProtectionSnapshot: Equatable, Sendable {
+    public let reservedDeviceIDs: Set<String>
+    public let activeDerivedDataPaths: Set<String>
+    public let activeResultBundlePaths: Set<String>
+
+    public init(
+        reservedDeviceIDs: Set<String>,
+        activeDerivedDataPaths: Set<String>,
+        activeResultBundlePaths: Set<String>
+    ) {
+        self.reservedDeviceIDs = reservedDeviceIDs
+        self.activeDerivedDataPaths = activeDerivedDataPaths
+        self.activeResultBundlePaths = activeResultBundlePaths
+    }
+
+    public static let empty = LaneProtectionSnapshot(
+        reservedDeviceIDs: [],
+        activeDerivedDataPaths: [],
+        activeResultBundlePaths: []
+    )
 }
 
 public struct ProtectedCleanupTarget: Codable, Equatable, Sendable {

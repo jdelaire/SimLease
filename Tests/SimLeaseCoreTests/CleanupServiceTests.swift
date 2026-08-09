@@ -102,6 +102,26 @@ final class CleanupServiceTests: XCTestCase {
         )
         handle.release()
     }
+
+    func testUnavailableLaneMetadataDefersSimulatorPlanningAndApply() throws {
+        let fixture = try ServiceFixture(now: now)
+        fixture.storageProvider.inventoryValue = XcodeStorageInventory(
+            targets: [fixture.storageTarget()],
+            protected: []
+        )
+        let review = try fixture.service(
+            forceDeferredSimulatorCleanup: true
+        ).createPlan()
+        XCTAssertEqual(review.deferred, [.simulatorDevice, .simulatorRuntime])
+        XCTAssertEqual(fixture.provider.inventoryCallCount, 0)
+
+        try fixture.store.save(fixture.plan(id: "DEF456"))
+        let result = try fixture.service(
+            forceDeferredSimulatorCleanup: true
+        ).apply(planID: "DEF456")
+        XCTAssertEqual(result.items.first?.outcome, .skipped)
+        XCTAssertEqual(fixture.provider.inventoryCallCount, 0)
+    }
 }
 
 private final class ServiceFixture {
@@ -153,7 +173,8 @@ private final class ServiceFixture {
     }
 
     func service(
-        idGenerator: @escaping @Sendable () -> String = { "ABC123" }
+        idGenerator: @escaping @Sendable () -> String = { "ABC123" },
+        forceDeferredSimulatorCleanup: Bool = false
     ) -> CleanupService {
         let planner = CleanupPlanner(
             devicesRoot: URL(fileURLWithPath: "/Devices")
@@ -171,6 +192,7 @@ private final class ServiceFixture {
                 fileOperator: fileOperator
             ),
             storageProvider: storageProvider,
+            forceDeferredSimulatorCleanup: forceDeferredSimulatorCleanup,
             now: { [now] in now },
             idGenerator: idGenerator
         )

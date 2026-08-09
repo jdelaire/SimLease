@@ -8,6 +8,14 @@ enum ParsedCommand: Equatable {
     case hold(title: String, project: String)
     case cleanPlan(json: Bool)
     case cleanApply(id: String, targetIDs: [String], json: Bool)
+    case laneAcquire(project: String, deviceType: String, runtime: String, json: Bool)
+    case laneStatus(json: Bool)
+    case laneConfig(maxActive: Int?, json: Bool)
+    case laneRelease(json: Bool)
+    case laneRecoverPlan(laneID: String, json: Bool)
+    case laneRecoverApply(planID: String, laneID: String, json: Bool)
+    case laneDisposePlan(udid: String, json: Bool)
+    case laneDisposeApply(planID: String, udid: String, json: Bool)
     case shim(arguments: [String])
 }
 
@@ -124,9 +132,172 @@ enum CommandParser {
             default:
                 throw CommandParserError.usage
             }
+        case "lane":
+            return try parseLane(Array(arguments.dropFirst(2)))
         default:
             throw CommandParserError.usage
         }
+    }
+
+    private static func parseLane(_ arguments: [String]) throws -> ParsedCommand {
+        guard let subcommand = arguments.first else {
+            throw CommandParserError.usage
+        }
+        switch subcommand {
+        case "acquire":
+            var project: String?
+            var deviceType: String?
+            var runtime: String?
+            var json = false
+            var index = 1
+            while index < arguments.count {
+                switch arguments[index] {
+                case "--project":
+                    project = try parseUniqueValue(arguments, index: &index, current: project)
+                case "--device-type":
+                    deviceType = try parseUniqueValue(arguments, index: &index, current: deviceType)
+                case "--runtime":
+                    runtime = try parseUniqueValue(arguments, index: &index, current: runtime)
+                case "--json":
+                    guard !json else { throw CommandParserError.usage }
+                    json = true
+                    index += 1
+                default:
+                    throw CommandParserError.usage
+                }
+            }
+            guard let project, let deviceType, let runtime else {
+                throw CommandParserError.usage
+            }
+            return .laneAcquire(
+                project: project,
+                deviceType: deviceType,
+                runtime: runtime,
+                json: json
+            )
+        case "status":
+            let json = try parseOptionalJSON(Array(arguments.dropFirst()))
+            return .laneStatus(json: json)
+        case "config":
+            var maxActive: Int?
+            var json = false
+            var index = 1
+            while index < arguments.count {
+                switch arguments[index] {
+                case "--max-active":
+                    guard maxActive == nil,
+                          index + 1 < arguments.count,
+                          let value = Int(arguments[index + 1]),
+                          value > 0 else {
+                        throw CommandParserError.usage
+                    }
+                    maxActive = value
+                    index += 2
+                case "--json":
+                    guard !json else { throw CommandParserError.usage }
+                    json = true
+                    index += 1
+                default:
+                    throw CommandParserError.usage
+                }
+            }
+            return .laneConfig(maxActive: maxActive, json: json)
+        case "release":
+            let json = try parseOptionalJSON(Array(arguments.dropFirst()))
+            return .laneRelease(json: json)
+        case "recover":
+            return try parseLaneLifecycle(
+                Array(arguments.dropFirst()),
+                targetFlag: "--lane",
+                makePlan: { .laneRecoverPlan(laneID: $0, json: $1) },
+                makeApply: {
+                    .laneRecoverApply(planID: $0, laneID: $1, json: $2)
+                }
+            )
+        case "dispose":
+            return try parseLaneLifecycle(
+                Array(arguments.dropFirst()),
+                targetFlag: "--target",
+                makePlan: { .laneDisposePlan(udid: $0, json: $1) },
+                makeApply: {
+                    .laneDisposeApply(planID: $0, udid: $1, json: $2)
+                }
+            )
+        default:
+            throw CommandParserError.usage
+        }
+    }
+
+    private static func parseLaneLifecycle(
+        _ arguments: [String],
+        targetFlag: String,
+        makePlan: (String, Bool) -> ParsedCommand,
+        makeApply: (String, String, Bool) -> ParsedCommand
+    ) throws -> ParsedCommand {
+        guard let action = arguments.first else {
+            throw CommandParserError.usage
+        }
+        switch action {
+        case "plan":
+            guard arguments.count == 2 || arguments.count == 3,
+                  !arguments[1].isEmpty,
+                  !arguments[1].hasPrefix("--") else {
+                throw CommandParserError.usage
+            }
+            let json = try parseOptionalJSON(Array(arguments.dropFirst(2)))
+            return makePlan(arguments[1], json)
+        case "apply":
+            guard arguments.count >= 4,
+                  validPlanID(arguments[1]) else {
+                throw CommandParserError.usage
+            }
+            var target: String?
+            var json = false
+            var index = 2
+            while index < arguments.count {
+                switch arguments[index] {
+                case targetFlag:
+                    target = try parseUniqueValue(
+                        arguments,
+                        index: &index,
+                        current: target
+                    )
+                case "--json":
+                    guard !json else { throw CommandParserError.usage }
+                    json = true
+                    index += 1
+                default:
+                    throw CommandParserError.usage
+                }
+            }
+            guard let target else { throw CommandParserError.usage }
+            return makeApply(arguments[1], target, json)
+        default:
+            throw CommandParserError.usage
+        }
+    }
+
+    private static func parseUniqueValue(
+        _ arguments: [String],
+        index: inout Int,
+        current: String?
+    ) throws -> String {
+        guard current == nil,
+              index + 1 < arguments.count,
+              !arguments[index + 1].isEmpty,
+              !arguments[index + 1].hasPrefix("--") else {
+            throw CommandParserError.usage
+        }
+        let value = arguments[index + 1]
+        index += 2
+        return value
+    }
+
+    private static func parseOptionalJSON(_ arguments: [String]) throws -> Bool {
+        guard arguments.isEmpty || arguments == ["--json"] else {
+            throw CommandParserError.usage
+        }
+        return !arguments.isEmpty
     }
 
     private static func validPlanID(_ id: String) -> Bool {

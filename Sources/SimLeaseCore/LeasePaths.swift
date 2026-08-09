@@ -34,4 +34,32 @@ public struct LeasePaths: Equatable, Sendable {
     public var cleanupPlans: URL {
         root.appendingPathComponent("cleanup-plans", isDirectory: true)
     }
+
+    public var laneRoot: URL {
+        root.appendingPathComponent("lanes", isDirectory: true)
+    }
+
+    public var laneState: URL {
+        laneRoot.appendingPathComponent("state.json")
+    }
+
+    public var laneDescriptors: URL {
+        laneRoot.appendingPathComponent("descriptors", isDirectory: true)
+    }
+
+    public var lanePlans: URL {
+        laneRoot.appendingPathComponent("plans", isDirectory: true)
+    }
+
+    public var laneDerivedData: URL {
+        laneRoot.appendingPathComponent("DerivedData", isDirectory: true)
+    }
+
+    public var laneResultBundles: URL {
+        laneRoot.appendingPathComponent("ResultBundles", isDirectory: true)
+    }
+
+    public func laneCommandLock(slot: Int) -> URL {
+        laneRoot.appendingPathComponent("locks/lane-\(slot).lock")
+    }
 }

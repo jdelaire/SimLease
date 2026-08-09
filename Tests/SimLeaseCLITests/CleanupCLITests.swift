@@ -165,7 +165,7 @@ final class CleanupCLITests: XCTestCase {
         XCTAssertEqual(fixture.run(["simlease"]), 64)
         XCTAssertEqual(
             fixture.errors.value,
-            "Usage: simlease <status|name|hold|clean|update|--version>\n"
+            "Usage: simlease <status|name|hold|lane|clean|update|--version>\n"
         )
     }
 }

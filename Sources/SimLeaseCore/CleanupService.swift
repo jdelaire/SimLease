@@ -22,6 +22,7 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
     private let store: CleanupPlanStore
     private let executor: CleanupExecutor
     private let storageProvider: (any XcodeStorageInventoryProviding)?
+    private let forceDeferredSimulatorCleanup: Bool
     private let now: @Sendable () -> Date
     private let idGenerator: @Sendable () -> String
 
@@ -33,6 +34,7 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
         store: CleanupPlanStore,
         executor: CleanupExecutor,
         storageProvider: (any XcodeStorageInventoryProviding)? = nil,
+        forceDeferredSimulatorCleanup: Bool = false,
         now: @escaping @Sendable () -> Date = Date.init,
         idGenerator: @escaping @Sendable () -> String = {
             CleanupService.makeID()
@@ -45,6 +47,7 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
         self.store = store
         self.executor = executor
         self.storageProvider = storageProvider
+        self.forceDeferredSimulatorCleanup = forceDeferredSimulatorCleanup
         self.now = now
         self.idGenerator = idGenerator
     }
@@ -57,7 +60,9 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
         var simulatorInventory: CleanupInventory?
         var deferred = [CleanupCategory]()
         let status = try coordinator.status()
-        if status.state == .free,
+        if forceDeferredSimulatorCleanup {
+            deferred = [.simulatorDevice, .simulatorRuntime]
+        } else if status.state == .free,
            let handle = try coordinator.tryAcquire(identity: identity) {
             defer { handle.release() }
             do {
@@ -121,7 +126,18 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
         ).intersection(selection)
         var deferredItems = [CleanupItemResult]()
         var handle: LeaseHandle?
-        if !simulatorIDs.isEmpty {
+        if forceDeferredSimulatorCleanup {
+            selection.subtract(simulatorIDs)
+            deferredItems = plan.targets
+                .filter { simulatorIDs.contains($0.identifier) }
+                .map {
+                    CleanupItemResult(
+                        target: $0,
+                        outcome: .skipped,
+                        message: "Managed lane metadata is unavailable"
+                    )
+                }
+        } else if !simulatorIDs.isEmpty {
             handle = try coordinator.tryAcquire(identity: identity)
             if handle == nil {
                 selection.subtract(simulatorIDs)

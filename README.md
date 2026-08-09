@@ -1,8 +1,10 @@
 # SimLease
 
 SimLease coordinates shared iOS Simulator access across agents and terminal
-sessions. Its command shims acquire one atomic lease before simulator work,
-while the menu-bar app shows the owner and every waiting thread.
+sessions. Managed lanes allow a small, configurable number of isolated
+simulators to run concurrently. Command shims serialize work within one lane
+and preserve global exclusion for CoreSimulator mutations and legacy tools.
+The menu-bar app shows the global owner and every waiting thread.
 
 Storage cleanup is separate and always explicit. SimLease reviews stale
 simulators, rebuildable Xcode caches, and guarded artifacts, then applies only
@@ -51,6 +53,60 @@ simlease status --json
 The check is advisory. Normal `xcodebuild`, `xcrun`, and `axe` lookup resolves
 through SimLease shims, which acquire the lease atomically. Do not bypass the
 shims with absolute paths.
+
+For concurrent automated work, acquire a managed lane and use every returned
+target and path exactly:
+
+```sh
+lane_json="$(mktemp)"
+simlease lane acquire --project Project --device-type "iPhone 17 Pro" --runtime latest --json >"$lane_json"
+export SIMLEASE_LANE_FILE="$(plutil -extract environment.SIMLEASE_LANE_FILE raw -o - "$lane_json")"
+lane_udid="$(plutil -extract lane.udid raw -o - "$lane_json")"
+lane_derived_data="$(plutil -extract derivedDataPath raw -o - "$lane_json")"
+lane_result_bundle="$(plutil -extract resultBundlePath raw -o - "$lane_json")"
+xcodebuild test -scheme App -destination "platform=iOS Simulator,id=$lane_udid" -derivedDataPath "$lane_derived_data" -resultBundlePath "$lane_result_bundle"
+simlease lane release
+rm -f "$lane_json"
+```
+
+The default capacity is two lanes and can be changed explicitly:
+
+```sh
+simlease lane status
+simlease lane config --max-active 2
+```
+
+Each lane has one managed simulator UUID and one project/lane DerivedData
+directory. AXe commands must include `--udid "$lane_udid"`; device-scoped
+`simctl` commands must name that same UUID. SimLease rejects missing, wrong, or
+ambiguous targets instead of rewriting commands. Different lanes may overlap,
+but commands in one lane serialize.
+
+Release shuts down the exact managed simulator and returns it to a reusable
+idle pool. It does not delete the simulator or DerivedData. Abandoned lanes
+are never force-released: after two hours without renewed command activity,
+recovery remains an explicit two-step review and apply operation:
+
+```sh
+simlease lane recover plan lane-1
+simlease lane recover apply ABC123 --lane lane-1
+```
+
+Deleting an idle managed simulator is also separate and two-step:
+
+```sh
+simlease lane dispose plan SIMULATOR-UDID
+simlease lane dispose apply ABC123 --target SIMULATOR-UDID
+```
+
+Both plans expire after ten minutes, are single-use, and revalidate the exact
+UUID, runtime, device type, state, and data path before changing anything.
+Foreign simulators are never disposal targets.
+
+Commands without `SIMLEASE_LANE_FILE` retain legacy global-exclusive behavior.
+Manual Xcode holds also wait for every active lane. Build, Simulator runtime,
+and physical-device proof remain separate gates; success on one is not proof
+of another.
 
 Name the current Codex thread so other waiters can identify it:
 

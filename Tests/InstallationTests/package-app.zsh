@@ -21,8 +21,8 @@ if "$app/Contents/Resources/bin/simlease" clean 2>"$usage_file"; then
   rm "$usage_file"
   fail "incomplete clean command unexpectedly succeeded"
 fi
-grep -q 'status|name|hold|clean' "$usage_file" \
-  || fail "bundled CLI usage omits clean"
+grep -q 'status|name|hold|lane|clean' "$usage_file" \
+  || fail "bundled CLI usage omits lane"
 rm "$usage_file"
 
 print -- "package-app: PASS"
