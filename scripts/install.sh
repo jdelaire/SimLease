@@ -103,7 +103,7 @@ stop_installed_app() {
     while [[ "$executable" == ' '* ]]; do
       executable="${executable# }"
     done
-    [[ "$executable" == "$installed_executable" ]] || continue
+    [[ "$executable" == "${installed_executable:t}" ]] || continue
     kill -TERM "$candidate_pid" || return 1
     terminated_pids+=("$candidate_pid")
   done < <(

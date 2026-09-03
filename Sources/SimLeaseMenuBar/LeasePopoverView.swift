@@ -42,6 +42,7 @@ func performQuitAction(
 struct LeasePopoverView: View {
     @ObservedObject var viewModel: MenuViewModel
     @Environment(\.openWindow) private var openWindow
+    @State private var waiterFilter = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -130,29 +131,79 @@ struct LeasePopoverView: View {
 
             Divider()
 
-            Text("Waiting · \(viewModel.state.waiters.count)")
-                .font(.subheadline.weight(.semibold))
+            laneSection
 
-            if !viewModel.state.waiters.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(viewModel.state.waiters) { waiter in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(waiter.name)
+            waitingSection
+        }
+    }
+
+    @ViewBuilder
+    private var laneSection: some View {
+        if !viewModel.state.lanes.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Lanes · \(viewModel.state.lanes.count)")
+                    .font(.subheadline.weight(.semibold))
+                ForEach(viewModel.state.lanes) { lane in
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(
+                            systemName: lane.recoveryRequired
+                                ? "exclamationmark.circle.fill" : "circle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(
+                            lane.recoveryRequired ? .red : .green
+                        )
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(lane.name)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Text(
-                                "\(waiter.projectAndSource) · \(waiter.elapsed)"
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                            Text("\(lane.id) · \(lane.detail) · \(lane.elapsed)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .help(waiterHelp(waiter))
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(waiter.name)
-                        .accessibilityValue(waiterHelp(waiter))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help("Lane \(lane.id)\nUDID: \(lane.udid)")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(lane.name), \(lane.id)")
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Active lanes")
+
+            Divider()
+        }
+    }
+
+    private var waitingSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Waiting · \(viewModel.state.waiters.count)")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if viewModel.state.waiters.count > 3 {
+                    TextField("Filter", text: $waiterFilter)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .frame(width: 110)
+                        .accessibilityLabel("Filter waiting tasks")
+                }
+            }
+
+            if viewModel.state.waiters.isEmpty {
+                Text("No tasks waiting.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if filteredWaiters.isEmpty {
+                Text("No waiters match filter.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(filteredWaiters) { waiter in
+                        WaiterRow(waiter: waiter)
                     }
                 }
                 .accessibilityElement(children: .contain)
@@ -161,16 +212,16 @@ struct LeasePopoverView: View {
         }
     }
 
-    private func waiterHelp(_ waiter: WaiterDisplayItem) -> String {
-        var details = [
-            "\(waiter.projectAndSource) · \(waiter.elapsed)",
-            waiter.command,
-        ]
-        if let threadID = waiter.threadID {
-            details.append("Thread: \(threadID)")
+    private var filteredWaiters: [WaiterDisplayItem] {
+        let query = waiterFilter.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !query.isEmpty else { return viewModel.state.waiters }
+        return viewModel.state.waiters.filter {
+            $0.name.localizedCaseInsensitiveContains(query)
+                || $0.projectAndSource.localizedCaseInsensitiveContains(query)
+                || $0.command.localizedCaseInsensitiveContains(query)
         }
-        details.append("Path: \(waiter.cwd)")
-        return details.joined(separator: "\n")
     }
 
     private var cleanupAction: some View {
@@ -227,5 +278,39 @@ struct LeasePopoverView: View {
         case .leased: .orange
         case .metadataError: .red
         }
+    }
+}
+
+private struct WaiterRow: View {
+    let waiter: WaiterDisplayItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(waiter.name)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text("\(waiter.projectAndSource) · \(waiter.elapsed)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(waiterHelp(waiter))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(waiter.name)
+        .accessibilityValue(waiterHelp(waiter))
+    }
+
+    private func waiterHelp(_ waiter: WaiterDisplayItem) -> String {
+        var details = [
+            "\(waiter.projectAndSource) · \(waiter.elapsed)",
+            waiter.command,
+        ]
+        if let threadID = waiter.threadID {
+            details.append("Thread: \(threadID)")
+        }
+        details.append("Path: \(waiter.cwd)")
+        return details.joined(separator: "\n")
     }
 }

@@ -10,15 +10,6 @@ public protocol MenuCleanupProviding: Sendable {
     ) async throws -> CleanupResult
 }
 
-public extension MenuCleanupProviding {
-    func apply(
-        id: String,
-        selectedTargetIDs: Set<String>
-    ) async throws -> CleanupResult {
-        try await apply(id: id)
-    }
-}
-
 public enum MenuCleanupError: LocalizedError, Equatable {
     case commandFailed(code: Int32, stderr: String)
     case invalidJSON
@@ -168,6 +159,22 @@ public struct PreviewCleanupProvider: MenuCleanupProviding {
     public func apply(id: String) async throws -> CleanupResult {
         guard let result else { throw PreviewCleanupError() }
         return result
+    }
+
+    public func apply(
+        id: String,
+        selectedTargetIDs: Set<String>
+    ) async throws -> CleanupResult {
+        guard let result else { throw PreviewCleanupError() }
+        return CleanupResult(
+            planID: result.planID,
+            items: result.items.filter {
+                selectedTargetIDs.contains($0.target.identifier)
+            },
+            estimatedBytes: result.estimatedBytes,
+            availableBytesBefore: result.availableBytesBefore,
+            availableBytesAfter: result.availableBytesAfter
+        )
     }
 
     private static func fixture(

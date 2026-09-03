@@ -4,7 +4,7 @@ SimLease coordinates shared iOS Simulator access across agents and terminal
 sessions. Managed lanes allow a small, configurable number of isolated
 simulators to run concurrently. Command shims serialize work within one lane
 and preserve global exclusion for CoreSimulator mutations and legacy tools.
-The menu-bar app shows the global owner and every waiting thread.
+The menu-bar app shows the global owner, every waiting thread, and active lanes.
 
 Storage cleanup is separate and always explicit. SimLease reviews stale
 simulators, rebuildable Xcode caches, and guarded artifacts, then applies only
@@ -53,6 +53,18 @@ simlease status --json
 The check is advisory. Normal `xcodebuild`, `xcrun`, and `axe` lookup resolves
 through SimLease shims, which acquire the lease atomically. Do not bypass the
 shims with absolute paths.
+
+Check shim health when simulator commands behave oddly:
+
+```sh
+simlease doctor
+```
+
+Wait for the lease instead of polling `status`:
+
+```sh
+simlease wait --timeout 300
+```
 
 For concurrent automated work, acquire a managed lane and use every returned
 target and path exactly:

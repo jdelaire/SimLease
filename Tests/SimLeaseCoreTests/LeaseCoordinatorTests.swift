@@ -135,6 +135,80 @@ final class LeaseCoordinatorTests: XCTestCase {
             ["101-waiter", "104-waiter"]
         )
     }
+
+    func testStatusIncludesLaneSummaries() throws {
+        let paths = LeasePaths(
+            root: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        )
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let store = try MetadataStore(paths: paths)
+        let laneStore = try LaneStore(paths: paths)
+        let now = Date()
+        try laneStore.writeState(LanePersistentState(
+            configuration: LaneConfiguration(maxActive: 2),
+            reservations: [LaneReservation(
+                laneID: "lane-1",
+                slot: 1,
+                token: "TOKEN-1",
+                project: "ExplorerDex",
+                threadID: "thread-1",
+                threadTitle: "Simulator validation",
+                udid: "UDID-1",
+                descriptorPath: "/tmp/lane.json",
+                generation: 1,
+                acquiredAt: now,
+                lastActivityAt: now,
+                expiresAt: now.addingTimeInterval(3_600)
+            )],
+            managedDevices: [ManagedSimulatorRecord(
+                udid: "UDID-1",
+                name: "[SimLease] ExplorerDex 1",
+                deviceTypeIdentifier: "TYPE-1",
+                deviceTypeName: "iPhone 17 Pro",
+                runtimeIdentifier: "RUNTIME-1",
+                runtimeName: "iOS 27.0",
+                expectedDataPath: "/tmp/Devices/UDID-1",
+                createdAt: now,
+                lifecycle: .reserved
+            )]
+        ))
+        let coordinator = LeaseCoordinator(
+            paths: paths,
+            store: store,
+            laneStore: laneStore
+        )
+
+        let status = try coordinator.status()
+
+        XCTAssertEqual(status.state, .free)
+        XCTAssertEqual(status.lanes.count, 1)
+        XCTAssertEqual(status.lanes[0].laneID, "lane-1")
+        XCTAssertEqual(status.lanes[0].deviceTypeName, "iPhone 17 Pro")
+        XCTAssertEqual(status.lanes[0].runtimeName, "iOS 27.0")
+        XCTAssertFalse(status.lanes[0].recoveryRequired)
+    }
+
+    func testStatusLanesEmptyWhenLaneStateCorrupt() throws {
+        let paths = LeasePaths(
+            root: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        )
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let store = try MetadataStore(paths: paths)
+        let laneStore = try LaneStore(paths: paths)
+        try Data("bad-json".utf8).write(to: paths.laneState)
+        let coordinator = LeaseCoordinator(
+            paths: paths,
+            store: store,
+            laneStore: laneStore
+        )
+
+        let status = try coordinator.status()
+
+        XCTAssertEqual(status.state, .free)
+        XCTAssertEqual(status.lanes, [])
+    }
 }
 
 private final class ProcessLeaseFixture {

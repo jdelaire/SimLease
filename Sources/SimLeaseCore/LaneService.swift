@@ -8,6 +8,8 @@ public protocol LaneServicing: Sendable {
     ) throws -> LaneAcquireResult
     func status(now: Date) throws -> LaneStatusReport
     func configure(maxActive: Int?) throws -> LaneConfigurationReport
+    /// Renews a lane without taking locks. Callers must already hold the
+    /// global lease and the lane slot lock (the shim command path does).
     func renew(descriptorURL: URL, now: Date) throws -> LaneDescriptor
     func release(
         descriptorURL: URL,
@@ -422,7 +424,7 @@ public final class LaneService: LaneServicing, @unchecked Sendable {
             maxSlot: maximumSlot(in: initialState)
         )
         defer { allLanes.release() }
-        let plan = try planStore.consume(id: planID, now: now)
+        let plan = try planStore.peek(id: planID, now: now)
         guard plan.kind == .recovery,
               plan.laneID == laneID else {
             throw LaneServiceError.targetMismatch(
@@ -458,14 +460,20 @@ public final class LaneService: LaneServicing, @unchecked Sendable {
         guard makeFingerprint(device: device, managed: managed) == plan.fingerprint else {
             throw LaneServiceError.recoveryRequired(laneID: laneID)
         }
+        _ = try planStore.consume(id: planID, now: now)
         if let device,
            device.state.caseInsensitiveCompare("Shutdown") != .orderedSame {
             try provider.shutdownDevice(udid: device.udid)
         }
         state.reservations.remove(at: reservationIndex)
-        state.managedDevices[managedIndex].lifecycle = device == nil
-            ? .recoveryRequired
-            : .idle
+        let resultingState: String
+        if device == nil {
+            state.managedDevices.remove(at: managedIndex)
+            resultingState = "removed"
+        } else {
+            state.managedDevices[managedIndex].lifecycle = .idle
+            resultingState = ManagedSimulatorLifecycle.idle.rawValue
+        }
         try store.writeState(state)
         try? store.removeDescriptor(
             at: URL(fileURLWithPath: reservation.descriptorPath)
@@ -473,7 +481,7 @@ public final class LaneService: LaneServicing, @unchecked Sendable {
         return LaneReleaseResult(
             laneID: laneID,
             udid: reservation.udid,
-            state: state.managedDevices[managedIndex].lifecycle.rawValue,
+            state: resultingState,
             disposalPlanCommand: [
                 "simlease", "lane", "dispose", "plan", reservation.udid,
             ]
@@ -488,15 +496,21 @@ public final class LaneService: LaneServicing, @unchecked Sendable {
         guard !state.reservations.contains(where: { $0.udid == udid }),
               let managed = state.managedDevices.first(where: {
                   $0.udid == udid && $0.lifecycle == .idle
-              }),
-              let device = try provider.inventory().devices.first(where: {
-                  $0.udid == udid
-              }),
-              fingerprintMatchesManaged(device, managed: managed),
-              device.state.caseInsensitiveCompare("Shutdown") == .orderedSame else {
+              }) else {
             throw LaneServiceError.metadataError(
-                "disposal requires an idle, unreserved, shutdown managed simulator"
+                "disposal requires an idle, unreserved managed simulator"
             )
+        }
+        let device = try provider.inventory().devices.first(where: {
+            $0.udid == udid
+        })
+        if let device {
+            guard fingerprintMatchesManaged(device, managed: managed),
+                  device.state.caseInsensitiveCompare("Shutdown") == .orderedSame else {
+                throw LaneServiceError.metadataError(
+                    "disposal requires an idle, unreserved, shutdown managed simulator"
+                )
+            }
         }
         let plan = LaneLifecyclePlan(
             id: planIDGenerator(),
@@ -528,7 +542,7 @@ public final class LaneService: LaneServicing, @unchecked Sendable {
             maxSlot: maximumSlot(in: initialState)
         )
         defer { allLanes.release() }
-        let plan = try planStore.consume(id: planID, now: now)
+        let plan = try planStore.peek(id: planID, now: now)
         guard plan.kind == .disposal,
               plan.fingerprint.udid == udid else {
             throw LaneServiceError.targetMismatch(
@@ -546,17 +560,26 @@ public final class LaneService: LaneServicing, @unchecked Sendable {
             )
         }
         let managed = state.managedDevices[managedIndex]
-        guard let device = try provider.inventory().devices.first(where: {
+        let device = try provider.inventory().devices.first(where: {
             $0.udid == udid
-        }),
-              fingerprintMatchesManaged(device, managed: managed),
-              makeFingerprint(device: device, managed: managed) == plan.fingerprint,
-              device.state.caseInsensitiveCompare("Shutdown") == .orderedSame else {
+        })
+        if let device {
+            guard fingerprintMatchesManaged(device, managed: managed),
+                  makeFingerprint(device: device, managed: managed) == plan.fingerprint,
+                  device.state.caseInsensitiveCompare("Shutdown") == .orderedSame else {
+                throw LaneServiceError.metadataError(
+                    "managed simulator changed after disposal review"
+                )
+            }
+        } else if makeFingerprint(device: nil, managed: managed) != plan.fingerprint {
             throw LaneServiceError.metadataError(
                 "managed simulator changed after disposal review"
             )
         }
-        try provider.deleteDevice(udid: udid)
+        _ = try planStore.consume(id: planID, now: now)
+        if device != nil {
+            try provider.deleteDevice(udid: udid)
+        }
         state.managedDevices.remove(at: managedIndex)
         try store.writeState(state)
         return LaneDisposalResult(planID: planID, udid: udid, deleted: true)

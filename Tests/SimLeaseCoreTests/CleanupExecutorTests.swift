@@ -254,6 +254,115 @@ final class CleanupExecutorTests: XCTestCase {
         XCTAssertTrue(files.calls.isEmpty)
     }
 
+    func testNewlyReservedLaneDeviceSkippedAtApply() throws {
+        let provider = SequenceCleanupProvider(inventories: [
+            .success(inventory(deviceIDs: ["DEVICE-1"])),
+        ])
+        let executor = CleanupExecutor(
+            provider: provider,
+            planner: CleanupPlanner(
+                devicesRoot: URL(fileURLWithPath: "/Devices")
+            ),
+            laneProtectionProvider: {
+                LaneProtectionSnapshot(
+                    reservedDeviceIDs: ["DEVICE-1"],
+                    activeDerivedDataPaths: [],
+                    activeResultBundlePaths: []
+                )
+            }
+        )
+
+        let result = try executor.apply(
+            plan: makePlan(deviceIDs: ["DEVICE-1"]),
+            now: now
+        )
+
+        XCTAssertEqual(result.items.map(\.outcome), [.skipped])
+        XCTAssertEqual(
+            result.items.first?.message,
+            "Reserved by a managed simulator lane since review"
+        )
+        XCTAssertFalse(provider.calls.contains(.deleteDevice("DEVICE-1")))
+    }
+
+    func testLaneProtectionFailureSkipsEveryTarget() throws {
+        let provider = SequenceCleanupProvider(inventories: [
+            .success(inventory(deviceIDs: ["DEVICE-1"])),
+        ])
+        let executor = CleanupExecutor(
+            provider: provider,
+            planner: CleanupPlanner(
+                devicesRoot: URL(fileURLWithPath: "/Devices")
+            ),
+            laneProtectionProvider: { throw TestError.inventory }
+        )
+
+        let result = try executor.apply(
+            plan: makePlan(deviceIDs: ["DEVICE-1"]),
+            now: now
+        )
+
+        XCTAssertEqual(result.items.map(\.outcome), [.skipped])
+        XCTAssertEqual(
+            result.items.first?.message,
+            "Lane protection revalidation failed"
+        )
+        XCTAssertFalse(provider.calls.contains(.deleteDevice("DEVICE-1")))
+    }
+
+    func testLaneActiveStoragePathSkippedAtApply() throws {
+        let planned = storageTarget(
+            id: "derived",
+            path: "/Lanes/Proj/lane-1",
+            action: .deletePermanently
+        )
+        let storage = SequenceStorageProvider(
+            inventories: [
+                XcodeStorageInventory(targets: [planned], protected: []),
+            ]
+        )
+        let files = RecordingFileOperator()
+        let executor = CleanupExecutor(
+            provider: SequenceCleanupProvider(inventories: []),
+            planner: CleanupPlanner(
+                devicesRoot: URL(fileURLWithPath: "/Devices")
+            ),
+            storageProvider: storage,
+            fileOperator: files,
+            laneProtectionProvider: {
+                LaneProtectionSnapshot(
+                    reservedDeviceIDs: [],
+                    activeDerivedDataPaths: ["/Lanes/Proj/lane-1"],
+                    activeResultBundlePaths: []
+                )
+            }
+        )
+        let plan = CleanupPlan(
+            id: "ABC123",
+            createdAt: now,
+            expiresAt: now.addingTimeInterval(600),
+            devices: [],
+            runtimes: [],
+            storage: [planned],
+            protected: [],
+            estimatedBytes: 100,
+            availableBytesBefore: nil
+        )
+
+        let result = try executor.apply(
+            plan: plan,
+            selectedTargetIDs: ["derived"],
+            now: now
+        )
+
+        XCTAssertEqual(result.items.map(\.outcome), [.skipped])
+        XCTAssertEqual(
+            result.items.first?.message,
+            "A managed simulator lane uses this path"
+        )
+        XCTAssertTrue(files.calls.isEmpty)
+    }
+
     private func executor(_ provider: SequenceCleanupProvider) -> CleanupExecutor {
         CleanupExecutor(
             provider: provider,

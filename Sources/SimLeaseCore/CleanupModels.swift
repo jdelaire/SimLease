@@ -120,6 +120,24 @@ public struct LaneProtectionSnapshot: Equatable, Sendable {
         activeDerivedDataPaths: [],
         activeResultBundlePaths: []
     )
+
+    public func protects(path: String) -> Bool {
+        let candidate = URL(fileURLWithPath: path)
+            .standardizedFileURL.pathComponents
+        return activeDerivedDataPaths
+            .union(activeResultBundlePaths)
+            .contains { activePath in
+                let active = URL(fileURLWithPath: activePath)
+                    .standardizedFileURL.pathComponents
+                return Self.isPrefix(candidate, of: active)
+                    || Self.isPrefix(active, of: candidate)
+            }
+    }
+
+    private static func isPrefix(_ prefix: [String], of value: [String]) -> Bool {
+        prefix.count <= value.count
+            && zip(prefix, value).allSatisfy { $0 == $1 }
+    }
 }
 
 public struct ProtectedCleanupTarget: Codable, Equatable, Sendable {

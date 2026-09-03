@@ -6,6 +6,7 @@ struct CleanupReviewView: View {
     @ObservedObject var viewModel: CleanupViewModel
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var guardedExpanded = false
+    @State private var targetFilter = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -68,6 +69,11 @@ struct CleanupReviewView: View {
                     }
                 }
                 Spacer()
+                TextField("Filter targets", text: $targetFilter)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .frame(width: 150)
+                    .disabled(applying)
                 Button {
                     Task { await viewModel.load() }
                 } label: {
@@ -184,18 +190,19 @@ struct CleanupReviewView: View {
         systemImage: String,
         targets: [CleanupTarget]
     ) -> some View {
-        GroupBox {
-            if targets.isEmpty {
-                Text("None")
+        let visible = targets.filter(matches)
+        return GroupBox {
+            if visible.isEmpty {
+                Text(targets.isEmpty ? "None" : "No targets match filter.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(targets.enumerated()), id: \.element.identifier) {
+                    ForEach(Array(visible.enumerated()), id: \.element.identifier) {
                         index,
                         target in
                         selectableTargetRow(target)
-                        if index < targets.count - 1 {
+                        if index < visible.count - 1 {
                             Divider()
                         }
                     }
@@ -209,8 +216,23 @@ struct CleanupReviewView: View {
                 )
                 .font(.headline)
                 Spacer()
+                if visible.count != targets.count {
+                    Text("\(visible.count) of \(targets.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Clear") {
+                    for target in visible {
+                        viewModel.setSelected(
+                            false,
+                            targetID: target.identifier
+                        )
+                    }
+                }
+                .buttonStyle(.link)
+                .disabled(visible.isEmpty)
                 Button("Select All") {
-                    for target in targets {
+                    for target in visible {
                         viewModel.setSelected(
                             true,
                             targetID: target.identifier
@@ -218,7 +240,7 @@ struct CleanupReviewView: View {
                     }
                 }
                 .buttonStyle(.link)
-                .disabled(targets.isEmpty)
+                .disabled(visible.isEmpty)
             }
         }
     }
@@ -226,21 +248,22 @@ struct CleanupReviewView: View {
     private func guardedSection(
         _ targets: [CleanupTarget]
     ) -> some View {
-        DisclosureGroup(isExpanded: $guardedExpanded) {
+        let visible = targets.filter(matches)
+        return DisclosureGroup(isExpanded: $guardedExpanded) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Never selected automatically. Selected items move to Trash.")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .padding(.bottom, 6)
-                if targets.isEmpty {
-                    Text("None")
+                if visible.isEmpty {
+                    Text(targets.isEmpty ? "None" : "No targets match filter.")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(Array(targets.enumerated()), id: \.element.identifier) {
+                    ForEach(Array(visible.enumerated()), id: \.element.identifier) {
                         index,
                         target in
                         selectableTargetRow(target)
-                        if index < targets.count - 1 {
+                        if index < visible.count - 1 {
                             Divider()
                         }
                     }
@@ -255,8 +278,22 @@ struct CleanupReviewView: View {
                 )
                 .font(.headline)
                 Spacer()
+                if visible.count != targets.count {
+                    Text("\(visible.count) of \(targets.count)")
+                        .font(.caption)
+                }
+                Button("Clear") {
+                    for target in visible {
+                        viewModel.setSelected(
+                            false,
+                            targetID: target.identifier
+                        )
+                    }
+                }
+                .buttonStyle(.link)
+                .disabled(visible.isEmpty)
                 Button("Select All") {
-                    for target in targets {
+                    for target in visible {
                         viewModel.setSelected(
                             true,
                             targetID: target.identifier
@@ -264,12 +301,22 @@ struct CleanupReviewView: View {
                     }
                 }
                 .buttonStyle(.link)
-                .disabled(targets.isEmpty)
+                .disabled(visible.isEmpty)
             }
             .foregroundStyle(.orange)
         }
         .padding(10)
         .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func matches(_ target: CleanupTarget) -> Bool {
+        let query = targetFilter.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !query.isEmpty else { return true }
+        return target.name.localizedCaseInsensitiveContains(query)
+            || target.detail.localizedCaseInsensitiveContains(query)
+            || target.identifier.localizedCaseInsensitiveContains(query)
     }
 
     private func selectableTargetRow(_ target: CleanupTarget) -> some View {

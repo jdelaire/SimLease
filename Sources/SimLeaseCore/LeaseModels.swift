@@ -71,6 +71,43 @@ public struct LeaseWaiter: Codable, Equatable, Sendable {
     }
 }
 
+public struct LeaseLaneSummary: Codable, Equatable, Sendable {
+    public let laneID: String
+    public let slot: Int
+    public let project: String
+    public let threadID: String?
+    public let threadTitle: String?
+    public let udid: String
+    public let deviceTypeName: String
+    public let runtimeName: String
+    public let lastActivityAt: Date
+    public let recoveryRequired: Bool
+
+    public init(
+        laneID: String,
+        slot: Int,
+        project: String,
+        threadID: String?,
+        threadTitle: String?,
+        udid: String,
+        deviceTypeName: String,
+        runtimeName: String,
+        lastActivityAt: Date,
+        recoveryRequired: Bool
+    ) {
+        self.laneID = laneID
+        self.slot = slot
+        self.project = project
+        self.threadID = threadID
+        self.threadTitle = threadTitle
+        self.udid = udid
+        self.deviceTypeName = deviceTypeName
+        self.runtimeName = runtimeName
+        self.lastActivityAt = lastActivityAt
+        self.recoveryRequired = recoveryRequired
+    }
+}
+
 public struct LeaseStatus: Codable, Equatable, Sendable {
     public enum State: String, Codable, Sendable {
         case free
@@ -81,25 +118,49 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
     public let state: State
     public let owner: LeaseOwner?
     public let waiters: [LeaseWaiter]
+    public let lanes: [LeaseLaneSummary]
     public let error: String?
 
     public init(
         state: State,
         owner: LeaseOwner?,
         waiters: [LeaseWaiter],
+        lanes: [LeaseLaneSummary] = [],
         error: String?
     ) {
         self.state = state
         self.owner = owner
         self.waiters = waiters
+        self.lanes = lanes
         self.error = error
+    }
+}
+
+private enum SimLeaseDateCoder {
+    static func encode(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    static func decode(_ string: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: string) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: string)
     }
 }
 
 public extension JSONEncoder {
     static var simLease: JSONEncoder {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(SimLeaseDateCoder.encode(date))
+        }
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return encoder
     }
@@ -108,7 +169,17 @@ public extension JSONEncoder {
 public extension JSONDecoder {
     static var simLease: JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let string = try container.decode(String.self)
+            if let date = SimLeaseDateCoder.decode(string) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid date: \(string)"
+            )
+        }
         return decoder
     }
 }

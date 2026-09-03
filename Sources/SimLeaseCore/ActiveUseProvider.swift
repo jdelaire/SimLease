@@ -53,7 +53,7 @@ public final class ProcessActiveUseProvider:
         for line in processList.split(whereSeparator: \.isNewline) {
             let command = String(line)
             guard isBuildCommand(command) else { continue }
-            let tokens = line.split(whereSeparator: \.isWhitespace)
+            let tokens = tokenize(line)
             for (index, token) in tokens.enumerated() {
                 if pathFlags.contains(token), index + 1 < tokens.count {
                     addPath(tokens[index + 1], to: &paths)
@@ -63,6 +63,38 @@ public final class ProcessActiveUseProvider:
             }
         }
         return paths.sorted()
+    }
+
+    static func tokenize(_ line: Substring) -> [Substring] {
+        var tokens = [Substring]()
+        var tokenStart: Substring.Index?
+        var quote: Character?
+        var index = line.startIndex
+        while index < line.endIndex {
+            let char = line[index]
+            if let open = quote {
+                if char == open {
+                    quote = nil
+                }
+            } else if char == "\"" || char == "'" {
+                quote = char
+                if tokenStart == nil {
+                    tokenStart = index
+                }
+            } else if char.isWhitespace {
+                if let start = tokenStart {
+                    tokens.append(line[start..<index])
+                    tokenStart = nil
+                }
+            } else if tokenStart == nil {
+                tokenStart = index
+            }
+            index = line.index(after: index)
+        }
+        if let start = tokenStart {
+            tokens.append(line[start..<line.endIndex])
+        }
+        return tokens
     }
 
     private static func isBuildCommand(_ command: String) -> Bool {

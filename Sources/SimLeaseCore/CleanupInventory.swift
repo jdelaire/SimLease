@@ -150,7 +150,11 @@ enum CleanupInventoryParser {
         let known = Set(runtimes.map(\.identifier))
         var result = Set<String>()
         for line in output.split(whereSeparator: \.isNewline) {
-            let tokens = String(line).components(
+            let text = String(line)
+            guard text.localizedCaseInsensitiveContains("would delete") else {
+                throw CleanupInventoryError.invalidRuntimeDryRun
+            }
+            let tokens = text.components(
                 separatedBy: CharacterSet.alphanumerics
                     .union(CharacterSet(charactersIn: "-"))
                     .inverted

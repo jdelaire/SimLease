@@ -16,7 +16,7 @@ final class CLIScaffoldTests: XCTestCase {
             ),
             0
         )
-        XCTAssertEqual(fixture.output.value, "simlease 0.2.0\n")
+        XCTAssertEqual(fixture.output.value, "simlease 0.3.0\n")
     }
 
     func testUpdatePassesCurrentVersionAndReturnsUpdaterStatus() throws {
@@ -31,7 +31,7 @@ final class CLIScaffoldTests: XCTestCase {
             ),
             17
         )
-        XCTAssertEqual(runner.arguments, ["--current-version", "0.2.0"])
+        XCTAssertEqual(runner.arguments, ["--current-version", "0.3.0"])
     }
 
     func testDebugProductionConfigurationUsesCacheOverride() {
@@ -162,6 +162,218 @@ final class CLIScaffoldTests: XCTestCase {
 
         XCTAssertEqual(code, 76)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testLaneShimMismatchPrintsFix() throws {
+        let fixture = try CLIFixture()
+        let marker = fixture.root.appendingPathComponent("child-started")
+        let tools = try fixture.makeToolDirectory(
+            name: "xcrun",
+            script: "/usr/bin/touch \"\(marker.path)\""
+        )
+        let shim = try fixture.makeShim(name: "xcrun")
+        let descriptor = try fixture.createLaneDescriptor(slot: 1, udid: "UDID-1")
+
+        let code = SimLeaseCLI.run(
+            arguments: [shim.path, "simctl", "boot", "OTHER"],
+            environment: [
+                "PATH": "\(fixture.shimDirectory.path):\(tools.path):/usr/bin:/bin",
+                "SIMLEASE_LANE_FILE": descriptor.path,
+            ],
+            configuration: fixture.configuration
+        )
+
+        XCTAssertEqual(code, 76)
+        XCTAssertTrue(fixture.errors.value.contains("fix:"))
+        XCTAssertTrue(fixture.errors.value.contains("UDID-1"))
+        XCTAssertTrue(fixture.errors.value.contains("simctl needs UDID UDID-1"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testDoctorReportsHealthyWhenShimsLeadPATH() throws {
+        let fixture = try CLIFixture()
+        let bin = try makeDoctorLayout(fixture)
+
+        let code = SimLeaseCLI.run(
+            arguments: ["\(bin.path)/simlease", "doctor"],
+            environment: ["PATH": "\(bin.path)/shims:/usr/bin:/bin"],
+            configuration: fixture.configuration
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertTrue(fixture.output.value.contains("ok: path-order"))
+        XCTAssertTrue(fixture.output.value.contains("ok: tool:xcodebuild"))
+        XCTAssertTrue(fixture.output.value.contains("ok: tool:axe"))
+    }
+
+    func testDoctorJSONUsesSharedSchema() throws {
+        let fixture = try CLIFixture()
+        let bin = try makeDoctorLayout(fixture)
+
+        let code = SimLeaseCLI.run(
+            arguments: ["\(bin.path)/simlease", "doctor", "--json"],
+            environment: ["PATH": "\(bin.path)/shims:/usr/bin:/bin"],
+            configuration: fixture.configuration
+        )
+
+        XCTAssertEqual(code, 0)
+        let report = try JSONDecoder.simLease.decode(
+            DoctorReport.self,
+            from: Data(fixture.output.value.utf8)
+        )
+        XCTAssertTrue(report.ok)
+        XCTAssertEqual(report.checks.count, 6)
+    }
+
+    func testDoctorFlagsMissingShimsOnPATH() throws {
+        let fixture = try CLIFixture()
+        let bin = try makeDoctorLayout(fixture)
+
+        let code = SimLeaseCLI.run(
+            arguments: ["\(bin.path)/simlease", "doctor"],
+            environment: ["PATH": "/usr/bin:/bin"],
+            configuration: fixture.configuration
+        )
+
+        XCTAssertEqual(code, 76)
+        XCTAssertTrue(fixture.output.value.contains("issue: path-order"))
+    }
+
+    func testStatusJSONIncludesLaneSummaries() throws {
+        let fixture = try CLIFixture()
+        let laneStore = try LaneStore(paths: fixture.paths)
+        let now = Date()
+        try laneStore.writeState(LanePersistentState(
+            configuration: LaneConfiguration(maxActive: 2),
+            reservations: [LaneReservation(
+                laneID: "lane-1",
+                slot: 1,
+                token: "TOKEN-1",
+                project: "ExplorerDex",
+                threadID: "thread-1",
+                threadTitle: "Simulator validation",
+                udid: "UDID-1",
+                descriptorPath: "/tmp/lane.json",
+                generation: 1,
+                acquiredAt: now,
+                lastActivityAt: now,
+                expiresAt: now.addingTimeInterval(3_600)
+            )],
+            managedDevices: [ManagedSimulatorRecord(
+                udid: "UDID-1",
+                name: "[SimLease] ExplorerDex 1",
+                deviceTypeIdentifier: "TYPE-1",
+                deviceTypeName: "iPhone 17 Pro",
+                runtimeIdentifier: "RUNTIME-1",
+                runtimeName: "iOS 27.0",
+                expectedDataPath: "/tmp/Devices/UDID-1",
+                createdAt: now,
+                lifecycle: .reserved
+            )]
+        ))
+
+        let code = SimLeaseCLI.run(
+            arguments: ["simlease", "status", "--json"],
+            environment: [:],
+            configuration: fixture.configuration
+        )
+
+        XCTAssertEqual(code, 0)
+        let status = try JSONDecoder.simLease.decode(
+            LeaseStatus.self,
+            from: Data(fixture.output.value.utf8)
+        )
+        XCTAssertEqual(status.lanes.map(\.laneID), ["lane-1"])
+        XCTAssertEqual(status.lanes[0].deviceTypeName, "iPhone 17 Pro")
+        XCTAssertEqual(status.lanes[0].runtimeName, "iOS 27.0")
+    }
+
+    func testWaitReturnsImmediatelyWhenFree() throws {
+        let fixture = try CLIFixture()
+
+        let code = SimLeaseCLI.run(
+            arguments: ["simlease", "wait", "--timeout", "1"],
+            environment: [:],
+            configuration: fixture.configuration
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(fixture.output.value, "free\n")
+    }
+
+    func testWaitTimesOutWhileLeaseHeld() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = root.appendingPathComponent("cache", isDirectory: true)
+        let shims = root.appendingPathComponent("shims", isDirectory: true)
+        let tools = root.appendingPathComponent("tools", isDirectory: true)
+        try FileManager.default.createDirectory(at: shims, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
+
+        let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/debug/simlease")
+        let shim = shims.appendingPathComponent("axe")
+        try FileManager.default.createSymbolicLink(at: shim, withDestinationURL: executable)
+        let tool = tools.appendingPathComponent("axe")
+        try Data("#!/bin/sh\nexec /bin/sleep 5\n".utf8).write(to: tool)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+
+        let output = LockedText()
+        let errors = LockedText()
+        let configuration = CLIConfiguration(
+            paths: LeasePaths(root: cache),
+            timing: LeaseTiming(
+                timeout: .seconds(2),
+                reportInterval: .seconds(2),
+                pollInterval: .milliseconds(10)
+            ),
+            standardOutput: { text in output.append(text) },
+            standardError: { text in errors.append(text) }
+        )
+
+        let process = Process()
+        process.executableURL = shim
+        process.arguments = ["tap"]
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "PATH": "\(shims.path):\(tools.path)",
+            "SIMLEASE_CACHE_ROOT": cache.path,
+        ]) { _, new in new }
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+        }
+
+        let store = try MetadataStore(paths: LeasePaths(root: cache))
+        let coordinator = LeaseCoordinator(
+            paths: LeasePaths(root: cache),
+            store: store,
+            timing: LeaseTiming(
+                timeout: .seconds(1),
+                reportInterval: .seconds(1),
+                pollInterval: .milliseconds(10)
+            )
+        )
+        let acquisitionDeadline = Date(timeIntervalSinceNow: 2)
+        while Date() < acquisitionDeadline,
+              try coordinator.status().state != .leased {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(try coordinator.status().state, .leased)
+
+        let code = SimLeaseCLI.run(
+            arguments: ["simlease", "wait", "--timeout", "0.05"],
+            environment: [:],
+            configuration: configuration
+        )
+
+        XCTAssertEqual(code, 75)
+        XCTAssertTrue(errors.value.contains("simulator lease busy"))
     }
 
     func testDifferentLaneCommandsOverlap() throws {
@@ -380,6 +592,25 @@ final class CLIScaffoldTests: XCTestCase {
         XCTAssertEqual(process.terminationStatus, 143)
         XCTAssertEqual(try coordinator.status().state, .free)
     }
+}
+
+private func makeDoctorLayout(_ fixture: CLIFixture) throws -> URL {
+    let bin = fixture.root.appendingPathComponent("bin", isDirectory: true)
+    let shims = bin.appendingPathComponent("shims", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: shims,
+        withIntermediateDirectories: true
+    )
+    try Data().write(to: bin.appendingPathComponent("simlease"))
+    for tool in ["xcodebuild", "xcrun", "axe"] {
+        let url = shims.appendingPathComponent(tool)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: url)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: url.path
+        )
+    }
+    return bin
 }
 
 private func waitForFile(_ url: URL, timeout: TimeInterval) -> Bool {

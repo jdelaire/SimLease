@@ -38,7 +38,14 @@ public final class MenuViewModel: ObservableObject {
                 "Command: \(state.command ?? "Unknown")",
                 "Elapsed: \(state.elapsed ?? "Unknown")",
                 "Waiting: \(state.waiters.count)",
+                "Lanes: \(state.lanes.count)",
             ]
+            for lane in state.lanes {
+                lines.append("- \(lane.id): \(lane.name) (\(lane.detail))")
+                if lane.recoveryRequired {
+                    lines.append("  Needs recovery")
+                }
+            }
             for waiter in state.waiters {
                 lines.append("- \(waiter.name)")
                 lines.append(

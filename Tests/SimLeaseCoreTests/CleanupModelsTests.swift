@@ -31,6 +31,20 @@ final class CleanupModelsTests: XCTestCase {
         XCTAssertEqual(decoded, plan)
     }
 
+    func testLaneProtectionMatchesActivePathsBothDirections() {
+        let snapshot = LaneProtectionSnapshot(
+            reservedDeviceIDs: ["DEVICE-1"],
+            activeDerivedDataPaths: ["/Lanes/Proj/lane-1"],
+            activeResultBundlePaths: []
+        )
+
+        XCTAssertTrue(snapshot.protects(path: "/Lanes/Proj/lane-1"))
+        XCTAssertTrue(snapshot.protects(path: "/Lanes/Proj/lane-1/Build"))
+        XCTAssertTrue(snapshot.protects(path: "/Lanes"))
+        XCTAssertFalse(snapshot.protects(path: "/Other/DerivedData"))
+        XCTAssertFalse(LaneProtectionSnapshot.empty.protects(path: "/Lanes/Proj/lane-1"))
+    }
+
     func testSkippedResultIsPartial() {
         let target = CleanupTarget(
             kind: .device,

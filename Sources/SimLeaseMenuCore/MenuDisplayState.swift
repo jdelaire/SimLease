@@ -29,6 +29,31 @@ public struct WaiterDisplayItem: Equatable, Sendable, Identifiable {
     }
 }
 
+public struct LaneDisplayItem: Equatable, Sendable, Identifiable {
+    public let id: String
+    public let name: String
+    public let detail: String
+    public let elapsed: String
+    public let udid: String
+    public let recoveryRequired: Bool
+
+    public init(
+        id: String,
+        name: String,
+        detail: String,
+        elapsed: String,
+        udid: String,
+        recoveryRequired: Bool
+    ) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+        self.elapsed = elapsed
+        self.udid = udid
+        self.recoveryRequired = recoveryRequired
+    }
+}
+
 public struct MenuDisplayState: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case free
@@ -44,6 +69,7 @@ public struct MenuDisplayState: Equatable, Sendable {
     public let command: String?
     public let elapsed: String?
     public let waiters: [WaiterDisplayItem]
+    public let lanes: [LaneDisplayItem]
     public let error: String?
 
     public var waiterNames: [String] {
@@ -92,6 +118,20 @@ public struct MenuDisplayState: Equatable, Sendable {
                     cwd: waiter.cwd
                 )
             }
+            lanes = status.lanes.map { lane in
+                LaneDisplayItem(
+                    id: lane.laneID,
+                    name: Self.laneName(
+                        title: lane.threadTitle,
+                        threadID: lane.threadID,
+                        project: lane.project
+                    ),
+                    detail: "\(lane.deviceTypeName) · \(lane.runtimeName)",
+                    elapsed: Self.elapsed(from: lane.lastActivityAt, to: now),
+                    udid: lane.udid,
+                    recoveryRequired: lane.recoveryRequired
+                )
+            }
             error = nil
         }
     }
@@ -106,6 +146,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             command: nil,
             elapsed: nil,
             waiters: [],
+            lanes: [],
             error: nil
         )
     }
@@ -120,6 +161,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             command: nil,
             elapsed: nil,
             waiters: [],
+            lanes: [],
             error: message
         )
     }
@@ -133,6 +175,7 @@ public struct MenuDisplayState: Equatable, Sendable {
         command: String?,
         elapsed: String?,
         waiters: [WaiterDisplayItem],
+        lanes: [LaneDisplayItem],
         error: String?
     ) {
         self.kind = kind
@@ -143,6 +186,7 @@ public struct MenuDisplayState: Equatable, Sendable {
         self.command = command
         self.elapsed = elapsed
         self.waiters = waiters
+        self.lanes = lanes
         self.error = error
     }
 
@@ -164,6 +208,16 @@ public struct MenuDisplayState: Equatable, Sendable {
         if let title, !title.isEmpty { return title }
         if let threadID, !threadID.isEmpty { return String(threadID.prefix(8)) }
         return "\(sourceName(source)) · \(project)"
+    }
+
+    private static func laneName(
+        title: String?,
+        threadID: String?,
+        project: String
+    ) -> String {
+        if let title, !title.isEmpty { return title }
+        if let threadID, !threadID.isEmpty { return String(threadID.prefix(8)) }
+        return project
     }
 
     private static func sourceName(_ source: LeaseSource) -> String {

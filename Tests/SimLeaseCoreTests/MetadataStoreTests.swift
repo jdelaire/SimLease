@@ -26,6 +26,13 @@ final class MetadataStoreTests: XCTestCase {
         XCTAssertEqual(try store.readWaiters(), [later])
     }
 
+    func testMissingFilesReadAsNil() throws {
+        let store = try MetadataStore(paths: temporaryPaths())
+
+        XCTAssertNil(try store.readOwner())
+        XCTAssertEqual(try store.readWaiters(), [])
+    }
+
     func testInvalidOwnerJSONReturnsCorruptionError() throws {
         let paths = temporaryPaths()
         let store = try MetadataStore(paths: paths)
@@ -34,6 +41,27 @@ final class MetadataStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.readOwner()) { error in
             XCTAssertEqual(error as? MetadataStoreError, .corruptFile(paths.owner))
         }
+    }
+
+    func testCorruptWaiterFileIsQuarantinedAndSkipped() throws {
+        let paths = temporaryPaths()
+        let store = try MetadataStore(paths: paths)
+        let valid = makeWaiter(id: "52-120", waitingSince: 120)
+        try store.writeWaiter(valid)
+        let corruptURL = paths.waiters.appendingPathComponent("41-100.json")
+        try Data("not-json".utf8).write(to: corruptURL)
+
+        XCTAssertEqual(try store.readWaiters(), [valid])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: corruptURL.path))
+        let quarantine = paths.waiters.appendingPathComponent(
+            ".quarantine",
+            isDirectory: true
+        )
+        let quarantined = try FileManager.default.contentsOfDirectory(
+            at: quarantine,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(quarantined.count, 1)
     }
 
     func testThreadNameRejectsEmptyTitle() throws {

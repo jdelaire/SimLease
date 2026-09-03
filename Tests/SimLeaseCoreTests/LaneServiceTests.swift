@@ -122,6 +122,81 @@ final class LaneServiceTests: XCTestCase {
         )
     }
 
+    func testFailedRecoveryApplyPreservesPlanForRetry() throws {
+        let fixture = try ServiceFixture()
+        _ = try fixture.acquire(project: "ExplorerDex")
+
+        let plan = try fixture.service.createRecoveryPlan(
+            laneID: "lane-1",
+            now: Date(timeIntervalSince1970: 8_201)
+        )
+        XCTAssertThrowsError(try fixture.service.applyRecovery(
+            planID: plan.id,
+            laneID: "lane-9",
+            now: Date(timeIntervalSince1970: 8_202)
+        )) {
+            guard case LaneServiceError.targetMismatch = $0 else {
+                return XCTFail("expected targetMismatch, got \($0)")
+            }
+        }
+
+        let result = try fixture.service.applyRecovery(
+            planID: plan.id,
+            laneID: "lane-1",
+            now: Date(timeIntervalSince1970: 8_203)
+        )
+
+        XCTAssertEqual(result.state, "idle")
+        XCTAssertEqual(try fixture.store.readState().reservations, [])
+    }
+
+    func testMissingDeviceRecoveryRemovesRecordWithoutLeak() throws {
+        let fixture = try ServiceFixture()
+        _ = try fixture.acquire(project: "ExplorerDex")
+        fixture.provider.removeDevice(udid: "CREATED-1")
+
+        let plan = try fixture.service.createRecoveryPlan(
+            laneID: "lane-1",
+            now: Date(timeIntervalSince1970: 8_201)
+        )
+        let result = try fixture.service.applyRecovery(
+            planID: plan.id,
+            laneID: "lane-1",
+            now: Date(timeIntervalSince1970: 8_202)
+        )
+
+        XCTAssertEqual(result.state, "removed")
+        XCTAssertEqual(try fixture.store.readState().reservations, [])
+        XCTAssertEqual(try fixture.store.readState().managedDevices, [])
+    }
+
+    func testGhostDisposalCleansStaleRecord() throws {
+        let fixture = try ServiceFixture()
+        let acquired = try fixture.acquire(project: "ExplorerDex")
+        let descriptorURL = URL(fileURLWithPath: try XCTUnwrap(
+            acquired.environment["SIMLEASE_LANE_FILE"]
+        ))
+        _ = try fixture.service.release(
+            descriptorURL: descriptorURL,
+            identity: fixture.identity
+        )
+        fixture.provider.removeDevice(udid: "CREATED-1")
+
+        let plan = try fixture.service.createDisposalPlan(
+            udid: "CREATED-1",
+            now: Date(timeIntervalSince1970: 2_000)
+        )
+        let result = try fixture.service.applyDisposal(
+            planID: plan.id,
+            udid: "CREATED-1",
+            now: Date(timeIntervalSince1970: 2_001)
+        )
+
+        XCTAssertTrue(result.deleted)
+        XCTAssertEqual(try fixture.store.readState().managedDevices, [])
+        XCTAssertEqual(fixture.provider.deletions, [])
+    }
+
     func testRecoveryPlanRejectsRecentLaneAndApplyRejectsResumedActivity() throws {
         let fixture = try ServiceFixture()
         let acquired = try fixture.acquire(project: "ExplorerDex")
@@ -321,6 +396,10 @@ private final class LaneProviderStub: LaneSimulatorProviding, @unchecked Sendabl
 
     func deleteDevice(udid: String) throws {
         deletions.append(udid)
+        devices.removeAll { $0.udid == udid }
+    }
+
+    func removeDevice(udid: String) {
         devices.removeAll { $0.udid == udid }
     }
 

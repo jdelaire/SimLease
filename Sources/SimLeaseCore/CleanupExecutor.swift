@@ -5,17 +5,22 @@ public final class CleanupExecutor: @unchecked Sendable {
     private let planner: CleanupPlanner
     private let storageProvider: (any XcodeStorageInventoryProviding)?
     private let fileOperator: (any CleanupFileOperating)?
+    private let laneProtectionProvider: @Sendable () throws -> LaneProtectionSnapshot
 
     public init(
         provider: any CleanupInventoryProviding,
         planner: CleanupPlanner,
         storageProvider: (any XcodeStorageInventoryProviding)? = nil,
-        fileOperator: (any CleanupFileOperating)? = nil
+        fileOperator: (any CleanupFileOperating)? = nil,
+        laneProtectionProvider: @Sendable @escaping () throws -> LaneProtectionSnapshot = {
+            .empty
+        }
     ) {
         self.provider = provider
         self.planner = planner
         self.storageProvider = storageProvider
         self.fileOperator = fileOperator
+        self.laneProtectionProvider = laneProtectionProvider
     }
 
     public func apply(plan: CleanupPlan, now: Date) throws -> CleanupResult {
@@ -53,13 +58,15 @@ public final class CleanupExecutor: @unchecked Sendable {
             },
             availableBytesBefore: plan.availableBytesBefore
         )
+        let laneProtection = try? laneProtectionProvider()
         let simulatorResult: CleanupResult?
         if selectedDevices.isEmpty && selectedRuntimes.isEmpty {
             simulatorResult = nil
         } else {
             simulatorResult = try applySimulator(
                 plan: simulatorPlan,
-                now: now
+                now: now,
+                laneProtection: laneProtection
             )
         }
 
@@ -67,7 +74,8 @@ public final class CleanupExecutor: @unchecked Sendable {
         items.append(
             contentsOf: applyStorage(
                 selectedStorage,
-                now: now
+                now: now,
+                laneProtection: laneProtection
             )
         )
         let estimatedBytes = (
@@ -88,7 +96,8 @@ public final class CleanupExecutor: @unchecked Sendable {
 
     private func applySimulator(
         plan: CleanupPlan,
-        now: Date
+        now: Date,
+        laneProtection: LaneProtectionSnapshot?
     ) throws -> CleanupResult {
         let initial = try provider.inventory()
         var items = [CleanupItemResult]()
@@ -99,6 +108,17 @@ public final class CleanupExecutor: @unchecked Sendable {
         for target in plan.devices {
             if let blockReason {
                 items.append(skipped(target, blockReason))
+                continue
+            }
+            guard let laneProtection else {
+                items.append(skipped(target, "Lane protection revalidation failed"))
+                continue
+            }
+            if laneProtection.reservedDeviceIDs.contains(target.identifier) {
+                items.append(skipped(
+                    target,
+                    "Reserved by a managed simulator lane since review"
+                ))
                 continue
             }
             let current: CleanupInventory
@@ -114,7 +134,12 @@ public final class CleanupExecutor: @unchecked Sendable {
                 items.append(skipped(target, blockReason!))
                 continue
             }
-            guard eligibility(of: target, in: current, now: now) else {
+            guard eligibility(
+                of: target,
+                in: current,
+                now: now,
+                laneProtection: laneProtection
+            ) else {
                 items.append(skipped(target, "Device is no longer eligible"))
                 continue
             }
@@ -145,6 +170,10 @@ public final class CleanupExecutor: @unchecked Sendable {
                 items.append(skipped(target, blockReason))
                 continue
             }
+            guard let laneProtection else {
+                items.append(skipped(target, "Lane protection revalidation failed"))
+                continue
+            }
             let current: CleanupInventory
             do {
                 current = try provider.inventory()
@@ -158,7 +187,12 @@ public final class CleanupExecutor: @unchecked Sendable {
                 items.append(skipped(target, blockReason!))
                 continue
             }
-            guard eligibility(of: target, in: current, now: now) else {
+            guard eligibility(
+                of: target,
+                in: current,
+                now: now,
+                laneProtection: laneProtection
+            ) else {
                 items.append(skipped(target, "Runtime is no longer eligible"))
                 continue
             }
@@ -182,9 +216,15 @@ public final class CleanupExecutor: @unchecked Sendable {
 
     private func applyStorage(
         _ targets: [CleanupTarget],
-        now: Date
+        now: Date,
+        laneProtection: LaneProtectionSnapshot?
     ) -> [CleanupItemResult] {
         guard !targets.isEmpty else { return [] }
+        guard let laneProtection else {
+            return targets.map {
+                skipped($0, "Lane protection revalidation failed")
+            }
+        }
         guard let storageProvider, let fileOperator else {
             return targets.map {
                 skipped($0, "Filesystem cleanup is unavailable")
@@ -206,6 +246,9 @@ public final class CleanupExecutor: @unchecked Sendable {
         return targets.map { target in
             guard !protectedIDs.contains(target.identifier) else {
                 return skipped(target, "A running build or test uses this path")
+            }
+            if let path = target.path, laneProtection.protects(path: path) {
+                return skipped(target, "A managed simulator lane uses this path")
             }
             guard let candidate = current.targets.first(where: {
                 $0.identifier == target.identifier
@@ -242,12 +285,14 @@ public final class CleanupExecutor: @unchecked Sendable {
     private func eligibility(
         of target: CleanupTarget,
         in inventory: CleanupInventory,
-        now: Date
+        now: Date,
+        laneProtection: LaneProtectionSnapshot
     ) -> Bool {
         let review = planner.makeReview(
             inventory: inventory,
             now: now,
-            id: "VERIFY"
+            id: "VERIFY",
+            laneProtection: laneProtection
         )
         switch target.kind {
         case .device:

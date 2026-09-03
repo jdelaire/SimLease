@@ -74,6 +74,30 @@ final class CleanupInventoryTests: XCTestCase {
         XCTAssertEqual(identifiers, [])
     }
 
+    func testDryRunRejectsKnownIdentifierWithoutDeleteVerb() {
+        let runtimes = [
+            CleanupRuntimeRecord(
+                identifier: "RUNTIME-IMAGE-1",
+                runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.watchOS-26-4",
+                name: "watchOS 26.4",
+                build: "23T239",
+                sizeBytes: 100
+            ),
+        ]
+
+        XCTAssertThrowsError(
+            try CleanupInventoryParser.decodeOutdatedRuntimeIDs(
+                from: "Skipped RUNTIME-IMAGE-1 because a device is booted\n",
+                runtimes: runtimes
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? CleanupInventoryError,
+                .invalidRuntimeDryRun
+            )
+        }
+    }
+
     func testDryRunRejectsUnknownLines() {
         XCTAssertThrowsError(
             try CleanupInventoryParser.decodeOutdatedRuntimeIDs(

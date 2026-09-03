@@ -43,6 +43,41 @@ final class MenuViewModelTests: XCTestCase {
         XCTAssertTrue(model.copyDetailsText.contains("Path: /tmp/Set"))
     }
 
+    func testCopyDetailsIncludesLanes() async {
+        var status = leasedStatus(waiters: [])
+        status = LeaseStatus(
+            state: status.state,
+            owner: status.owner,
+            waiters: status.waiters,
+            lanes: [
+                LeaseLaneSummary(
+                    laneID: "lane-1",
+                    slot: 1,
+                    project: "SimLease",
+                    threadID: nil,
+                    threadTitle: "Owner task",
+                    udid: "UDID-1",
+                    deviceTypeName: "iPhone 17 Pro",
+                    runtimeName: "iOS 27.0",
+                    lastActivityAt: Date(timeIntervalSince1970: 400),
+                    recoveryRequired: true
+                ),
+            ],
+            error: status.error
+        )
+        let model = MenuViewModel(
+            provider: StatusStub(status: status),
+            now: { Date(timeIntervalSince1970: 502) }
+        )
+        await model.refresh()
+
+        XCTAssertTrue(model.copyDetailsText.contains("Lanes: 1"))
+        XCTAssertTrue(model.copyDetailsText.contains(
+            "- lane-1: Owner task (iPhone 17 Pro · iOS 27.0)"
+        ))
+        XCTAssertTrue(model.copyDetailsText.contains("Needs recovery"))
+    }
+
     func testRepeatedRefreshReplacesWaiters() async {
         let provider = SequenceStatusStub(statuses: [
             leasedStatus(waiters: [waiter(title: "First")]),
@@ -86,6 +121,22 @@ final class MenuViewModelTests: XCTestCase {
             XCTFail("Expected command failure")
         } catch let error as MenuStatusError {
             XCTAssertEqual(error, .commandFailed(code: 12, stderr: "unavailable\n"))
+        }
+    }
+
+    func testCLIProviderTimesOutOnHungStatus() async throws {
+        let fixture = try executableFixture(body: "sleep 30")
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let provider = CLIStatusProvider(
+            environment: ["SIMLEASE_EXECUTABLE_PATH": fixture.executable.path],
+            timeout: .milliseconds(100)
+        )
+
+        do {
+            _ = try await provider.fetch()
+            XCTFail("Expected timeout")
+        } catch let error as MenuStatusError {
+            XCTAssertEqual(error, .timedOut)
         }
     }
 

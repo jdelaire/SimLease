@@ -35,6 +35,44 @@ final class CommandParserTests: XCTestCase {
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "unknown"]))
     }
 
+    func testParsesDoctorAndWaitCommands() throws {
+        XCTAssertEqual(
+            try CommandParser.parse(["simlease", "doctor"]),
+            .doctor(json: false)
+        )
+        XCTAssertEqual(
+            try CommandParser.parse(["simlease", "doctor", "--json"]),
+            .doctor(json: true)
+        )
+        XCTAssertEqual(
+            try CommandParser.parse(["simlease", "wait"]),
+            .wait(timeout: 300, json: false)
+        )
+        XCTAssertEqual(
+            try CommandParser.parse([
+                "simlease", "wait", "--timeout", "5", "--json",
+            ]),
+            .wait(timeout: 5, json: true)
+        )
+    }
+
+    func testRejectsInvalidDoctorAndWaitShapes() {
+        let invalid = [
+            ["simlease", "doctor", "--timeout", "5"],
+            ["simlease", "doctor", "--json", "--json"],
+            ["simlease", "wait", "--timeout"],
+            ["simlease", "wait", "--timeout", "0"],
+            ["simlease", "wait", "--timeout", "-3"],
+            ["simlease", "wait", "--timeout", "soon"],
+            ["simlease", "wait", "--timeout", "5", "--timeout", "6"],
+            ["simlease", "wait", "--json", "--json"],
+        ]
+
+        for arguments in invalid {
+            XCTAssertThrowsError(try CommandParser.parse(arguments))
+        }
+    }
+
     func testParsesCleanupCommands() throws {
         XCTAssertEqual(
             try CommandParser.parse(["simlease", "clean", "plan"]),

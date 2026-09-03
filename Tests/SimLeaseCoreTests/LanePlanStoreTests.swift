@@ -32,7 +32,7 @@ final class LanePlanStoreTests: XCTestCase {
         }
     }
 
-    func testExpiredOrChangedPlanIsRejectedAndConsumed() throws {
+    func testExpiredOrChangedPlanIsRejectedAndPreserved() throws {
         let fixture = try Fixture()
         let expired = makePlan(id: "OLD123")
         try fixture.store.save(expired)
@@ -41,6 +41,9 @@ final class LanePlanStoreTests: XCTestCase {
         ) {
             XCTAssertEqual($0 as? LanePlanStoreError, .expired)
         }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.planURL(expired.id).path
+        ))
 
         let changed = makePlan(id: "BAD123")
         try fixture.store.save(changed)
@@ -57,7 +60,28 @@ final class LanePlanStoreTests: XCTestCase {
         ) {
             XCTAssertEqual($0 as? LanePlanStoreError, .invalidIntegrity)
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testPeekLeavesPlanForConsume() throws {
+        let fixture = try Fixture()
+        let plan = makePlan(id: "ABC123")
+        try fixture.store.save(plan)
+
+        XCTAssertEqual(
+            try fixture.store.peek(id: plan.id, now: plan.createdAt),
+            plan
+        )
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.planURL(plan.id).path
+        ))
+        XCTAssertEqual(
+            try fixture.store.consume(id: plan.id, now: plan.createdAt),
+            plan
+        )
+        XCTAssertThrowsError(try fixture.store.peek(id: plan.id, now: plan.createdAt)) {
+            XCTAssertEqual($0 as? LanePlanStoreError, .missing)
+        }
     }
 
     func testPruneRemovesOnlyOldLanePlanFiles() throws {

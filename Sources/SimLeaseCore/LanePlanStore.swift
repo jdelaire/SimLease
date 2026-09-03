@@ -17,6 +17,7 @@ public enum LanePlanStoreError: Error, Equatable {
 
 public protocol LanePlanStoring: Sendable {
     func save(_ plan: LaneLifecyclePlan) throws
+    func peek(id: String, now: Date) throws -> LaneLifecyclePlan
     func consume(id: String, now: Date) throws -> LaneLifecyclePlan
     func prune(now: Date) throws
 }
@@ -57,14 +58,28 @@ public final class LanePlanStore: LanePlanStoring, @unchecked Sendable {
         )
     }
 
+    public func peek(id: String, now: Date) throws -> LaneLifecyclePlan {
+        lock.lock()
+        defer { lock.unlock() }
+        return try validatedPlan(id: id, now: now).plan
+    }
+
     public func consume(id: String, now: Date) throws -> LaneLifecyclePlan {
         lock.lock()
         defer { lock.unlock() }
+        let stored = try validatedPlan(id: id, now: now)
+        try? fileManager.removeItem(at: stored.url)
+        return stored.plan
+    }
+
+    private func validatedPlan(
+        id: String,
+        now: Date
+    ) throws -> (url: URL, plan: LaneLifecyclePlan) {
         let url = try planURL(id: id)
         guard fileManager.fileExists(atPath: url.path) else {
             throw LanePlanStoreError.missing
         }
-        defer { try? fileManager.removeItem(at: url) }
         guard let data = try? Data(contentsOf: url),
               let stored = try? JSONDecoder.simLease.decode(
                   StoredLanePlan.self,
@@ -78,7 +93,7 @@ public final class LanePlanStore: LanePlanStoring, @unchecked Sendable {
         guard now < stored.plan.expiresAt else {
             throw LanePlanStoreError.expired
         }
-        return stored.plan
+        return (url, stored.plan)
     }
 
     public func prune(now: Date) throws {

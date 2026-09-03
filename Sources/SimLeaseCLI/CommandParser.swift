@@ -6,6 +6,8 @@ enum ParsedCommand: Equatable {
     case status(json: Bool)
     case name(String)
     case hold(title: String, project: String)
+    case doctor(json: Bool)
+    case wait(timeout: Double, json: Bool)
     case cleanPlan(json: Bool)
     case cleanApply(id: String, targetIDs: [String], json: Bool)
     case laneAcquire(project: String, deviceType: String, runtime: String, json: Bool)
@@ -80,6 +82,33 @@ enum CommandParser {
                 throw CommandParserError.usage
             }
             return .hold(title: title, project: project)
+        case "doctor":
+            let json = try parseOptionalJSON(Array(arguments.dropFirst(2)))
+            return .doctor(json: json)
+        case "wait":
+            var timeout: Double?
+            var json = false
+            var index = 2
+            while index < arguments.count {
+                switch arguments[index] {
+                case "--timeout":
+                    guard timeout == nil,
+                          index + 1 < arguments.count,
+                          let value = Double(arguments[index + 1]),
+                          value > 0 else {
+                        throw CommandParserError.usage
+                    }
+                    timeout = value
+                    index += 2
+                case "--json":
+                    guard !json else { throw CommandParserError.usage }
+                    json = true
+                    index += 1
+                default:
+                    throw CommandParserError.usage
+                }
+            }
+            return .wait(timeout: timeout ?? 300, json: json)
         case "clean":
             guard arguments.count >= 3 else {
                 throw CommandParserError.usage

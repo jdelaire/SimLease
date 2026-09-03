@@ -25,6 +25,28 @@ final class ExecutableResolverTests: XCTestCase {
         XCTAssertEqual(resolved.standardizedFileURL, expected.standardizedFileURL)
     }
 
+    func testExclusionMatchesThroughSymlinks() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let realDirectory = root.appendingPathComponent("real", isDirectory: true)
+        let linkDirectory = root.appendingPathComponent("link", isDirectory: true)
+        try FileManager.default.createDirectory(at: realDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkDirectory, withDestinationURL: realDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try makeExecutable(at: realDirectory.appendingPathComponent("xcrun"))
+
+        XCTAssertThrowsError(
+            try ExecutableResolver.resolve(
+                name: "xcrun",
+                path: linkDirectory.path,
+                excluding: realDirectory
+            )
+        ) { error in
+            XCTAssertEqual(error as? ExecutableResolutionError, .notFound("xcrun"))
+        }
+    }
+
     func testMissingExecutableThrowsTypedError() {
         XCTAssertThrowsError(
             try ExecutableResolver.resolve(

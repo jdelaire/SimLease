@@ -273,20 +273,7 @@ public struct CleanupPlanner: Sendable {
         _ path: String,
         snapshot: LaneProtectionSnapshot
     ) -> Bool {
-        let candidate = URL(fileURLWithPath: path)
-            .standardizedFileURL.pathComponents
-        return snapshot.activeDerivedDataPaths
-            .union(snapshot.activeResultBundlePaths)
-            .contains { activePath in
-            let active = URL(fileURLWithPath: activePath)
-                .standardizedFileURL.pathComponents
-            return isPrefix(candidate, of: active) || isPrefix(active, of: candidate)
-        }
-    }
-
-    private func isPrefix(_ prefix: [String], of value: [String]) -> Bool {
-        prefix.count <= value.count
-            && zip(prefix, value).allSatisfy { $0 == $1 }
+        snapshot.protects(path: path)
     }
 
     private func deviceOrder(_ lhs: CleanupTarget, _ rhs: CleanupTarget) -> Bool {

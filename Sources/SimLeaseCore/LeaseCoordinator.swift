@@ -41,6 +41,7 @@ public final class LeaseHandle: @unchecked Sendable {
 public final class LeaseCoordinator: @unchecked Sendable {
     private let paths: LeasePaths
     private let store: MetadataStore
+    private let laneStore: (any LaneStoring)?
     private let timing: LeaseTiming
     private let clock: any LeaseClock
     private let processInspector: any ProcessIdentityInspecting
@@ -48,6 +49,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
     public init(
         paths: LeasePaths,
         store: MetadataStore,
+        laneStore: (any LaneStoring)? = nil,
         timing: LeaseTiming = .production,
         clock: any LeaseClock = SystemLeaseClock(),
         processInspector: any ProcessIdentityInspecting =
@@ -55,6 +57,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
     ) {
         self.paths = paths
         self.store = store
+        self.laneStore = laneStore
         self.timing = timing
         self.clock = clock
         self.processInspector = processInspector
@@ -187,6 +190,8 @@ public final class LeaseCoordinator: @unchecked Sendable {
             _ = close(descriptor)
         }
 
+        let lanes = laneSummaries()
+
         let waiters: [LeaseWaiter]
         do {
             waiters = try activeWaiters(from: store.readWaiters())
@@ -195,6 +200,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
                 state: .metadataError,
                 owner: nil,
                 waiters: [],
+                lanes: lanes,
                 error: "waiter metadata error: \(error)"
             )
         }
@@ -207,6 +213,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
                 state: .metadataError,
                 owner: nil,
                 waiters: waiters,
+                lanes: lanes,
                 error: "owner metadata error: \(error)"
             )
         }
@@ -217,10 +224,17 @@ public final class LeaseCoordinator: @unchecked Sendable {
                     state: .metadataError,
                     owner: owner,
                     waiters: waiters,
+                    lanes: lanes,
                     error: "owner metadata exists while lease is free"
                 )
             }
-            return LeaseStatus(state: .free, owner: nil, waiters: waiters, error: nil)
+            return LeaseStatus(
+                state: .free,
+                owner: nil,
+                waiters: waiters,
+                lanes: lanes,
+                error: nil
+            )
         }
 
         guard let owner else {
@@ -228,10 +242,43 @@ public final class LeaseCoordinator: @unchecked Sendable {
                 state: .metadataError,
                 owner: nil,
                 waiters: waiters,
+                lanes: lanes,
                 error: "owner metadata missing while lease is held"
             )
         }
-        return LeaseStatus(state: .leased, owner: owner, waiters: waiters, error: nil)
+        return LeaseStatus(
+            state: .leased,
+            owner: owner,
+            waiters: waiters,
+            lanes: lanes,
+            error: nil
+        )
+    }
+
+    private func laneSummaries() -> [LeaseLaneSummary] {
+        guard let laneStore,
+              let state = try? laneStore.readState() else {
+            return []
+        }
+        let now = clock.wallNow()
+        return state.reservations.sorted { $0.slot < $1.slot }.map { reservation in
+            let device = state.managedDevices.first {
+                $0.udid == reservation.udid
+            }
+            return LeaseLaneSummary(
+                laneID: reservation.laneID,
+                slot: reservation.slot,
+                project: reservation.project,
+                threadID: reservation.threadID,
+                threadTitle: reservation.threadTitle,
+                udid: reservation.udid,
+                deviceTypeName: device?.deviceTypeName ?? "Unknown",
+                runtimeName: device?.runtimeName ?? "Unknown",
+                lastActivityAt: reservation.lastActivityAt,
+                recoveryRequired: reservation.expiresAt <= now
+                    || device?.lifecycle == .recoveryRequired
+            )
+        }
     }
 
     private func activeWaiters(

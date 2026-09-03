@@ -8,6 +8,7 @@ public protocol MenuStatusProviding: Sendable {
 public enum MenuStatusError: LocalizedError, Equatable {
     case commandFailed(code: Int32, stderr: String)
     case invalidJSON
+    case timedOut
 
     public var errorDescription: String? {
         switch self {
@@ -18,14 +19,23 @@ public enum MenuStatusError: LocalizedError, Equatable {
                 : "simlease status failed with exit code \(code): \(detail)"
         case .invalidJSON:
             return "simlease status returned invalid JSON"
+        case .timedOut:
+            return "simlease status timed out"
         }
     }
+}
+
+private final class StatusProcessBox: @unchecked Sendable {
+    let process = Process()
+    let stdout = Pipe()
+    let stderr = Pipe()
 }
 
 public actor CLIStatusProvider: MenuStatusProviding {
     private let environment: [String: String]
     private let bundledExecutable: URL?
     private let homeDirectory: URL
+    private let timeout: Duration
 
     public init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -34,40 +44,77 @@ public actor CLIStatusProvider: MenuStatusProviding {
             withExtension: nil,
             subdirectory: "bin"
         ),
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        timeout: Duration = .seconds(10)
     ) {
         self.environment = environment
         self.bundledExecutable = bundledExecutable
         self.homeDirectory = homeDirectory
+        self.timeout = timeout
     }
 
     public func fetch() async throws -> LeaseStatus {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.executableURL = executableURL
-        process.arguments = ["status", "--json"]
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        process.waitUntilExit()
-
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errorOutput = stderr.fileHandleForReading.readDataToEndOfFile()
-        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-            let code = process.terminationReason == .exit
-                ? process.terminationStatus
-                : 128 + process.terminationStatus
-            throw MenuStatusError.commandFailed(
-                code: code,
-                stderr: String(decoding: errorOutput, as: UTF8.self)
-            )
+        let box = StatusProcessBox()
+        box.process.executableURL = executableURL
+        box.process.arguments = ["status", "--json"]
+        box.process.standardOutput = box.stdout
+        box.process.standardError = box.stderr
+        do {
+            try box.process.run()
+        } catch {
+            throw MenuStatusError.commandFailed(code: 127, stderr: "\(error)")
         }
-
-        guard let status = try? JSONDecoder.simLease.decode(LeaseStatus.self, from: output) else {
-            throw MenuStatusError.invalidJSON
+        let timeout = timeout
+        return try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: LeaseStatus.self) { group in
+                group.addTask { try await self.collectResult(box) }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    if box.process.isRunning {
+                        box.process.terminate()
+                    }
+                    throw MenuStatusError.timedOut
+                }
+                guard let result = try await group.next() else {
+                    throw MenuStatusError.invalidJSON
+                }
+                group.cancelAll()
+                return result
+            }
+        } onCancel: {
+            if box.process.isRunning {
+                box.process.terminate()
+            }
         }
-        return status
+    }
+
+    private func collectResult(_ box: StatusProcessBox) async throws -> LeaseStatus {
+        try await withCheckedThrowingContinuation { continuation in
+            box.process.terminationHandler = { process in
+                process.terminationHandler = nil
+                let output = box.stdout.fileHandleForReading.readDataToEndOfFile()
+                let errorOutput = box.stderr.fileHandleForReading.readDataToEndOfFile()
+                guard process.terminationReason == .exit,
+                      process.terminationStatus == 0 else {
+                    let code = process.terminationReason == .exit
+                        ? process.terminationStatus
+                        : 128 + process.terminationStatus
+                    continuation.resume(throwing: MenuStatusError.commandFailed(
+                        code: code,
+                        stderr: String(decoding: errorOutput, as: UTF8.self)
+                    ))
+                    return
+                }
+                guard let status = try? JSONDecoder.simLease.decode(
+                    LeaseStatus.self,
+                    from: output
+                ) else {
+                    continuation.resume(throwing: MenuStatusError.invalidJSON)
+                    return
+                }
+                continuation.resume(returning: status)
+            }
+        }
     }
 
     private var executableURL: URL {
@@ -123,7 +170,39 @@ public struct PreviewStatusProvider: MenuStatusProviding {
                     threadTitle: threadTitle
                 )
             }
-            status = LeaseStatus(state: .leased, owner: owner, waiters: waiters, error: nil)
+            let lanes = [
+                LeaseLaneSummary(
+                    laneID: "lane-1",
+                    slot: 1,
+                    project: "AnimAtlas",
+                    threadID: "019faaef-c552-7933",
+                    threadTitle: "[AnimAtlas] Validate the complete onboarding and camera rescue experience",
+                    udid: "UDID-1",
+                    deviceTypeName: "iPhone 17 Pro",
+                    runtimeName: "iOS 27.0",
+                    lastActivityAt: now.addingTimeInterval(-95),
+                    recoveryRequired: false
+                ),
+                LeaseLaneSummary(
+                    laneID: "lane-2",
+                    slot: 2,
+                    project: "Set",
+                    threadID: nil,
+                    threadTitle: nil,
+                    udid: "UDID-2",
+                    deviceTypeName: "iPhone 17",
+                    runtimeName: "iOS 26.0",
+                    lastActivityAt: now.addingTimeInterval(-7_500),
+                    recoveryRequired: true
+                ),
+            ]
+            status = LeaseStatus(
+                state: .leased,
+                owner: owner,
+                waiters: waiters,
+                lanes: lanes,
+                error: nil
+            )
         case "error":
             status = LeaseStatus(
                 state: .metadataError,

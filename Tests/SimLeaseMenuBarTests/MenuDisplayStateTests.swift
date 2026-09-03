@@ -72,6 +72,69 @@ final class MenuDisplayStateTests: XCTestCase {
         XCTAssertEqual(StatusTheme.colorName(for: .metadataError), "red")
     }
 
+    func testLaneSummariesMapToDisplayItems() {
+        let status = LeaseStatus(
+            state: .leased,
+            owner: owner(),
+            waiters: [],
+            lanes: [
+                LeaseLaneSummary(
+                    laneID: "lane-1",
+                    slot: 1,
+                    project: "ExplorerDex",
+                    threadID: "thread-1",
+                    threadTitle: "Simulator validation",
+                    udid: "UDID-1",
+                    deviceTypeName: "iPhone 17 Pro",
+                    runtimeName: "iOS 27.0",
+                    lastActivityAt: Date(timeIntervalSince1970: 400),
+                    recoveryRequired: false
+                ),
+                LeaseLaneSummary(
+                    laneID: "lane-2",
+                    slot: 2,
+                    project: "Set",
+                    threadID: nil,
+                    threadTitle: nil,
+                    udid: "UDID-2",
+                    deviceTypeName: "iPhone 17",
+                    runtimeName: "iOS 26.0",
+                    lastActivityAt: Date(timeIntervalSince1970: 100),
+                    recoveryRequired: true
+                ),
+            ],
+            error: nil
+        )
+
+        let state = MenuDisplayState(
+            status: status,
+            now: Date(timeIntervalSince1970: 502)
+        )
+
+        XCTAssertEqual(
+            state.lanes,
+            [
+                LaneDisplayItem(
+                    id: "lane-1",
+                    name: "Simulator validation",
+                    detail: "iPhone 17 Pro · iOS 27.0",
+                    elapsed: "01:42",
+                    udid: "UDID-1",
+                    recoveryRequired: false
+                ),
+                LaneDisplayItem(
+                    id: "lane-2",
+                    name: "Set",
+                    detail: "iPhone 17 · iOS 26.0",
+                    elapsed: "06:42",
+                    udid: "UDID-2",
+                    recoveryRequired: true
+                ),
+            ]
+        )
+        XCTAssertEqual(MenuDisplayState.free.lanes, [])
+    }
+
     func testManualHoldUsesStableIdentity() {
         let status = LeaseStatus(
             state: .leased,

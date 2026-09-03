@@ -40,26 +40,52 @@ public final class MetadataStore: @unchecked Sendable {
         do {
             urls = try FileManager.default.contentsOfDirectory(
                 at: paths.waiters,
-                includingPropertiesForKeys: nil
+                includingPropertiesForKeys: [.isDirectoryKey]
             )
         } catch {
             throw error
         }
 
-        return try urls
-            .filter { !$0.lastPathComponent.hasPrefix(".") }
-            .map { url in
+        var waiters = [LeaseWaiter]()
+        for url in urls {
+            guard !url.lastPathComponent.hasPrefix(".") else { continue }
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            if values?.isDirectory == true { continue }
+            do {
                 guard let waiter = try read(LeaseWaiter.self, from: url) else {
-                    throw MetadataStoreError.corruptFile(url)
+                    continue
                 }
-                return waiter
-            }
-            .sorted {
-                if $0.waitingSince == $1.waitingSince {
-                    return $0.id < $1.id
+                waiters.append(waiter)
+            } catch let storeError as MetadataStoreError {
+                guard storeError == .corruptFile(url) else {
+                    throw storeError
                 }
-                return $0.waitingSince < $1.waitingSince
+                try quarantineCorruptWaiter(at: url, original: storeError)
             }
+        }
+        return waiters.sorted {
+            if $0.waitingSince == $1.waitingSince {
+                return $0.id < $1.id
+            }
+            return $0.waitingSince < $1.waitingSince
+        }
+    }
+
+    private func quarantineCorruptWaiter(at url: URL, original: Error) throws {
+        let quarantine = paths.waiters.appendingPathComponent(
+            ".quarantine",
+            isDirectory: true
+        )
+        do {
+            try Self.createDirectory(quarantine)
+            let stamp = Int(Date().timeIntervalSince1970)
+            let destination = quarantine.appendingPathComponent(
+                "\(url.lastPathComponent).corrupt-\(stamp).json"
+            )
+            try FileManager.default.moveItem(at: url, to: destination)
+        } catch {
+            throw original
+        }
     }
 
     public func removeWaiter(id: String) throws {
@@ -90,12 +116,20 @@ public final class MetadataStore: @unchecked Sendable {
     }
 
     private func read<Value: Decodable>(_ type: Value.Type, from url: URL) throws -> Value? {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return nil
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            let nsError = error as NSError
+            if nsError.domain == NSCocoaErrorDomain,
+               nsError.code == NSFileReadNoSuchFileError {
+                return nil
+            }
+            throw error
         }
         do {
-            return try JSONDecoder.simLease.decode(Value.self, from: Data(contentsOf: url))
-        } catch {
+            return try JSONDecoder.simLease.decode(Value.self, from: data)
+        } catch is DecodingError {
             throw MetadataStoreError.corruptFile(url)
         }
     }

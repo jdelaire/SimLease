@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Swift tests
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          swift test
+
+      - name: Verify local packaging
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          scripts/package-app.sh
+          zsh Tests/InstallationTests/install-app.zsh
+          zsh Tests/InstallationTests/install-relaunch.zsh
