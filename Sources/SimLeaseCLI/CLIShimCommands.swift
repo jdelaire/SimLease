@@ -22,6 +22,10 @@ extension SimLeaseCLI {
         let childArguments = Array(invocation.dropFirst())
         let decision = ProtectedCommand.classify(invocation: invocation)
 
+        // One latch spans acquisition, lane setup, and child execution so
+        // SIGTERM is observed rather than killing us with the lease held.
+        let signals = SignalLatch()
+
         guard decision.requiresLease, environment["SIMLEASE_HELD"] != "1" else {
             return try ChildProcessRunner.run(
                 executable: executable,
@@ -73,7 +77,8 @@ extension SimLeaseCLI {
             let global = try acquireGlobalLease(
                 coordinator: coordinator,
                 identity: identity,
-                configuration: configuration
+                configuration: configuration,
+                signals: signals
             )
             var laneHandle: LaneLockHandle?
             defer { laneHandle?.release() }
@@ -104,7 +109,8 @@ extension SimLeaseCLI {
             let global = try acquireGlobalLease(
                 coordinator: coordinator,
                 identity: identity,
-                configuration: configuration
+                configuration: configuration,
+                signals: signals
             )
             defer { global.release() }
             let state = try laneStore.readState()
@@ -139,10 +145,10 @@ extension SimLeaseCLI {
     private static func acquireGlobalLease(
         coordinator: LeaseCoordinator,
         identity: LeaseIdentity,
-        configuration: CLIConfiguration
+        configuration: CLIConfiguration,
+        signals: SignalLatch
     ) throws -> LeaseHandle {
-        let signals = SignalLatch()
-        return try coordinator.acquire(
+        try coordinator.acquire(
             identity: identity,
             onWaitReport: waitReporter(configuration.standardError),
             cancellationSignal: { signals.current }
