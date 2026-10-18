@@ -5,6 +5,168 @@ import Darwin
 @testable import SimLeaseCLI
 
 final class CLIScaffoldTests: XCTestCase {
+    func testCleanupUsesInternalXcrunWithShimFirstPath() throws {
+        let fixture = try CLIFixture()
+        let marker = fixture.root.appendingPathComponent("recursive-shim")
+        let tools = try fixture.makeToolDirectory(name: "xcrun", script: "/usr/bin/touch \"$SHIM_MARKER\"; exit 1")
+        let environment = [
+            "PATH": "\(tools.path):/usr/bin:/bin", "SHIM_MARKER": marker.path,
+            "SIMLEASE_CLEANUP_HOME": fixture.root.appendingPathComponent("home").path,
+            "SIMLEASE_CLEANUP_TMP": fixture.root.appendingPathComponent("tmp").path,
+        ]
+        XCTAssertEqual(SimLeaseCLI.run(
+            arguments: ["simlease", "clean", "plan", "--json"], environment: environment, configuration: fixture.configuration
+        ), 0, fixture.errors.value)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testAgentDeviceDaemonToolsDoNotReacquireClientLane() throws {
+        let fixture = try CLIFixture()
+        let pathFile = fixture.root.appendingPathComponent("daemon-path")
+        let tools = try fixture.makeToolDirectory(name: "agent-device", script: "printf '%s' \"$PATH\" > \"$DAEMON_PATH\"")
+        let xcrun = tools.appendingPathComponent("xcrun")
+        try Data("#!/bin/sh\nexit 17\n".utf8).write(to: xcrun)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: xcrun.path)
+        let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/debug/simlease")
+        for name in ["simlease", "agent-device", "xcrun"] {
+            try FileManager.default.createSymbolicLink(at: fixture.shimDirectory.appendingPathComponent(name), withDestinationURL: executable)
+        }
+        let alias = fixture.root.appendingPathComponent("shim-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.shimDirectory)
+        let environment = [
+            "PATH": "\(fixture.shimDirectory.path):\(alias.path):\(tools.path):/usr/bin:/bin",
+            "DAEMON_PATH": pathFile.path, "SIMLEASE_CACHE_ROOT": fixture.paths.root.path,
+        ]
+        let invocations = [
+            [fixture.shimDirectory.appendingPathComponent("agent-device").path, "daemon", "start"],
+            ["simlease", "run", "--", tools.appendingPathComponent("agent-device").path, "snapshot"],
+            ["simlease", "run", "--", fixture.shimDirectory.appendingPathComponent("agent-device").path, "snapshot"],
+        ]
+        for invocation in invocations {
+            XCTAssertEqual(SimLeaseCLI.run(arguments: invocation, environment: environment, configuration: fixture.configuration), 0)
+            let daemonPath = try String(contentsOf: pathFile, encoding: .utf8)
+            XCTAssertEqual(daemonPath, "\(tools.path):/usr/bin:/bin")
+            let coordinator = LeaseCoordinator(paths: fixture.paths, store: try MetadataStore(paths: fixture.paths))
+            let identity = LeaseIdentity(pid: getpid(), cwd: fixture.root.path, project: "client", command: [], source: .manualXcode, threadID: nil, threadTitle: nil)
+            let handle = try XCTUnwrap(coordinator.tryAcquire(identity: identity))
+            defer { handle.release() }
+            let daemon = Process()
+            daemon.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            daemon.arguments = ["xcrun", "simctl", "boot"]
+            daemon.environment = ["PATH": daemonPath, "SIMLEASE_CACHE_ROOT": fixture.paths.root.path]
+            daemon.standardOutput = Pipe()
+            daemon.standardError = Pipe()
+            try daemon.run()
+            defer { fixture.stop(daemon) }
+            let deadline = Date(timeIntervalSinceNow: 1)
+            while daemon.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            if daemon.isRunning { fixture.stop(daemon) }
+            XCTAssertEqual(daemon.terminationStatus, 17)
+        }
+    }
+
+    func testCrashRecoveryStopsVerifiedChildAndClearsJournal() throws {
+        let fixture = try CLIFixture()
+        let (process, record) = try fixture.startManagedTask()
+        let child = try XCTUnwrap(record.child)
+        defer {
+            fixture.stop(process)
+            try? TaskProcessRunner.stopGroup(child)
+        }
+        _ = kill(process.processIdentifier, SIGKILL)
+        process.waitUntilExit()
+
+        let code = SimLeaseCLI.run(arguments: ["simlease", "recover"], environment: [:], configuration: fixture.configuration)
+
+        XCTAssertEqual(code, 0)
+        XCTAssertFalse(ProcessReference.isRunning(pid: child.pid))
+        XCTAssertNil(try SimulatorTaskStore(paths: fixture.paths).read())
+    }
+
+    func testCopiedAndStaleTaskTokensCannotBypassActiveOwner() throws {
+        let fixture = try CLIFixture(timeout: .milliseconds(80))
+        let tools = try fixture.makeToolDirectory(name: "axe", script: "exit 0")
+        let shim = try fixture.makeShim(name: "axe")
+        let (first, firstRecord) = try fixture.startManagedTask()
+        defer { fixture.stop(first) }
+        let environment = [
+            "PATH": "\(fixture.shimDirectory.path):\(tools.path)",
+            "SIMLEASE_HELD": "1", "SIMLEASE_TOKEN": firstRecord.token,
+        ]
+        XCTAssertEqual(SimLeaseCLI.run(arguments: [shim.path, "tap"], environment: environment, configuration: fixture.configuration), 75)
+        fixture.stop(first)
+        let (second, secondRecord) = try fixture.startManagedTask()
+        defer { fixture.stop(second) }
+        XCTAssertNotEqual(firstRecord.token, secondRecord.token)
+        XCTAssertEqual(SimLeaseCLI.run(arguments: [shim.path, "tap"], environment: environment, configuration: fixture.configuration), 75)
+    }
+
+    func testNestedTaskCannotAddDeviceOutsideOuterScope() throws {
+        let fixture = try CLIFixture()
+        let marker = fixture.root.appendingPathComponent("must-not-run")
+        let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/debug/simlease")
+        let code = SimLeaseCLI.run(
+            arguments: ["simlease", "run", "--", executable.path, "run", "--device", "11111111-1111-4111-8111-111111111111", "--", "/usr/bin/touch", marker.path],
+            environment: ProcessInfo.processInfo.environment.merging(["SIMLEASE_CACHE_ROOT": fixture.paths.root.path]) { _, new in new },
+            configuration: fixture.configuration
+        )
+        XCTAssertEqual(code, 74)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testDoctorReportsMissingShimCoverage() throws {
+        let fixture = try CLIFixture()
+        XCTAssertEqual(SimLeaseCLI.run(
+            arguments: ["simlease", "doctor", "--json"],
+            environment: ["PATH": "/usr/bin:/bin"], configuration: fixture.configuration
+        ), 0)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(fixture.output.value.utf8)) as? [String: Any])
+        let commands = try XCTUnwrap(object["commands"] as? [[String: Any]])
+        let xcrun = try XCTUnwrap(commands.first { $0["name"] as? String == "xcrun" })
+        XCTAssertEqual(xcrun["shimmed"] as? Bool, false)
+        XCTAssertEqual(xcrun["path"] as? String, "/usr/bin/xcrun")
+    }
+
+    func testRunAcceptsAbsoluteCommandAndPreservesFailureCode() throws {
+        let fixture = try CLIFixture()
+        let code = SimLeaseCLI.run(
+            arguments: ["simlease", "run", "--", "/bin/sh", "-c", "exit 17"],
+            environment: [:], configuration: fixture.configuration
+        )
+        XCTAssertEqual(code, 17)
+        XCTAssertNil(try SimulatorTaskStore(paths: fixture.paths).read())
+        XCTAssertEqual(try LeaseCoordinator(paths: fixture.paths, store: MetadataStore(paths: fixture.paths)).status().state, .free)
+    }
+
+    func testRunPreservesArgumentsWithoutShellEvaluation() throws {
+        let fixture = try CLIFixture()
+        let marker = fixture.root.appendingPathComponent("argument")
+        let code = SimLeaseCLI.run(
+            arguments: ["simlease", "run", "--", "/bin/sh", "-c", "printf '%s' \"$1\" > \"$2\"", "job", "value with spaces; literal", marker.path],
+            environment: [:], configuration: fixture.configuration
+        )
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "value with spaces; literal")
+    }
+
+    func testNestedShimCanUseValidatedTaskScope() throws {
+        let fixture = try CLIFixture()
+        let tools = try fixture.makeToolDirectory(name: "axe", script: "exit 7")
+        let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/debug/simlease")
+        let shim = fixture.shimDirectory.appendingPathComponent("axe")
+        try FileManager.default.createSymbolicLink(at: shim, withDestinationURL: executable)
+
+        let code = SimLeaseCLI.run(
+            arguments: ["simlease", "run", "--", shim.path, "tap"],
+            environment: ProcessInfo.processInfo.environment.merging([
+                "PATH": "\(fixture.shimDirectory.path):\(tools.path):/usr/bin:/bin",
+                "SIMLEASE_CACHE_ROOT": fixture.paths.root.path,
+            ]) { _, new in new }, configuration: fixture.configuration
+        )
+
+        XCTAssertEqual(code, 7)
+    }
+
     func testVersionPrintsPublicVersion() throws {
         let fixture = try CLIFixture()
 
@@ -102,7 +264,7 @@ final class CLIScaffoldTests: XCTestCase {
         XCTAssertEqual(try MetadataStore(paths: fixture.paths).readOwner(), nil)
     }
 
-    func testHeldMarkerSkipsRecursiveLeaseAttempt() throws {
+    func testUnvalidatedHeldMarkerCannotBypassAnotherOwner() throws {
         let fixture = try CLIFixture(timeout: .milliseconds(80))
         let tools = try fixture.makeToolDirectory(
             name: "axe",
@@ -121,7 +283,7 @@ final class CLIScaffoldTests: XCTestCase {
             configuration: fixture.configuration
         )
 
-        XCTAssertEqual(code, 0)
+        XCTAssertEqual(code, 75)
     }
 
     func testBusyProtectedShimTimesOutWith75() throws {
@@ -280,6 +442,25 @@ private final class CLIFixture {
         }
         XCTFail("holder did not acquire lock")
         return process
+    }
+
+    func startManagedTask() throws -> (Process, SimulatorTaskRecord) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/debug/simlease")
+        process.arguments = ["run", "--", "/bin/sleep", "30"]
+        process.environment = ProcessInfo.processInfo.environment.merging(["SIMLEASE_CACHE_ROOT": paths.root.path]) { _, new in new }
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while Date() < deadline {
+            if let record = try SimulatorTaskStore(paths: paths).read(), record.phase == .running, record.child != nil {
+                return (process, record)
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        stop(process)
+        throw NSError(domain: "managed task did not start", code: 1)
     }
 
     func stop(_ process: Process) {

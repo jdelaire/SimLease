@@ -23,6 +23,10 @@ public struct LeasePaths: Equatable, Sendable {
         root.appendingPathComponent("owner.json")
     }
 
+    public var task: URL {
+        root.appendingPathComponent("task.json")
+    }
+
     public var waiters: URL {
         root.appendingPathComponent("waiters", isDirectory: true)
     }

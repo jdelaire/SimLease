@@ -2,6 +2,25 @@ import XCTest
 @testable import SimLeaseCLI
 
 final class CommandParserTests: XCTestCase {
+    func testParsesTaskScopeAndRejectsAmbiguousDeviceSelection() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        XCTAssertEqual(try CommandParser.parse([
+            "simlease", "run", "--device", id, "--keep-running", "--", "/bin/true",
+        ]), .run(deviceIDs: [id], keepRunning: true, command: ["/bin/true"]))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "recover"]), .recover)
+        XCTAssertEqual(try CommandParser.parse([
+            "simlease", "hold", "--title", "UI verification", "--project", "App", "--device", id,
+        ]), .hold(title: "UI verification", project: "App", deviceIDs: [id], keepRunning: false))
+        for arguments in [
+            ["simlease", "run", "--device", "booted", "--", "/bin/true"],
+            ["simlease", "run", "--device", "../bad", "--", "/bin/true"],
+            ["simlease", "run", "--keep-running", "--keep-running", "--", "/bin/true"],
+            ["simlease", "run", "--"],
+        ] {
+            XCTAssertThrowsError(try CommandParser.parse(arguments))
+        }
+    }
+
     func testParsesSupportedCommandsAndShimDispatch() throws {
         XCTAssertEqual(
             try CommandParser.parse(["simlease", "--version"]),

@@ -90,19 +90,32 @@ public enum SimLeaseCLI {
                     "--current-version",
                     SimLeaseBuild.currentVersion.description,
                 ])
+            case .run(let ids, let keepRunning, let command):
+                return try runTask(command: command, deviceIDs: ids, keepRunning: keepRunning, environment: environment, configuration: configuration)
+            case .recover:
+                let store = try MetadataStore(paths: configuration.paths)
+                let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: arguments, store: store)
+                try taskService(environment: environment, configuration: configuration).recover(identity: identity)
+                configuration.standardOutput("SimLease: recovery complete\n")
+                return 0
             case .status(let json):
                 return try runStatus(json: json, configuration: configuration)
+            case .doctor(let json):
+                return try CoverageDoctor.run(json: json, environment: environment, configuration: configuration)
             case .name(let title):
                 return try runName(
                     title: title,
                     environment: environment,
                     configuration: configuration
                 )
-            case .hold(let title, let project):
+            case .hold(let title, let project, let ids, let keepRunning):
                 return try runHold(
                     title: title,
                     project: project,
+                    deviceIDs: ids,
+                    keepRunning: keepRunning,
                     arguments: arguments,
+                    environment: environment,
                     configuration: configuration
                 )
             case .cleanPlan(let json):
@@ -130,7 +143,7 @@ public enum SimLeaseCLI {
             }
         } catch CommandParserError.usage {
             configuration.standardError(
-                "Usage: simlease <status|name|hold|clean|update|--version>\n"
+                "Usage: simlease <run|recover|doctor|status|name|hold|clean|update|--version>\n"
             )
             return 64
         } catch UpdateRunnerError.missingUpdater {
@@ -237,13 +250,7 @@ public enum SimLeaseCLI {
         if let path = environment["SIMLEASE_XCRUN_PATH"] {
             xcrunURL = URL(fileURLWithPath: path)
         } else {
-            xcrunURL = try ExecutableResolver.resolve(
-                name: "xcrun",
-                path: environment["PATH"] ?? "/usr/bin:/bin",
-                excluding: URL(
-                    fileURLWithPath: "/__simlease_no_exclusion__"
-                )
-            )
+            xcrunURL = URL(fileURLWithPath: "/usr/bin/xcrun")
         }
         let psURL = environment["SIMLEASE_PS_PATH"].map {
             URL(fileURLWithPath: $0)
@@ -254,11 +261,7 @@ public enum SimLeaseCLI {
             environment: environment
         )
         #else
-        let xcrunURL = try ExecutableResolver.resolve(
-            name: "xcrun",
-            path: environment["PATH"] ?? "/usr/bin:/bin",
-            excluding: URL(fileURLWithPath: "/__simlease_no_exclusion__")
-        )
+        let xcrunURL = URL(fileURLWithPath: "/usr/bin/xcrun")
         let psURL = URL(fileURLWithPath: "/bin/ps")
         let provider = ProcessCleanupInventoryProvider(
             xcrunURL: xcrunURL,
@@ -352,7 +355,10 @@ public enum SimLeaseCLI {
         configuration: CLIConfiguration
     ) throws -> Int32 {
         let coordinator = try makeCoordinator(configuration: configuration)
-        let status = try coordinator.status()
+        var status = try coordinator.status()
+        if status.state == .free, let record = try SimulatorTaskStore(paths: configuration.paths).read() {
+            status = LeaseStatus(state: .metadataError, owner: nil, waiters: status.waiters, error: "unfinished task \(record.token): \(record.failure ?? record.phase.rawValue); run simlease recover")
+        }
         if json {
             let data = try JSONEncoder.simLease.encode(status)
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
@@ -378,38 +384,65 @@ public enum SimLeaseCLI {
     private static func runHold(
         title: String,
         project: String,
+        deviceIDs: [String],
+        keepRunning: Bool,
         arguments: [String],
+        environment: [String: String],
         configuration: CLIConfiguration
     ) throws -> Int32 {
-        let store = try MetadataStore(paths: configuration.paths)
-        let coordinator = LeaseCoordinator(
-            paths: configuration.paths,
-            store: store,
-            timing: configuration.timing
-        )
-        let cwd = FileManager.default.currentDirectoryPath
         let identity = LeaseIdentity(
-            pid: getpid(),
-            cwd: cwd,
-            project: project,
-            command: arguments,
-            source: .manualXcode,
-            threadID: nil,
-            threadTitle: title
+            pid: getpid(), cwd: FileManager.default.currentDirectoryPath,
+            project: project, command: arguments, source: .manualXcode,
+            threadID: environment["CODEX_THREAD_ID"], threadTitle: title
         )
-        let signals = SignalLatch()
-        let handle = try coordinator.acquire(
-            identity: identity,
-            onWaitReport: waitReporter(configuration.standardError),
-            cancellationSignal: { signals.current }
+        configuration.standardOutput("SimLease: reserving for \(title) (\(project)); press Ctrl-C to release\n")
+        return try taskService(environment: environment, configuration: configuration).run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "while :; do /bin/sleep 3600; done"],
+            deviceIDs: deviceIDs, keepRunning: keepRunning, environment: environment, identity: identity
         )
-        configuration.standardOutput("SimLease: acquired for \(title) (\(project)); press Ctrl-C to release\n")
-        while signals.current == nil {
-            Thread.sleep(forTimeInterval: 0.1)
+    }
+
+    private static func taskService(
+        environment: [String: String], configuration: CLIConfiguration
+    ) -> SimulatorTaskService {
+        SimulatorTaskService(
+            paths: configuration.paths,
+            devices: SimulatorDeviceController(environment: environment),
+            timing: configuration.timing, report: configuration.standardError
+        )
+    }
+
+    private static func runTask(
+        command: [String], deviceIDs: [String], keepRunning: Bool,
+        environment: [String: String], configuration: CLIConfiguration
+    ) throws -> Int32 {
+        guard let name = command.first else { throw CommandParserError.usage }
+        let executable: URL
+        if name.contains("/") {
+            executable = URL(fileURLWithPath: name).standardizedFileURL
+            guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+                throw ExecutableResolutionError.notFound(name)
+            }
+        } else {
+            executable = try ExecutableResolver.resolve(
+                name: name, path: environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin",
+                excluding: URL(fileURLWithPath: "/dev/null")
+            )
         }
-        let signal = signals.current ?? SIGINT
-        handle.release()
-        return 128 + signal
+        let store = try MetadataStore(paths: configuration.paths)
+        let ids = deviceIDs + SimulatorCommand.referencedDeviceIDs(in: command)
+        let arguments = SimulatorCommand.argumentsForManagedTask(executable: executable.path, arguments: Array(command.dropFirst()), hasDevices: !ids.isEmpty)
+        let childEnvironment = ManagedToolEnvironment.make(executable: executable, arguments: arguments, environment: environment)
+        if try SimulatorTaskStore(paths: configuration.paths).authorizesNestedCommand(environment: environment, pid: getpid()) {
+            try SimulatorTaskStore(paths: configuration.paths).validateNestedDevices(ids)
+            return try ChildProcessRunner.run(executable: executable, arguments: arguments, environment: childEnvironment).exitCode
+        }
+        let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: command, store: store)
+        return try taskService(environment: environment, configuration: configuration).run(
+            executable: executable, arguments: arguments, deviceIDs: ids,
+            keepRunning: keepRunning, environment: childEnvironment, identity: identity
+        )
     }
 
     private static func runShim(
@@ -430,43 +463,28 @@ public enum SimLeaseCLI {
         let childArguments = Array(invocation.dropFirst())
         let decision = ProtectedCommand.classify(invocation: invocation)
 
-        guard decision.requiresLease, environment["SIMLEASE_HELD"] != "1" else {
-            return try ChildProcessRunner.run(
-                executable: executable,
-                arguments: childArguments,
-                environment: environment
-            ).exitCode
+        let journal = SimulatorTaskStore(paths: configuration.paths)
+        let nested = try journal.authorizesNestedCommand(environment: environment, pid: getpid())
+        let taskDevices = nested ? (try journal.read()?.deviceIDs ?? []) : []
+        let ids = SimulatorCommand.referencedDeviceIDs(in: invocation)
+        if nested { try journal.validateNestedDevices(SimulatorCommand.referencedDeviceIDs(in: invocation)) }
+        let arguments = SimulatorCommand.argumentsForManagedTask(executable: executable.path, arguments: childArguments, hasDevices: !ids.isEmpty || !taskDevices.isEmpty)
+        let childEnvironment = ManagedToolEnvironment.make(
+            executable: executable, arguments: arguments, environment: environment,
+            shimDirectory: invokedURL.deletingLastPathComponent()
+        )
+        guard decision.requiresLease, !nested else {
+            return try ChildProcessRunner.run(executable: executable, arguments: arguments, environment: childEnvironment).exitCode
         }
-
         let store = try MetadataStore(paths: configuration.paths)
-        let coordinator = LeaseCoordinator(
-            paths: configuration.paths,
-            store: store,
-            timing: configuration.timing
-        )
         let identity = try LeaseIdentity.resolve(
-            environment: environment,
-            cwd: FileManager.default.currentDirectoryPath,
-            command: invocation,
-            store: store
+            environment: environment, cwd: FileManager.default.currentDirectoryPath,
+            command: invocation, store: store
         )
-        let handle: LeaseHandle = try {
-            let signals = SignalLatch()
-            return try coordinator.acquire(
-                identity: identity,
-                onWaitReport: waitReporter(configuration.standardError),
-                cancellationSignal: { signals.current }
-            )
-        }()
-        var childEnvironment = environment
-        childEnvironment["SIMLEASE_HELD"] = "1"
-        let result = try ChildProcessRunner.run(
-            executable: executable,
-            arguments: childArguments,
-            environment: childEnvironment
+        return try taskService(environment: environment, configuration: configuration).run(
+            executable: executable, arguments: arguments, deviceIDs: ids,
+            keepRunning: false, environment: childEnvironment, identity: identity
         )
-        handle.release()
-        return result.exitCode
     }
 
     private static func makeCoordinator(
@@ -523,47 +541,5 @@ public enum SimLeaseCLI {
             return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%02d:%02d", minutes, seconds)
-    }
-}
-
-private final class SignalLatch: @unchecked Sendable {
-    private let lock = NSLock()
-    private var received: Int32?
-    private var sources: [DispatchSourceSignal] = []
-    private let previousINT: sig_t?
-    private let previousTERM: sig_t?
-    private let previousHUP: sig_t?
-
-    init() {
-        previousINT = signal(SIGINT, SIG_IGN)
-        previousTERM = signal(SIGTERM, SIG_IGN)
-        previousHUP = signal(SIGHUP, SIG_IGN)
-
-        sources = [SIGINT, SIGTERM, SIGHUP].map { signalNumber in
-            let source = DispatchSource.makeSignalSource(
-                signal: signalNumber,
-                queue: .global()
-            )
-            source.setEventHandler { [weak self] in
-                self?.lock.withLock {
-                    if self?.received == nil {
-                        self?.received = signalNumber
-                    }
-                }
-            }
-            source.resume()
-            return source
-        }
-    }
-
-    deinit {
-        sources.forEach { $0.cancel() }
-        _ = signal(SIGINT, previousINT)
-        _ = signal(SIGTERM, previousTERM)
-        _ = signal(SIGHUP, previousHUP)
-    }
-
-    var current: Int32? {
-        lock.withLock { received }
     }
 }

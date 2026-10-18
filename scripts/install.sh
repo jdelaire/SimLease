@@ -53,7 +53,7 @@ mkdir -p \
   "$simlease_user_home/Applications" \
   "$launch_agent_dir"
 
-for command_name in simlease xcodebuild xcrun axe; do
+for command_name in simlease xcodebuild xcrun axe agent-device; do
   target="$simlease_shim_dir/$command_name"
   if [[ -e "$target" || -L "$target" ]]; then
     if [[ ! -L "$target" || "${target:A}" != "${installed_binary:A}" ]]; then
@@ -72,7 +72,7 @@ mkdir -p "$stage_lib/shims" "$backup_root"
 
 /usr/bin/install -m 0755 "$source_binary" "$stage_lib/simlease"
 /usr/bin/install -m 0755 "$source_updater" "$stage_lib/install-release.sh"
-for command_name in simlease xcodebuild xcrun axe; do
+for command_name in simlease xcodebuild xcrun axe agent-device; do
   ln -s "$installed_binary" "$stage_lib/shims/$command_name"
 done
 /usr/bin/ditto "$source_app" "$stage_app"
@@ -191,4 +191,4 @@ print -- "SimLease installed:"
 print -- "  app: $installed_app"
 print -- "  CLI: $installed_binary"
 print -- "  shims: $simlease_shim_dir"
-print -- "Restart login shells and Codex desktop to inherit PATH."
+print -- "Restart login shells and GUI agents to inherit PATH. Absolute tool launches require simlease run or hold."

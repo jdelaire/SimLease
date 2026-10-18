@@ -13,6 +13,17 @@ final class ProtectedCommandTests: XCTestCase {
             (["xcrun", "simctl", "list"], true),
             (["xcrun", "--sdk", "iphonesimulator", "simctl", "boot", "ABC"], true),
             (["xcrun", "swift", "--version"], false),
+            (["xcrun", "xcodebuild", "test"], true),
+            (["xcrun", "--sdk", "iphonesimulator", "xcodebuild", "test"], true),
+            (["xcrun", "--find", "xcodebuild"], false),
+            (["xcrun", "--log", "xcodebuild", "test"], true),
+            (["agent-device", "open", "com.example.App"], true),
+            (["agent-device", "--session", "qa", "snapshot", "-i"], true),
+            (["agent-device", "--help"], false),
+            (["agent-device", "daemon", "start"], false),
+            (["agent-device", "--session", "qa", "daemon", "start"], false),
+            (["agent-device", "--session", "daemon", "snapshot"], true),
+            (["agent-device", "--session", "capabilities", "snapshot"], true),
             (["axe", "tap", "--id", "Done"], true),
         ]
 

@@ -22,7 +22,7 @@ if [[ -f "$launch_agent" ]]; then
   rm "$launch_agent"
 fi
 
-for command_name in simlease xcodebuild xcrun axe; do
+for command_name in simlease xcodebuild xcrun axe agent-device; do
   target="$simlease_shim_dir/$command_name"
   if [[ -L "$target" && "${target:A}" == "${installed_binary:A}" ]]; then
     rm "$target"

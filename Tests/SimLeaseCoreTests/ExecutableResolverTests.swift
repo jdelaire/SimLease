@@ -15,10 +15,12 @@ final class ExecutableResolverTests: XCTestCase {
         try makeExecutable(at: shimDirectory.appendingPathComponent("xcrun"))
         let expected = toolsDirectory.appendingPathComponent("xcrun")
         try makeExecutable(at: expected)
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: shimDirectory)
 
         let resolved = try ExecutableResolver.resolve(
             name: "xcrun",
-            path: "\(shimDirectory.path):\(toolsDirectory.path)",
+            path: "\(shimDirectory.path):\(alias.path):\(toolsDirectory.path)",
             excluding: shimDirectory
         )
 

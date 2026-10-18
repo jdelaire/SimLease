@@ -3,6 +3,45 @@ import XCTest
 @testable import SimLeaseCore
 
 final class LeaseCoordinatorTests: XCTestCase {
+    func testUnfinishedTaskBlocksOrdinaryLeaseAcquisitionAndStatus() throws {
+        let fixture = try ProcessLeaseFixture()
+        let record = SimulatorTaskRecord(
+            token: UUID().uuidString, owner: try ProcessReference.current(),
+            deviceIDs: [], ownedDeviceIDs: [], phase: .quarantined
+        )
+        try SimulatorTaskStore(paths: fixture.paths).write(record)
+
+        XCTAssertThrowsError(try fixture.coordinator.tryAcquire(identity: fixture.identity))
+        XCTAssertEqual(try fixture.coordinator.status().state, .metadataError)
+    }
+
+    func testStatusDoesNotReleaseLeaseHeldBySameProcess() throws {
+        let fixture = try ProcessLeaseFixture()
+        let handle = try fixture.coordinator.acquire(identity: fixture.identity)
+        defer { handle.release() }
+
+        XCTAssertEqual(try fixture.coordinator.status().state, .leased)
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/usr/bin/lockf")
+        probe.arguments = ["-t", "0", fixture.paths.lock.path, "/usr/bin/true"]
+        probe.standardError = Pipe()
+        try probe.run()
+        probe.waitUntilExit()
+
+        XCTAssertNotEqual(probe.terminationStatus, 0)
+    }
+
+    func testSameProcessCannotAcquireSecondHandle() throws {
+        let fixture = try ProcessLeaseFixture()
+        let first = try fixture.coordinator.acquire(identity: fixture.identity)
+        defer { first.release() }
+
+        let second = try fixture.coordinator.tryAcquire(identity: fixture.identity)
+
+        XCTAssertNil(second)
+        second?.release()
+    }
+
     func testTryAcquireReturnsNilWithoutCreatingWaiterWhenBusy() throws {
         let fixture = try ProcessLeaseFixture()
         defer { fixture.stopHolder() }

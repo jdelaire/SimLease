@@ -23,10 +23,17 @@ public enum ProtectedCommand {
         case "axe":
             return ProtectionDecision(requiresLease: true, toolName: toolName)
         case "xcrun":
+            let selected = selectedXcrunTool(in: arguments)
             return ProtectionDecision(
-                requiresLease: selectedXcrunTool(in: arguments) == "simctl",
+                requiresLease: selected == "simctl"
+                    || (selected == "xcodebuild" && !arguments.contains("--find") && !arguments.contains("-f")),
                 toolName: toolName
             )
+        case "agent-device":
+            let informational = arguments.isEmpty
+                || arguments == ["--help"] || arguments == ["--version"]
+                || ["daemon", "capabilities", "help"].contains(agentDeviceCommand(in: arguments) ?? "")
+            return ProtectionDecision(requiresLease: !informational, toolName: toolName)
         case "xcodebuild":
             let testActions = Set(["test", "test-without-building", "build-for-testing"])
             let hasTestAction = arguments.contains { testActions.contains($0) }
@@ -48,11 +55,10 @@ public enum ProtectedCommand {
         }
     }
 
-    private static func selectedXcrunTool(in arguments: [String]) -> String? {
+    static func selectedXcrunTool(in arguments: [String]) -> String? {
         let valueOptions = Set([
             "--sdk", "-sdk",
             "--toolchain", "-toolchain",
-            "--log", "-log",
         ])
         var index = 0
 
@@ -67,6 +73,23 @@ public enum ProtectedCommand {
             }
         }
 
+        return nil
+    }
+
+    private static func agentDeviceCommand(in arguments: [String]) -> String? {
+        let values = Set(["--session", "--platform", "--device", "--udid", "--serial", "--host", "--port", "--config", "--state-dir"])
+        let flags = Set(["--json", "--verbose", "--debug", "--no-color"])
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            if values.contains(argument) {
+                index += 2
+            } else if flags.contains(argument) || (argument.hasPrefix("--") && argument.contains("=")) {
+                index += 1
+            } else {
+                return argument.hasPrefix("-") ? nil : argument
+            }
+        }
         return nil
     }
 }

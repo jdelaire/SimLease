@@ -6,8 +6,8 @@ repository_root="${script_dir:h}"
 app="$repository_root/dist/SimLease.app"
 
 cd "$repository_root"
-swift build -c release --product simlease
-swift build -c release --product SimLeaseMenuBar
+swift build -c release -j "${SIMLEASE_BUILD_JOBS:-1}" --product simlease
+swift build -c release -j "${SIMLEASE_BUILD_JOBS:-1}" --product SimLeaseMenuBar
 bin_dir="$(swift build -c release --show-bin-path)"
 
 rm -rf "$app"

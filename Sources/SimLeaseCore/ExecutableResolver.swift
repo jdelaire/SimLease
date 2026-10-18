@@ -11,13 +11,13 @@ public enum ExecutableResolver {
         excluding directory: URL
     ) throws -> URL {
         let fileManager = FileManager.default
-        let excluded = directory.standardizedFileURL
+        let excluded = directory.standardizedFileURL.resolvingSymlinksInPath()
 
         for component in path.split(separator: ":", omittingEmptySubsequences: false) {
             let path = component.isEmpty ? fileManager.currentDirectoryPath : String(component)
             let candidateDirectory = URL(fileURLWithPath: path, isDirectory: true)
                 .standardizedFileURL
-            guard candidateDirectory != excluded else { continue }
+            guard candidateDirectory.resolvingSymlinksInPath() != excluded else { continue }
 
             let candidate = candidateDirectory.appendingPathComponent(name)
             var isDirectory: ObjCBool = false

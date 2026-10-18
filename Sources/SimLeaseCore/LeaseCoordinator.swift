@@ -32,9 +32,9 @@ public final class LeaseHandle: @unchecked Sendable {
         fileDescriptor = nil
         stateLock.unlock()
 
-        try? store.removeOwner()
-        _ = lockf(descriptor, F_ULOCK, 0)
-        _ = close(descriptor)
+        HostLaneLock.release(paths: store.paths, descriptor: descriptor) {
+            try? store.removeOwner()
+        }
     }
 }
 
@@ -63,9 +63,9 @@ public final class LeaseCoordinator: @unchecked Sendable {
     public func acquire(
         identity: LeaseIdentity,
         onWaitReport: @escaping @Sendable (LeaseStatus) -> Void = { _ in },
-        cancellationSignal: @escaping @Sendable () -> Int32? = { nil }
+        cancellationSignal: @escaping @Sendable () -> Int32? = { nil },
+        allowUnfinishedTask: Bool = false
     ) throws -> LeaseHandle {
-        let descriptor = try openLock()
         let started = clock.monotonicNow()
         var nextReport = timing.reportInterval
         let waitingSince = clock.wallNow()
@@ -81,48 +81,15 @@ public final class LeaseCoordinator: @unchecked Sendable {
             threadTitle: identity.threadTitle
         )
 
-        do {
-            try store.writeWaiter(waiter)
-        } catch {
-            _ = close(descriptor)
-            throw error
-        }
-
-        var acquired = false
-        defer {
-            if !acquired {
-                try? store.removeWaiter(id: waiter.id)
-                _ = close(descriptor)
-            }
-        }
+        try store.writeWaiter(waiter)
+        defer { try? store.removeWaiter(id: waiter.id) }
 
         while true {
-            if lockf(descriptor, F_TLOCK, 0) == 0 {
+            if let handle = try tryAcquire(identity: identity, allowUnfinishedTask: allowUnfinishedTask) {
                 try store.removeWaiter(id: waiter.id)
-                let owner = LeaseOwner(
-                    pid: identity.pid,
-                    acquiredAt: clock.wallNow(),
-                    cwd: identity.cwd,
-                    project: identity.project,
-                    command: identity.command,
-                    source: identity.source,
-                    threadID: identity.threadID,
-                    threadTitle: identity.threadTitle
-                )
-                do {
-                    try store.writeOwner(owner)
-                } catch {
-                    _ = lockf(descriptor, F_ULOCK, 0)
-                    throw error
-                }
-                acquired = true
-                return LeaseHandle(owner: owner, store: store, fileDescriptor: descriptor)
+                return handle
             }
 
-            let code = errno
-            guard code == EACCES || code == EAGAIN else {
-                throw LeaseAcquisitionError.systemCall("lockf", code)
-            }
             if let signal = cancellationSignal() {
                 throw LeaseAcquisitionError.cancelled(signal)
             }
@@ -139,14 +106,8 @@ public final class LeaseCoordinator: @unchecked Sendable {
         }
     }
 
-    public func tryAcquire(identity: LeaseIdentity) throws -> LeaseHandle? {
-        let descriptor = try openLock()
-        guard lockf(descriptor, F_TLOCK, 0) == 0 else {
-            let code = errno
-            _ = close(descriptor)
-            guard code == EACCES || code == EAGAIN else {
-                throw LeaseAcquisitionError.systemCall("lockf", code)
-            }
+    public func tryAcquire(identity: LeaseIdentity, allowUnfinishedTask: Bool = false) throws -> LeaseHandle? {
+        guard let descriptor = try HostLaneLock.acquire(paths: paths) else {
             return nil
         }
 
@@ -161,32 +122,24 @@ public final class LeaseCoordinator: @unchecked Sendable {
             threadTitle: identity.threadTitle
         )
         do {
+            if !allowUnfinishedTask, let record = try SimulatorTaskStore(paths: paths).read() {
+                throw SimulatorTaskError.unfinishedTask(record.failure ?? record.phase.rawValue)
+            }
             try store.writeOwner(owner)
             return LeaseHandle(owner: owner, store: store, fileDescriptor: descriptor)
         } catch {
-            _ = lockf(descriptor, F_ULOCK, 0)
-            _ = close(descriptor)
+            HostLaneLock.release(paths: paths, descriptor: descriptor) {}
             throw error
         }
     }
 
     public func status() throws -> LeaseStatus {
-        let descriptor = try openLock()
-        let probe = lockf(descriptor, F_TLOCK, 0)
-        let isFree = probe == 0
-        let code = errno
-        guard isFree || code == EACCES || code == EAGAIN else {
-            _ = close(descriptor)
-            throw LeaseAcquisitionError.systemCall("lockf", code)
+        try HostLaneLock.probe(paths: paths) { isFree in
+            try status(isFree: isFree)
         }
+    }
 
-        defer {
-            if isFree {
-                _ = lockf(descriptor, F_ULOCK, 0)
-            }
-            _ = close(descriptor)
-        }
-
+    private func status(isFree: Bool) throws -> LeaseStatus {
         let waiters: [LeaseWaiter]
         do {
             waiters = try activeWaiters(from: store.readWaiters())
@@ -212,6 +165,13 @@ public final class LeaseCoordinator: @unchecked Sendable {
         }
 
         if isFree {
+            do {
+                if let record = try SimulatorTaskStore(paths: paths).read() {
+                    return LeaseStatus(state: .metadataError, owner: owner, waiters: waiters, error: "unfinished task \(record.token): \(record.failure ?? record.phase.rawValue); run simlease recover")
+                }
+            } catch {
+                return LeaseStatus(state: .metadataError, owner: owner, waiters: waiters, error: "task metadata error: \(error)")
+            }
             guard owner == nil else {
                 return LeaseStatus(
                     state: .metadataError,
@@ -252,16 +212,4 @@ public final class LeaseCoordinator: @unchecked Sendable {
         return active
     }
 
-    private func openLock() throws -> Int32 {
-        let descriptor = open(paths.lock.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-        guard descriptor >= 0 else {
-            throw LeaseAcquisitionError.systemCall("open", errno)
-        }
-        guard fchmod(descriptor, S_IRUSR | S_IWUSR) == 0 else {
-            let code = errno
-            _ = close(descriptor)
-            throw LeaseAcquisitionError.systemCall("fchmod", code)
-        }
-        return descriptor
-    }
 }

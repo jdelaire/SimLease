@@ -24,7 +24,7 @@ print -r -- 'unrelated' > "$test_home/.local/bin/keep-tool"
 custom_axe="$test_root/custom-axe"
 source_app="$test_root/SimLease.app"
 mkdir -p "$source_app/Contents/MacOS"
-bin_dir="$(swift build -c release --show-bin-path)"
+bin_dir="${SIMLEASE_TEST_BIN_DIR:-$(swift build -c release --show-bin-path)}"
 print -r -- '#!/bin/sh' > "$source_app/Contents/MacOS/SimLeaseMenuBar"
 chmod +x "$source_app/Contents/MacOS/SimLeaseMenuBar"
 /usr/bin/install -m 0644 Resources/SimLease-Info.plist \
@@ -44,7 +44,7 @@ scripts/install.sh
 installed="$test_home/.local/lib/simlease/simlease"
 shim_directory="$test_home/.local/lib/simlease/shims"
 assert_file "$installed"
-for command_name in simlease xcodebuild xcrun axe; do
+for command_name in simlease xcodebuild xcrun axe agent-device; do
   assert_symlink_target "$shim_directory/$command_name" "$installed"
 done
 assert_symlink_target "$test_home/.local/bin/axe" "$custom_axe"
@@ -66,7 +66,7 @@ grep -q '^export KEEP_ME=1$' "$test_home/.zprofile" || fail "profile content cha
 SIMLEASE_INSTALL_HOME="$test_home" scripts/uninstall.sh
 
 [[ ! -e "$installed" ]] || fail "installed binary remains"
-for command_name in simlease xcodebuild xcrun axe; do
+for command_name in simlease xcodebuild xcrun axe agent-device; do
   [[ ! -e "$shim_directory/$command_name" ]] || fail "shim remains: $command_name"
 done
 assert_file "$test_home/.local/bin/keep-tool"

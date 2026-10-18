@@ -3,9 +3,12 @@ import Foundation
 enum ParsedCommand: Equatable {
     case version
     case update
+    case run(deviceIDs: [String], keepRunning: Bool, command: [String])
+    case recover
+    case doctor(json: Bool)
     case status(json: Bool)
     case name(String)
-    case hold(title: String, project: String)
+    case hold(title: String, project: String, deviceIDs: [String] = [], keepRunning: Bool = false)
     case cleanPlan(json: Bool)
     case cleanApply(id: String, targetIDs: [String], json: Bool)
     case shim(arguments: [String])
@@ -28,6 +31,33 @@ enum CommandParser {
         }
 
         switch arguments[1] {
+        case "recover":
+            guard arguments.count == 2 else { throw CommandParserError.usage }
+            return .recover
+        case "run":
+            var ids = [String]()
+            var keepRunning = false
+            var index = 2
+            while index < arguments.count, arguments[index] != "--" {
+                switch arguments[index] {
+                case "--device":
+                    guard arguments.indices.contains(index + 1),
+                          let id = UUID(uuidString: arguments[index + 1])
+                    else { throw CommandParserError.usage }
+                    ids.append(id.uuidString)
+                    index += 2
+                case "--keep-running":
+                    guard !keepRunning else { throw CommandParserError.usage }
+                    keepRunning = true
+                    index += 1
+                default:
+                    throw CommandParserError.usage
+                }
+            }
+            guard arguments.indices.contains(index), arguments[index] == "--",
+                  arguments.indices.contains(index + 1), !arguments[index + 1].isEmpty
+            else { throw CommandParserError.usage }
+            return .run(deviceIDs: ids, keepRunning: keepRunning, command: Array(arguments.dropFirst(index + 1)))
         case "--version":
             guard arguments.count == 2 else {
                 throw CommandParserError.usage
@@ -38,13 +68,13 @@ enum CommandParser {
                 throw CommandParserError.usage
             }
             return .update
-        case "status":
+        case "status", "doctor":
             guard arguments.count <= 3,
                   arguments.count == 2 || arguments[2] == "--json"
             else {
                 throw CommandParserError.usage
             }
-            return .status(json: arguments.count == 3)
+            return arguments[1] == "doctor" ? .doctor(json: arguments.count == 3) : .status(json: arguments.count == 3)
         case "name":
             guard arguments.count == 3 else {
                 throw CommandParserError.usage
@@ -53,16 +83,25 @@ enum CommandParser {
         case "hold":
             var title: String?
             var project: String?
+            var ids = [String]()
+            var keepRunning = false
             var index = 2
             while index < arguments.count {
-                guard index + 1 < arguments.count else {
-                    throw CommandParserError.usage
+                if arguments[index] == "--keep-running" {
+                    guard !keepRunning else { throw CommandParserError.usage }
+                    keepRunning = true
+                    index += 1
+                    continue
                 }
+                guard index + 1 < arguments.count else { throw CommandParserError.usage }
                 switch arguments[index] {
                 case "--title":
                     title = arguments[index + 1]
                 case "--project":
                     project = arguments[index + 1]
+                case "--device":
+                    guard let id = UUID(uuidString: arguments[index + 1]) else { throw CommandParserError.usage }
+                    ids.append(id.uuidString)
                 default:
                     throw CommandParserError.usage
                 }
@@ -71,7 +110,7 @@ enum CommandParser {
             guard let title, let project else {
                 throw CommandParserError.usage
             }
-            return .hold(title: title, project: project)
+            return .hold(title: title, project: project, deviceIDs: ids, keepRunning: keepRunning)
         case "clean":
             guard arguments.count >= 3 else {
                 throw CommandParserError.usage

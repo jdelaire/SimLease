@@ -20,9 +20,9 @@ plist_version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw \
   || fail "ad-hoc signing is allowed only in test mode"
 
 cd "$repository_root"
-swift build -c release --arch arm64 --product simlease
-swift build -c release --arch arm64 --product SimLeaseMenuBar
-bin_dir="$(swift build -c release --arch arm64 --show-bin-path)"
+swift build -c release -j "${SIMLEASE_BUILD_JOBS:-1}" --arch arm64 --product simlease
+swift build -c release -j "${SIMLEASE_BUILD_JOBS:-1}" --arch arm64 --product SimLeaseMenuBar
+bin_dir="$(swift build -c release -j "${SIMLEASE_BUILD_JOBS:-1}" --arch arm64 --show-bin-path)"
 
 release_root="$repository_root/dist/release"
 app="$release_root/SimLease.app"

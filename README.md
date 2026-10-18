@@ -38,33 +38,86 @@ starts with:
 
 ## Agent workflow
 
-Before simulator testing:
+Run each complete simulator job inside one scope:
+
+```sh
+simlease run --device DEVICE-UUID -- /path/to/verification-script
+```
+
+The command can be an absolute executable, a PATH command, or a shell script.
+Repeat `--device` for a phone and watch pair. The existing single host-wide
+lane stays held until the command and its cleanup finish.
+
+A device that was shut down when the scope started belongs to that scope.
+After success, failure, or cancellation, SimLease stops the owned child process
+group, shuts down those devices, and verifies `Shutdown` before admitting the
+next job. Prebooted devices are borrowed and remain running. Use
+`--keep-running` to explicitly retain a device started by the job.
+
+Exact UUID destinations are inferred for protected `xcodebuild` commands.
+Managed test commands disable parallel simulator cloning. Named destinations
+and simulator launches hidden inside arbitrary scripts cannot establish device
+ownership; declare every intended UUID on the outer scope. Nested commands
+inherit a validated task token instead of acquiring another lane.
+
+Inspect coordination and command coverage:
 
 ```sh
 simlease status --json
+simlease doctor --json
 ```
 
-- `free`: testing may start.
-- `leased`: continue work that does not need the simulator or recheck later.
-- `metadataError`: stop and report the error.
+`status` reports `free`, `leased`, or `metadataError`. An unfinished cleanup
+appears as an error and blocks new protected work. After a process crash,
+recovery runs before the next protected job, or can be requested directly:
 
-The check is advisory. Normal `xcodebuild`, `xcrun`, and `axe` lookup resolves
-through SimLease shims, which acquire the lease atomically. Do not bypass the
-shims with absolute paths.
+```sh
+simlease recover
+```
 
-Name the current Codex thread so other waiters can identify it:
+Recovery requires proven process ownership. A live or unverifiable owner is
+never taken over. Failed cleanup retains its journal for a later retry; there
+is no force-release command.
+
+### Shell and native tool coverage
+
+Normal `xcodebuild`, `xcrun`, `axe`, and `agent-device` lookup goes through
+installed PATH shims. Nested `xcrun xcodebuild` is protected too. Absolute
+executables must be placed inside `simlease run`; PATH cannot intercept them.
+An inherited `SIMLEASE_HELD=1` flag alone never authorizes bypass.
+
+For Xcode GUI or native T3/MCP device work, keep an explicit reservation open
+for the entire verification session:
+
+```sh
+simlease hold --title "UI verification" --project "Project" --device DEVICE-UUID
+```
+
+Wait until `status` identifies that reservation as owner before operating the
+native tool. End the reservation with Ctrl-C when verification is complete;
+its owned devices are then shut down. Keep the reservation open across all
+commands in the session. A native tool that ignores reservations can still
+bypass coordination, so its integration must participate explicitly.
+
+`doctor` reports missing PATH shims and known running tool processes outside
+the active task ancestry. It is an audit, not an operating-system sandbox.
+GUI applications already running must be restarted or configured explicitly
+to inherit the installed PATH. Persistent `agent-device daemon` startup is
+not wrapped in a lifetime-long lease.
+
+Managed `agent-device` clients and daemon starts receive a PATH with SimLease
+shims removed for internal tool lookup, preventing recursive lease acquisition.
+Restart a daemon previously started with a shimmed PATH when its current work
+finishes. Native launchers must configure the same internal tool lookup.
+Daemon requests may outlive a canceled client; keep an explicit reservation
+until the daemon confirms its work has finished. Client process cleanup cannot
+prove that external daemon work has settled.
+
+Name the current Codex thread so waiters can identify it:
 
 ```sh
 simlease name "[Project] Simulator validation"
 ```
-
-Reserve the lane for Xcode GUI work, which PATH shims cannot intercept:
-
-```sh
-simlease hold --title "Manual Xcode" --project "Project"
-```
-
-SimLease has no force-release command.
 
 ## Xcode storage cleanup
 
@@ -104,14 +157,6 @@ more `--target` flags, rechecks fingerprints and active build paths, and skips
 anything changed or newly protected. A leased simulator lane defers simulator
 inventory without blocking filesystem review. Cleanup never force-releases a
 lease, stops tests, deletes worktrees, or runs automatically.
-
-Simulator testing still begins only after:
-
-```sh
-simlease status --json
-```
-
-reports `free`.
 
 ## Update
 
