@@ -24,9 +24,14 @@ public enum ProtectedCommand {
             return ProtectionDecision(requiresLease: true, toolName: toolName)
         case "xcrun":
             let selected = selectedXcrunTool(in: arguments)
+            let lookup = selected.flatMap { arguments.firstIndex(of: $0) }.map {
+                arguments.prefix($0).contains("--find") || arguments.prefix($0).contains("-f")
+            } ?? false
+            let simctlQuery = selected == "simctl" && arguments.firstIndex(of: "simctl").map {
+                isSimctlQuery(Array(arguments.dropFirst($0 + 1)))
+            } == true
             return ProtectionDecision(
-                requiresLease: selected == "simctl"
-                    || (selected == "xcodebuild" && !arguments.contains("--find") && !arguments.contains("-f")),
+                requiresLease: !lookup && ((selected == "simctl" && !simctlQuery) || selected == "xcodebuild"),
                 toolName: toolName
             )
         case "agent-device":
@@ -47,12 +52,27 @@ public enum ProtectedCommand {
                 return false
             }
             return ProtectionDecision(
-                requiresLease: hasTestAction || hasSimulatorDestination,
+                requiresLease: hasTestAction || hasSimulatorDestination
+                    || !SimulatorCommand.deviceIDs(in: invocation).isEmpty
+                    || arguments.enumerated().contains { index, value in
+                        (value == "-sdk" && arguments.indices.contains(index + 1) && arguments[index + 1].localizedCaseInsensitiveContains("simulator"))
+                            || (value.hasPrefix("-sdk=") && value.localizedCaseInsensitiveContains("simulator"))
+                    },
                 toolName: toolName
             )
         default:
             return ProtectionDecision(requiresLease: false, toolName: toolName)
         }
+    }
+
+    private static func isSimctlQuery(_ arguments: [String]) -> Bool {
+        var index = 0
+        while arguments.indices.contains(index), ["--set", "--profiles"].contains(arguments[index]) {
+            guard arguments.indices.contains(index + 1) else { return false }
+            index += 2
+        }
+        guard arguments.indices.contains(index) else { return false }
+        return ["list", "help", "--help", "-h", "--version", "getenv", "get_app_container", "get_app_info", "listapps"].contains(arguments[index])
     }
 
     static func selectedXcrunTool(in arguments: [String]) -> String? {
@@ -76,7 +96,7 @@ public enum ProtectedCommand {
         return nil
     }
 
-    private static func agentDeviceCommand(in arguments: [String]) -> String? {
+    static func agentDeviceCommand(in arguments: [String]) -> String? {
         let values = Set(["--session", "--platform", "--device", "--udid", "--serial", "--host", "--port", "--config", "--state-dir"])
         let flags = Set(["--json", "--verbose", "--debug", "--no-color"])
         var index = 0

@@ -13,6 +13,7 @@ struct SimLeaseMenuBarApp: App {
             LeasePopoverView(viewModel: viewModel)
         } label: {
             Label(viewModel.state.menuTitle, systemImage: viewModel.state.symbolName)
+                .task { await viewModel.monitor() }
         }
         .menuBarExtraStyle(.window)
         .windowResizability(.contentSize)

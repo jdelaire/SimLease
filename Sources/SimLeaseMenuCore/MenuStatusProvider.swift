@@ -46,14 +46,21 @@ public actor CLIStatusProvider: MenuStatusProviding {
         let stdout = Pipe()
         let stderr = Pipe()
         process.executableURL = executableURL
-        process.arguments = ["status", "--json"]
+        process.arguments = ["status", "--json", "--audit"]
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
-        process.waitUntilExit()
+        async let outputTask = Self.read(stdout.fileHandleForReading)
+        async let errorTask = Self.read(stderr.fileHandleForReading)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                process.waitUntilExit()
+                continuation.resume()
+            }
+        }
 
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errorOutput = stderr.fileHandleForReading.readDataToEndOfFile()
+        let output = await outputTask
+        let errorOutput = await errorTask
         guard process.terminationReason == .exit, process.terminationStatus == 0 else {
             let code = process.terminationReason == .exit
                 ? process.terminationStatus
@@ -68,6 +75,14 @@ public actor CLIStatusProvider: MenuStatusProviding {
             throw MenuStatusError.invalidJSON
         }
         return status
+    }
+
+    private static func read(_ handle: FileHandle) async -> Data {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: handle.readDataToEndOfFile())
+            }
+        }
     }
 
     private var executableURL: URL {

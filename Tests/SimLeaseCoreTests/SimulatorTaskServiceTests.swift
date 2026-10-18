@@ -4,6 +4,74 @@ import XCTest
 @testable import SimLeaseCore
 
 final class SimulatorTaskServiceTests: XCTestCase {
+    func testUnsettledNativeWorkCannotShutdownOrRecover() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let code = try fixture.service.run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf Booted > \"$1\"", "job", fixture.devices.path(fixture.owned).path],
+            deviceIDs: [fixture.owned], keepRunning: false, environment: [:], identity: fixture.identity,
+            externalSessionID: UUID().uuidString
+        )
+        XCTAssertEqual(code, 74)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Booted")
+        XCTAssertEqual(try fixture.store.read()?.phase, .quarantined)
+        XCTAssertThrowsError(try fixture.service.recover(identity: fixture.identity))
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Booted")
+    }
+
+    func testDurableNativeAcknowledgmentSurvivesCrashBeforeJournalSettlement() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        var record = SimulatorTaskRecord(token: UUID().uuidString, owner: ProcessReference(pid: getpid(), startMicroseconds: 1), deviceIDs: [fixture.owned], ownedDeviceIDs: [fixture.owned], phase: .running)
+        record.externalSessionID = UUID().uuidString
+        try fixture.store.write(record)
+        try fixture.devices.set(fixture.owned, state: "Booted")
+        let settlements = NativeSettlementStore(paths: fixture.paths)
+        try settlements.acknowledge(record)
+        try fixture.service.recover(identity: fixture.identity)
+        XCTAssertNil(try fixture.store.read())
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+        XCTAssertFalse(try settlements.isAcknowledged(record))
+    }
+
+    func testStaleNativeAcknowledgmentCannotSettleNewTaskWithSameSessionID() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        var previous = SimulatorTaskRecord(token: UUID().uuidString, owner: ProcessReference(pid: getpid(), startMicroseconds: 1), deviceIDs: [fixture.owned], ownedDeviceIDs: [fixture.owned], phase: .running)
+        previous.externalSessionID = UUID().uuidString
+        let settlements = NativeSettlementStore(paths: fixture.paths)
+        try settlements.acknowledge(previous)
+        var next = SimulatorTaskRecord(token: UUID().uuidString, owner: previous.owner, deviceIDs: previous.deviceIDs, ownedDeviceIDs: previous.ownedDeviceIDs, phase: .running)
+        next.externalSessionID = previous.externalSessionID
+        try fixture.store.write(next)
+        try fixture.devices.set(fixture.owned, state: "Booted")
+        XCTAssertThrowsError(try fixture.service.recover(identity: fixture.identity))
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Booted")
+        XCTAssertTrue(try settlements.isAcknowledged(previous))
+    }
+
+    func testAcknowledgedNativeCleanupFailureKeepsAcknowledgmentForRetry() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        fixture.devices.failShutdown = true
+        let settlements = NativeSettlementStore(paths: fixture.paths)
+        let code = try fixture.service.run(
+            executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: [], deviceIDs: [fixture.owned],
+            keepRunning: false, environment: [:], identity: fixture.identity, externalSessionID: UUID().uuidString,
+            onStarted: { try settlements.acknowledge($0) }
+        )
+        XCTAssertEqual(code, 74)
+        let record = try XCTUnwrap(fixture.store.read())
+        XCTAssertEqual(record.externalWorkSettled, true)
+        XCTAssertTrue(try settlements.isAcknowledged(record))
+        XCTAssertThrowsError(try NativeSessionController(paths: fixture.paths, tasks: fixture.service).finish(id: record.externalSessionID!, identity: fixture.identity))
+        fixture.devices.failShutdown = false
+        try fixture.service.recover(identity: fixture.identity)
+        XCTAssertNil(try fixture.store.read())
+        XCTAssertFalse(try settlements.isAcknowledged(record))
+    }
+
     func testDeletedOwnedDeviceIsAlreadySettled() throws {
         let fixture = try TaskFixture()
         defer { fixture.remove() }

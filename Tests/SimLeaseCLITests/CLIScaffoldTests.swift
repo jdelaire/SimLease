@@ -318,7 +318,8 @@ final class CLIScaffoldTests: XCTestCase {
         let shim = shims.appendingPathComponent("axe")
         try FileManager.default.createSymbolicLink(at: shim, withDestinationURL: executable)
         let tool = tools.appendingPathComponent("axe")
-        try Data("#!/bin/sh\nexec /bin/sleep 5\n".utf8).write(to: tool)
+        let ready = root.appendingPathComponent("child-ready")
+        try Data("#!/bin/sh\nprintf ready > \"$SIMLEASE_TEST_CHILD_READY\"\nexec /bin/sleep 5\n".utf8).write(to: tool)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
 
         let process = Process()
@@ -327,6 +328,7 @@ final class CLIScaffoldTests: XCTestCase {
         process.environment = ProcessInfo.processInfo.environment.merging([
             "PATH": "\(shims.path):\(tools.path)",
             "SIMLEASE_CACHE_ROOT": cache.path,
+            "SIMLEASE_TEST_CHILD_READY": ready.path,
         ]) { _, new in new }
         process.standardOutput = Pipe()
         process.standardError = Pipe()
@@ -350,10 +352,11 @@ final class CLIScaffoldTests: XCTestCase {
         )
         let acquisitionDeadline = Date(timeIntervalSinceNow: 2)
         while Date() < acquisitionDeadline,
-              try coordinator.status().state != .leased {
+              !FileManager.default.fileExists(atPath: ready.path) {
             Thread.sleep(forTimeInterval: 0.01)
         }
         XCTAssertEqual(try coordinator.status().state, .leased)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ready.path))
 
         process.terminate()
         let exitDeadline = Date(timeIntervalSinceNow: 2)

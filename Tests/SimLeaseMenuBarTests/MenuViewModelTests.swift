@@ -4,6 +4,32 @@ import XCTest
 
 @MainActor
 final class MenuViewModelTests: XCTestCase {
+    func testUnmanagedActivityIsVisibleWhileLaneRemainsFree() async {
+        let activity = SimulatorActivityReport(activities: [SimulatorActivity(
+            process: ProcessReference(pid: 99, startMicroseconds: 100), tool: "simctl", kind: .unmanaged, deviceIDs: []
+        )])
+        let provider = SequenceStatusStub(statuses: [
+            LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, activity: activity),
+            LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, activity: SimulatorActivityReport()),
+        ])
+        let model = MenuViewModel(provider: provider)
+        await model.refresh()
+        XCTAssertEqual(model.state.kind, .free)
+        XCTAssertEqual(model.state.menuTitle, "Simulator · Unmanaged")
+        XCTAssertTrue(model.copyDetailsText.contains("simctl PID 99"))
+        await model.refresh()
+        XCTAssertEqual(model.state.menuTitle, "Simulator · Free")
+    }
+
+    func testIncompleteAuditCannotDisplayUnqualifiedFreeStatus() async {
+        let model = MenuViewModel(provider: StatusStub(status: LeaseStatus(
+            state: .free, owner: nil, waiters: [], error: nil,
+            activity: SimulatorActivityReport(uninspectedProcessCount: 1)
+        )))
+        await model.refresh()
+        XCTAssertEqual(model.state.menuTitle, "Simulator · Audit incomplete")
+    }
+
     func testRefreshPublishesLeasedState() async {
         let model = MenuViewModel(
             provider: StatusStub(status: leasedStatus(waiters: [waiter(title: "Waiting task")])),
@@ -59,7 +85,7 @@ final class MenuViewModelTests: XCTestCase {
     func testCLIProviderRunsOnlyStatusJSON() async throws {
         let fixture = try executableFixture(
             body: """
-            [[ "$#" == 2 && "$1" == status && "$2" == --json ]] || exit 9
+            [[ "$#" == 3 && "$1" == status && "$2" == --json && "$3" == --audit ]] || exit 9
             /bin/cat "$0.json"
             """,
             status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil)
@@ -102,6 +128,18 @@ final class MenuViewModelTests: XCTestCase {
         } catch let error as MenuStatusError {
             XCTAssertEqual(error, .invalidJSON)
         }
+    }
+
+    func testCLIProviderDrainsLargeOutputAndErrorStreams() async throws {
+        let fixture = try executableFixture(body: """
+            /usr/bin/head -c 262144 /dev/zero | /usr/bin/tr '\\0' ' '
+            /usr/bin/head -c 262144 /dev/zero | /usr/bin/tr '\\0' ' ' >&2
+            /bin/cat "$0.json"
+            """, status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil))
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let provider = CLIStatusProvider(environment: ["SIMLEASE_EXECUTABLE_PATH": fixture.executable.path])
+        let status = try await provider.fetch()
+        XCTAssertEqual(status.state, .free)
     }
 
     private func executableFixture(

@@ -2,6 +2,27 @@ import XCTest
 @testable import SimLeaseCLI
 
 final class CommandParserTests: XCTestCase {
+    func testNativeBindingsRequireExplicitValidPIDs() throws {
+        let base = ["simlease", "session", "begin", "--device", "11111111-1111-4111-8111-111111111111", "--title", "UI", "--project", "App"]
+        XCTAssertEqual(try CommandParser.parse(base + ["--client-pid", "123"]), .sessionBegin(title: "UI", project: "App", deviceIDs: ["11111111-1111-4111-8111-111111111111"], clientPIDs: [123]))
+        for pid in ["0", "1", "-1", "invalid"] {
+            XCTAssertThrowsError(try CommandParser.parse(base + ["--client-pid", pid]))
+        }
+    }
+    func testNativeSessionNeedsDeclaredDevicesAndExplicitSettlement() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        XCTAssertEqual(try CommandParser.parse(["simlease", "session", "begin", "--device", id, "--title", "UI", "--project", "App"]), .sessionBegin(title: "UI", project: "App", deviceIDs: [id]))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "session", "finish", id, "--settled"]), .sessionFinish(id))
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "session", "begin", "--title", "UI", "--project", "App"]))
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "session", "finish", id]))
+    }
+
+    func testStatusAuditIsExplicitAndFlagsCanAppearInEitherOrder() throws {
+        XCTAssertEqual(try CommandParser.parse(["simlease", "status", "--audit", "--json"]), .status(json: true, audit: true))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "status", "--json", "--audit"]), .status(json: true, audit: true))
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "status", "--audit", "--audit"]))
+    }
+
     func testParsesTaskScopeAndRejectsAmbiguousDeviceSelection() throws {
         let id = "11111111-1111-4111-8111-111111111111"
         XCTAssertEqual(try CommandParser.parse([

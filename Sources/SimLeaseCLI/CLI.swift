@@ -98,8 +98,31 @@ public enum SimLeaseCLI {
                 try taskService(environment: environment, configuration: configuration).recover(identity: identity)
                 configuration.standardOutput("SimLease: recovery complete\n")
                 return 0
-            case .status(let json):
-                return try runStatus(json: json, configuration: configuration)
+            case .sessionBegin(let title, let project, let ids, let clientPIDs):
+                let id = UUID().uuidString
+                let clients = try NativeClientAdmission.capture(pids: clientPIDs)
+                let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: project, command: arguments, source: .nativeTool, threadID: environment["CODEX_THREAD_ID"], threadTitle: title)
+                let executable = arguments[0].contains("/") ? URL(fileURLWithPath: arguments[0]).resolvingSymlinksInPath()
+                    : try ExecutableResolver.resolve(name: "simlease", path: environment["PATH"] ?? "", excluding: URL(fileURLWithPath: "/dev/null"))
+                return try taskService(environment: environment, configuration: configuration).run(
+                    executable: executable,
+                    arguments: ["__native_wait", id], deviceIDs: ids, keepRunning: false,
+                    environment: environment, identity: identity, externalSessionID: id, nativeClients: clients,
+                    onStarted: { record in
+                        let ready = NativeSessionReady(sessionID: id, pid: record.owner.pid, deviceIDs: record.deviceIDs, ownedDeviceIDs: record.ownedDeviceIDs)
+                        configuration.standardOutput(String(decoding: try JSONEncoder().encode(ready), as: UTF8.self) + "\n")
+                    }
+                )
+            case .sessionFinish(let id):
+                let store = try MetadataStore(paths: configuration.paths)
+                let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: arguments, store: store)
+                try NativeSessionController(paths: configuration.paths, tasks: taskService(environment: environment, configuration: configuration)).finish(id: id, identity: identity)
+                configuration.standardOutput("SimLease: native session cleanup complete\n")
+                return 0
+            case .nativeWait(let id):
+                return try NativeSessionController.waitForAcknowledgment(paths: configuration.paths, id: id, environment: environment)
+            case .status(let json, let audit):
+                return try runStatus(json: json, audit: audit, configuration: configuration)
             case .doctor(let json):
                 return try CoverageDoctor.run(json: json, environment: environment, configuration: configuration)
             case .name(let title):
@@ -143,7 +166,7 @@ public enum SimLeaseCLI {
             }
         } catch CommandParserError.usage {
             configuration.standardError(
-                "Usage: simlease <run|recover|doctor|status|name|hold|clean|update|--version>\n"
+                "Usage: simlease <run|session|recover|doctor|status|name|hold|clean|update|--version>\n"
             )
             return 64
         } catch UpdateRunnerError.missingUpdater {
@@ -352,18 +375,24 @@ public enum SimLeaseCLI {
 
     private static func runStatus(
         json: Bool,
+        audit: Bool,
         configuration: CLIConfiguration
     ) throws -> Int32 {
         let coordinator = try makeCoordinator(configuration: configuration)
         var status = try coordinator.status()
-        if status.state == .free, let record = try SimulatorTaskStore(paths: configuration.paths).read() {
-            status = LeaseStatus(state: .metadataError, owner: nil, waiters: status.waiters, error: "unfinished task \(record.token): \(record.failure ?? record.phase.rawValue); run simlease recover")
+        if audit {
+            let report = SimulatorActivityAudit().scan(lease: status, task: try? SimulatorTaskStore(paths: configuration.paths).read())
+            status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: report)
         }
         if json {
             let data = try JSONEncoder.simLease.encode(status)
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
         } else {
             configuration.standardOutput("\(status.state.rawValue)\n")
+            if let activity = status.activity {
+                for item in activity.activities { configuration.standardOutput("\(item.kind.rawValue): \(item.tool) PID \(item.process.pid)\n") }
+                if activity.isIncomplete { configuration.standardOutput("Activity audit incomplete\n") }
+            }
         }
         return 0
     }
@@ -406,9 +435,15 @@ public enum SimLeaseCLI {
     private static func taskService(
         environment: [String: String], configuration: CLIConfiguration
     ) -> SimulatorTaskService {
-        SimulatorTaskService(
+        let xcrun: URL
+        #if DEBUG || SIMLEASE_TESTING
+        xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+        #else
+        xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+        #endif
+        return SimulatorTaskService(
             paths: configuration.paths,
-            devices: SimulatorDeviceController(environment: environment),
+            devices: SimulatorDeviceController(environment: environment, xcrunURL: xcrun),
             timing: configuration.timing, report: configuration.standardError
         )
     }
@@ -465,15 +500,18 @@ public enum SimLeaseCLI {
 
         let journal = SimulatorTaskStore(paths: configuration.paths)
         let nested = try journal.authorizesNestedCommand(environment: environment, pid: getpid())
+        let native = !nested && (decision.requiresLease || SimulatorCommand.isXcodebuild(executable: invokedPath, arguments: childArguments))
+            ? try NativeClientAdmission.acquire(paths: configuration.paths, invocation: invocation, pid: getpid()) : nil
+        defer { withExtendedLifetime(native) {} }
         let taskDevices = nested ? (try journal.read()?.deviceIDs ?? []) : []
         let ids = SimulatorCommand.referencedDeviceIDs(in: invocation)
         if nested { try journal.validateNestedDevices(SimulatorCommand.referencedDeviceIDs(in: invocation)) }
         let arguments = SimulatorCommand.argumentsForManagedTask(executable: executable.path, arguments: childArguments, hasDevices: !ids.isEmpty || !taskDevices.isEmpty)
         let childEnvironment = ManagedToolEnvironment.make(
             executable: executable, arguments: arguments, environment: environment,
-            shimDirectory: invokedURL.deletingLastPathComponent()
+            shimDirectory: invokedURL.deletingLastPathComponent(), stripShims: native != nil
         )
-        guard decision.requiresLease, !nested else {
+        guard decision.requiresLease, !nested, native == nil else {
             return try ChildProcessRunner.run(executable: executable, arguments: arguments, environment: childEnvironment).exitCode
         }
         let store = try MetadataStore(paths: configuration.paths)
@@ -529,6 +567,7 @@ public enum SimLeaseCLI {
         case .codex: "Codex"
         case .terminal: "Terminal"
         case .manualXcode: "Manual Xcode"
+        case .nativeTool: "Native tool"
         }
     }
 
@@ -542,4 +581,12 @@ public enum SimLeaseCLI {
         }
         return String(format: "%02d:%02d", minutes, seconds)
     }
+}
+
+private struct NativeSessionReady: Encodable {
+    let state = "ready"
+    let sessionID: String
+    let pid: Int32
+    let deviceIDs: [String]
+    let ownedDeviceIDs: [String]
 }

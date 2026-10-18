@@ -45,12 +45,30 @@ public struct MenuDisplayState: Equatable, Sendable {
     public let elapsed: String?
     public let waiters: [WaiterDisplayItem]
     public let error: String?
+    public let activity: SimulatorActivityReport?
 
     public var waiterNames: [String] {
         waiters.map(\.name)
     }
 
     public init(status: LeaseStatus, now: Date) {
+        let base = Self(leaseStatus: status, now: now)
+        let activity = status.activity
+        let title: String
+        if status.state == .metadataError { title = base.menuTitle }
+        else if activity?.activities.contains(where: { $0.kind == .unmanaged }) == true { title = "Simulator · Unmanaged" }
+        else if activity?.isIncomplete == true { title = "Simulator · Audit incomplete" }
+        else if activity?.activities.isEmpty == false { title = "Simulator · Unverified" }
+        else { title = base.menuTitle }
+        self.init(
+            kind: base.kind, menuTitle: title,
+            symbolName: title != base.menuTitle ? "exclamationmark.triangle.fill" : base.symbolName,
+            ownerName: base.ownerName, projectAndSource: base.projectAndSource,
+            command: base.command, elapsed: base.elapsed, waiters: base.waiters, error: base.error, activity: activity
+        )
+    }
+
+    private init(leaseStatus status: LeaseStatus, now: Date) {
         switch status.state {
         case .free:
             self = .free
@@ -93,6 +111,7 @@ public struct MenuDisplayState: Equatable, Sendable {
                 )
             }
             error = nil
+            activity = nil
         }
     }
 
@@ -133,7 +152,8 @@ public struct MenuDisplayState: Equatable, Sendable {
         command: String?,
         elapsed: String?,
         waiters: [WaiterDisplayItem],
-        error: String?
+        error: String?,
+        activity: SimulatorActivityReport? = nil
     ) {
         self.kind = kind
         self.menuTitle = menuTitle
@@ -144,6 +164,7 @@ public struct MenuDisplayState: Equatable, Sendable {
         self.elapsed = elapsed
         self.waiters = waiters
         self.error = error
+        self.activity = activity
     }
 
     private static func elapsed(from start: Date, to end: Date) -> String {
@@ -171,6 +192,7 @@ public struct MenuDisplayState: Equatable, Sendable {
         case .codex: "Codex"
         case .terminal: "Terminal"
         case .manualXcode: "Xcode"
+        case .nativeTool: "Native tool"
         }
     }
 }

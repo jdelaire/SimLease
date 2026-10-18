@@ -1,12 +1,30 @@
 import AppKit
 import SwiftUI
 import SimLeaseMenuCore
+import SimLeaseCore
 
 struct LeasePopoverPresentation: Equatable {
     let title: String
     let description: String
 
     init(state: MenuDisplayState) {
+        if state.kind != .metadataError, let activity = state.activity {
+            if activity.activities.contains(where: { $0.kind == .unmanaged }) {
+                title = "Unmanaged simulator work"
+                description = "Known simulator commands are running outside SimLease."
+                return
+            }
+            if activity.isIncomplete {
+                title = "Simulator audit incomplete"
+                description = activity.error ?? "Some process details could not be verified."
+                return
+            }
+            if !activity.activities.isEmpty {
+                title = "Simulator ownership unverified"
+                description = "A reservation or target match does not prove process ownership."
+                return
+            }
+        }
         switch state.kind {
         case .free:
             title = "Simulator available"
@@ -46,6 +64,9 @@ struct LeasePopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             statusContent
+            if let activity = viewModel.state.activity, !activity.activities.isEmpty || activity.isIncomplete {
+                SimulatorActivityNotice(report: activity)
+            }
             Divider()
             cleanupAction
             Divider()
@@ -54,17 +75,7 @@ struct LeasePopoverView: View {
         .padding(16)
         .frame(width: 320)
         .animation(.easeInOut(duration: 0.15), value: viewModel.state.kind)
-        .task {
-            await viewModel.refresh()
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(2))
-                } catch {
-                    return
-                }
-                await viewModel.refresh()
-            }
-        }
+        .task { await viewModel.refresh() }
     }
 
     @ViewBuilder
@@ -222,10 +233,40 @@ struct LeasePopoverView: View {
     }
 
     private var statusColor: Color {
-        switch viewModel.state.kind {
-        case .free: .green
-        case .leased: .orange
-        case .metadataError: .red
+        if viewModel.state.kind == .metadataError { return .red }
+        if viewModel.state.activity?.activities.isEmpty == false || viewModel.state.activity?.isIncomplete == true {
+            return .orange
         }
+        switch viewModel.state.kind {
+        case .free: return .green
+        case .leased: return .orange
+        case .metadataError: return .red
+        }
+    }
+}
+
+private struct SimulatorActivityNotice: View {
+    let report: SimulatorActivityReport
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(report.activities.prefix(5)) { activity in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(activity.tool) · PID \(activity.process.pid)")
+                        .font(.caption.monospaced())
+                    switch activity.kind {
+                    case .unmanaged: Text("Outside the current lease")
+                    case .reservedNative: Text("Native reservation, ownership unverified")
+                    case .targetUnknown: Text("Simulator target unverified")
+                    }
+                }
+            }
+            if report.activities.count > 5 { Text("\(report.activities.count - 5) more processes") }
+            if report.isIncomplete { Text("Some processes could not be inspected.") }
+            Text("Snapshots can miss short commands and background daemon work.")
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .textSelection(.enabled)
     }
 }

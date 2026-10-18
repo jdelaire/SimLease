@@ -12,23 +12,21 @@ enum CoverageDoctor {
             return Command(name: name, path: executable?.path, shimmed: executable?.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL)
         }
         let journal = try SimulatorTaskStore(paths: configuration.paths).read()
-        let output = try ProcessCleanupCommandRunner().run(
-            executable: URL(fileURLWithPath: "/bin/ps"),
-            arguments: ["-axo", "pid=,comm="], environment: environment
+        let coordinator = LeaseCoordinator(paths: configuration.paths, store: try MetadataStore(paths: configuration.paths))
+        let activity = SimulatorActivityAudit().scan(lease: try coordinator.status(), task: journal)
+        let clients = activity.nativeClients ?? []
+        let binding = clients.flatMap { ["--client-pid", String($0.process.pid)] }
+        let recipe = NativeRecipe(
+            begin: ["simlease", "session", "begin", "--device", "UUID"] + binding + ["--title", "TITLE", "--project", "PROJECT"],
+            finish: ["simlease", "session", "finish", "SESSION-ID", "--settled"],
+            client: "Wait for ready JSON, call device_open, then use its absolute agent-device launcher with every returned device/config/session flag. Bare PATH commands outside the owner still queue; do not nest another simlease run."
         )
-        guard output.exitCode == 0 else { throw SimulatorTaskError.commandFailed("process audit failed") }
-        let processes = output.stdout.split(separator: "\n").compactMap { line -> ToolProcess? in
-            let parts = line.split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
-            guard parts.count == 2, let pid = Int32(parts[0]), pid != getpid() else { return nil }
-            let name = URL(fileURLWithPath: String(parts[1])).lastPathComponent
-            guard ["xcodebuild", "simctl", "agent-device"].contains(name) else { return nil }
-            if journal?.phase == .running, journal?.owner.isAncestor(of: pid) == true { return nil }
-            return ToolProcess(pid: pid, executable: String(parts[1]))
-        }
-        let report = Report(commands: commands, unmanagedProcesses: processes, limitations: [
-            "Absolute executable paths and GUI/MCP launches require simlease run or an explicit hold reservation.",
+        let processes = activity.activities.filter { $0.kind == .unmanaged }.map { ToolProcess(pid: $0.process.pid, executable: $0.tool) }
+        let report = Report(commands: commands, unmanagedProcesses: processes, activity: activity, nativeSessionRecipe: recipe, limitations: [
+            "Absolute executable paths require simlease run; GUI/MCP work requires an explicit native session.",
             "The process audit detects known running tool binaries; it cannot prove that every launch path is coordinated.",
-            "External daemon work needs native lease and cancellation integration; client exit alone cannot prove it has finished.",
+            "Native sessions require explicit external settlement; client exit alone cannot prove daemon work has finished.",
+            "Periodic snapshots miss short-lived commands and cannot prove that persistent daemons or capture helpers are idle.",
         ])
         if json {
             configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(report), as: UTF8.self) + "\n")
@@ -39,6 +37,14 @@ enum CoverageDoctor {
             for process in processes {
                 configuration.standardOutput("Unmanaged PID \(process.pid): \(process.executable)\n")
             }
+            for client in clients {
+                configuration.standardOutput("Known GUI/MCP client: \(client.role.rawValue) PID \(client.process.pid), start \(client.process.startMicroseconds) [\(client.bound ? "bound" : "unbound")]\n")
+            }
+            configuration.standardOutput("Interactive native session:\n\(recipe.begin.joined(separator: " "))\n\(recipe.client)\nAfter native work and capture streams finish:\n\(recipe.finish.joined(separator: " "))\n")
+            for item in activity.activities where item.kind != .unmanaged {
+                configuration.standardOutput("\(item.kind.rawValue): \(item.tool) PID \(item.process.pid)\n")
+            }
+            if activity.isIncomplete { configuration.standardOutput("Activity audit incomplete\n") }
             report.limitations.forEach { configuration.standardOutput($0 + "\n") }
         }
         return 0
@@ -58,6 +64,14 @@ enum CoverageDoctor {
     private struct Report: Encodable {
         let commands: [Command]
         let unmanagedProcesses: [ToolProcess]
+        let activity: SimulatorActivityReport
+        let nativeSessionRecipe: NativeRecipe
         let limitations: [String]
+    }
+
+    private struct NativeRecipe: Encodable {
+        let begin: [String]
+        let finish: [String]
+        let client: String
     }
 }

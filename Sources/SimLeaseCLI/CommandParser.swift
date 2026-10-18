@@ -5,8 +5,11 @@ enum ParsedCommand: Equatable {
     case update
     case run(deviceIDs: [String], keepRunning: Bool, command: [String])
     case recover
+    case sessionBegin(title: String, project: String, deviceIDs: [String], clientPIDs: [Int32] = [])
+    case sessionFinish(String)
+    case nativeWait(String)
     case doctor(json: Bool)
-    case status(json: Bool)
+    case status(json: Bool, audit: Bool = false)
     case name(String)
     case hold(title: String, project: String, deviceIDs: [String] = [], keepRunning: Bool = false)
     case cleanPlan(json: Bool)
@@ -31,6 +34,42 @@ enum CommandParser {
         }
 
         switch arguments[1] {
+        case "session":
+            guard arguments.indices.contains(2) else { throw CommandParserError.usage }
+            if arguments[2] == "finish" {
+                guard arguments.count == 5, let id = UUID(uuidString: arguments[3]), arguments[4] == "--settled" else { throw CommandParserError.usage }
+                return .sessionFinish(id.uuidString)
+            }
+            guard arguments[2] == "begin" else { throw CommandParserError.usage }
+            var title: String?
+            var project: String?
+            var ids = [String]()
+            var clients = [Int32]()
+            var index = 3
+            while index < arguments.count {
+                guard arguments.indices.contains(index + 1), !arguments[index + 1].isEmpty else { throw CommandParserError.usage }
+                switch arguments[index] {
+                case "--title":
+                    guard title == nil else { throw CommandParserError.usage }
+                    title = arguments[index + 1]
+                case "--project":
+                    guard project == nil else { throw CommandParserError.usage }
+                    project = arguments[index + 1]
+                case "--device":
+                    guard let id = UUID(uuidString: arguments[index + 1]) else { throw CommandParserError.usage }
+                    ids.append(id.uuidString)
+                case "--client-pid":
+                    guard let pid = Int32(arguments[index + 1]), pid > 1 else { throw CommandParserError.usage }
+                    clients.append(pid)
+                default: throw CommandParserError.usage
+                }
+                index += 2
+            }
+            guard let title, let project, !ids.isEmpty else { throw CommandParserError.usage }
+            return .sessionBegin(title: title, project: project, deviceIDs: ids, clientPIDs: clients)
+        case "__native_wait":
+            guard arguments.count == 3, let id = UUID(uuidString: arguments[2]) else { throw CommandParserError.usage }
+            return .nativeWait(id.uuidString)
         case "recover":
             guard arguments.count == 2 else { throw CommandParserError.usage }
             return .recover
@@ -68,13 +107,19 @@ enum CommandParser {
                 throw CommandParserError.usage
             }
             return .update
-        case "status", "doctor":
+        case "status":
+            let flags = Array(arguments.dropFirst(2))
+            guard Set(flags).count == flags.count, flags.allSatisfy({ ["--json", "--audit"].contains($0) }) else {
+                throw CommandParserError.usage
+            }
+            return .status(json: flags.contains("--json"), audit: flags.contains("--audit"))
+        case "doctor":
             guard arguments.count <= 3,
                   arguments.count == 2 || arguments[2] == "--json"
             else {
                 throw CommandParserError.usage
             }
-            return arguments[1] == "doctor" ? .doctor(json: arguments.count == 3) : .status(json: arguments.count == 3)
+            return .doctor(json: arguments.count == 3)
         case "name":
             guard arguments.count == 3 else {
                 throw CommandParserError.usage

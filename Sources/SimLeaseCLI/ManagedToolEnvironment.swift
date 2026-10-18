@@ -2,12 +2,12 @@ import Foundation
 
 enum ManagedToolEnvironment {
     static func make(
-        executable: URL, arguments: [String], environment: [String: String], shimDirectory: URL? = nil
+        executable: URL, arguments: [String], environment: [String: String], shimDirectory: URL? = nil, stripShims: Bool = false
     ) -> [String: String] {
         let name = executable.lastPathComponent
         let isAgentDevice = ["agent-device", "agent-device.mjs"].contains(name)
             || (name == "node" && arguments.first.map { URL(fileURLWithPath: $0).lastPathComponent == "agent-device.mjs" } == true)
-        guard isAgentDevice, let path = environment["PATH"] else { return environment }
+        guard isAgentDevice || stripShims, let path = environment["PATH"] else { return environment }
         let installed = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/lib/simlease/shims").resolvingSymlinksInPath()
         let excluded = shimDirectory?.resolvingSymlinksInPath()

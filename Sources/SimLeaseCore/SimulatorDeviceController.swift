@@ -9,10 +9,12 @@ public protocol SimulatorDeviceControlling: Sendable {
 public struct SimulatorDeviceController: SimulatorDeviceControlling {
     private let environment: [String: String]
     private let timeout: TimeInterval
+    private let xcrunURL: URL
 
-    public init(environment: [String: String], timeout: TimeInterval = 20) {
+    public init(environment: [String: String], timeout: TimeInterval = 20, xcrunURL: URL = URL(fileURLWithPath: "/usr/bin/xcrun")) {
         self.environment = environment
         self.timeout = timeout
+        self.xcrunURL = xcrunURL
     }
 
     public func states() throws -> [String: String] {
@@ -46,7 +48,7 @@ public struct SimulatorDeviceController: SimulatorDeviceControlling {
         let errors = try FileHandle(forWritingTo: errorURL)
         defer { try? output.close(); try? errors.close() }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.executableURL = xcrunURL
         process.arguments = arguments
         process.environment = environment
         process.standardOutput = output

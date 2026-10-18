@@ -4,6 +4,7 @@ public enum LeaseSource: String, Codable, Sendable {
     case codex
     case terminal
     case manualXcode
+    case nativeTool
 }
 
 public struct LeaseOwner: Codable, Equatable, Sendable {
@@ -82,17 +83,20 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
     public let owner: LeaseOwner?
     public let waiters: [LeaseWaiter]
     public let error: String?
+    public let activity: SimulatorActivityReport?
 
     public init(
         state: State,
         owner: LeaseOwner?,
         waiters: [LeaseWaiter],
-        error: String?
+        error: String?,
+        activity: SimulatorActivityReport? = nil
     ) {
         self.state = state
         self.owner = owner
         self.waiters = waiters
         self.error = error
+        self.activity = activity
     }
 }
 

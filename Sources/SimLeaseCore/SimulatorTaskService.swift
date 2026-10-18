@@ -19,8 +19,14 @@ public final class SimulatorTaskService: Sendable {
 
     public func run(
         executable: URL, arguments: [String], deviceIDs: [String], keepRunning: Bool,
-        environment: [String: String], identity: LeaseIdentity
+        environment: [String: String], identity: LeaseIdentity,
+        externalSessionID: String? = nil,
+        nativeClients: [ProcessReference] = [],
+        onStarted: (SimulatorTaskRecord) throws -> Void = { _ in }
     ) throws -> Int32 {
+        if let externalSessionID, UUID(uuidString: externalSessionID) == nil {
+            throw SimulatorTaskError.commandFailed("invalid native session identity")
+        }
         let signals = TaskSignals()
         let metadata = try MetadataStore(paths: paths)
         let coordinator = LeaseCoordinator(paths: paths, store: metadata, timing: timing)
@@ -33,6 +39,12 @@ public final class SimulatorTaskService: Sendable {
         defer { handle.release() }
         try recoverPending()
         if let number = signals.current { return 128 + number }
+        guard nativeClients.isEmpty || externalSessionID != nil else {
+            throw SimulatorTaskError.commandFailed("native clients require a native session")
+        }
+        for client in nativeClients where client.state != .matching {
+            throw SimulatorTaskError.unverifiedProcess(client.pid)
+        }
         let ids = Array(Set(deviceIDs.map { $0.uppercased() })).sorted()
         let states = ids.isEmpty ? [:] : try devices.states()
         for id in ids where states[id] == nil { throw SimulatorTaskError.unknownDevice(id) }
@@ -40,6 +52,9 @@ public final class SimulatorTaskService: Sendable {
             token: UUID().uuidString, owner: try ProcessReference.current(), deviceIDs: ids,
             ownedDeviceIDs: keepRunning ? [] : ids.filter { states[$0] == "Shutdown" }
         )
+        record.externalSessionID = externalSessionID
+        record.externalWorkSettled = externalSessionID == nil ? nil : false
+        record.nativeClients = nativeClients.isEmpty ? nil : nativeClients
         let store = SimulatorTaskStore(paths: paths)
         try store.write(record)
         var childEnvironment = environment
@@ -52,9 +67,13 @@ public final class SimulatorTaskService: Sendable {
                 executable: executable, arguments: arguments, environment: childEnvironment,
                 signals: signals,
                 onStart: { child in
+                    for client in nativeClients where client.state != .matching {
+                        throw SimulatorTaskError.unverifiedProcess(client.pid)
+                    }
                     record.child = child
                     record.phase = .running
                     try store.write(record)
+                    try onStarted(record)
                 },
                 onExit: { _, code in
                     record.exitCode = code
@@ -107,6 +126,14 @@ public final class SimulatorTaskService: Sendable {
         record.phase = .cleaning
         try store.write(record)
         do {
+            if record.externalSessionID != nil {
+                let settlements = NativeSettlementStore(paths: paths)
+                guard try record.externalWorkSettled == true || settlements.isAcknowledged(record) else {
+                    throw SimulatorTaskError.commandFailed("native work is unresolved; confirm settlement with simlease session finish \(record.externalSessionID!) --settled")
+                }
+                record.externalWorkSettled = true
+                try store.write(record)
+            }
             if let child = record.child { try TaskProcessRunner.stopGroup(child) }
             for id in record.ownedDeviceIDs {
                 guard try devices.states()[id] != nil else { continue }
@@ -116,6 +143,7 @@ public final class SimulatorTaskService: Sendable {
                     throw SimulatorTaskError.commandFailed("shutdown was not verified for \(id)")
                 }
             }
+            if record.externalSessionID != nil { try NativeSettlementStore(paths: paths).remove(record) }
             try store.remove()
         } catch {
             record.phase = .quarantined

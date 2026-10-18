@@ -72,10 +72,11 @@ public enum SimulatorCommand {
         return result + ["-parallel-testing-enabled", "NO", "-maximum-concurrent-test-simulator-destinations", "1"]
     }
 
-    private static func isXcodebuild(executable: String, arguments: [String]) -> Bool {
+    public static func isXcodebuild(executable: String, arguments: [String]) -> Bool {
         let name = URL(fileURLWithPath: executable).lastPathComponent
         if name == "xcodebuild" { return true }
-        return name == "xcrun" && ProtectedCommand.selectedXcrunTool(in: arguments) == "xcodebuild"
-            && !arguments.contains("--find") && !arguments.contains("-f")
+        guard name == "xcrun", ProtectedCommand.selectedXcrunTool(in: arguments) == "xcodebuild",
+              let index = arguments.firstIndex(of: "xcodebuild") else { return false }
+        return !arguments.prefix(index).contains("--find") && !arguments.prefix(index).contains("-f")
     }
 }

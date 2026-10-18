@@ -34,6 +34,9 @@ public struct SimulatorTaskRecord: Codable, Equatable, Sendable {
     public var phase: Phase
     public var failure: String?
     public var exitCode: Int32?
+    public var externalSessionID: String?
+    public var externalWorkSettled: Bool?
+    public var nativeClients: [ProcessReference]?
 
     public init(
         token: String, owner: ProcessReference, deviceIDs: [String],
@@ -53,9 +56,10 @@ public struct SimulatorTaskStore: Sendable {
     public init(paths: LeasePaths) { self.paths = paths }
 
     public func read() throws -> SimulatorTaskRecord? {
-        guard FileManager.default.fileExists(atPath: paths.task.path) else { return nil }
         do {
             return try JSONDecoder().decode(SimulatorTaskRecord.self, from: Data(contentsOf: paths.task))
+        } catch CocoaError.fileReadNoSuchFile {
+            return nil
         } catch {
             throw MetadataStoreError.corruptFile(paths.task)
         }

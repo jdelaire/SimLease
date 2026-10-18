@@ -63,7 +63,7 @@ inherit a validated task token instead of acquiring another lane.
 Inspect coordination and command coverage:
 
 ```sh
-simlease status --json
+simlease status --json --audit
 simlease doctor --json
 ```
 
@@ -86,32 +86,124 @@ installed PATH shims. Nested `xcrun xcodebuild` is protected too. Absolute
 executables must be placed inside `simlease run`; PATH cannot intercept them.
 An inherited `SIMLEASE_HELD=1` flag alone never authorizes bypass.
 
-For Xcode GUI or native T3/MCP device work, keep an explicit reservation open
-for the entire verification session:
+For Xcode GUI or native T3/MCP device work, start a foreground native session
+before opening or booting the device:
 
 ```sh
-simlease hold --title "UI verification" --project "Project" --device DEVICE-UUID
+simlease session begin --device DEVICE-UUID \
+  --title "UI verification" --project "Project"
 ```
 
-Wait until `status` identifies that reservation as owner before operating the
-native tool. End the reservation with Ctrl-C when verification is complete;
-its owned devices are then shut down. Keep the reservation open across all
-commands in the session. A native tool that ignores reservations can still
-bypass coordination, so its integration must participate explicitly.
+Repeat `--device` for every target. Keep this command running. Wait for its
+`state: "ready"` JSON before using the native tool, and retain the returned
+`sessionID`. A queued session does not print readiness until it owns the lane
+and its durable process journal is ready.
 
-`doctor` reports missing PATH shims and known running tool processes outside
-the active task ancestry. It is an audit, not an operating-system sandbox.
-GUI applications already running must be restarted or configured explicitly
-to inherit the installed PATH. Persistent `agent-device daemon` startup is
-not wrapped in a lifetime-long lease.
+Stock Nightly's device hub can inherit SimLease shims. Bind its dedicated
+helper process before using MCP so internal `xcrun simctl` calls participate in
+the reservation without trying to acquire the lane again:
+
+```sh
+simlease session begin --device DEVICE-UUID \
+  --client-pid HUB-PID --client-pid DAEMON-PID \
+  --title "Native UI verification" --project "Project"
+```
+
+Use the live hub PID from `~/.t3/userdata/device/agent-device/hub.json` and,
+when running, the dedicated agent-device PID from the adjacent `daemon.json`.
+Read only their `pid` fields. All helpers needed for interactive commands must be running and bound before
+those commands begin. If a helper starts or restarts after readiness, stop
+interactive work and reestablish a session with its current identity. Repeat
+`--client-pid` for each trusted, dedicated helper. Never bind a broad T3
+server, login shell, or shared process that can launch unrelated work. Binding
+covers every request handled by that helper, not just this thread. Other
+threads must acquire their own reservation before sending requests.
+
+SimLease captures each PID's kernel start time before waiting for the lane
+and rechecks it before readiness. Bound helpers may use inventory queries and
+supported `simctl` actions with the declared UUID in the actual target
+position. Runner `xcodebuild` calls require every destination to contain a
+declared simulator UUID. Named targets, `booted`, `all`, alternate device sets,
+host-wide actions and unresolved build destinations fail immediately. Use a separate managed
+scope for those operations. Absolute paths still require the native session;
+PID binding only controls calls that reach installed shims.
+
+Use the exact absolute `agent-device` launcher and all device/config/session
+flags returned by `device_open` for interactive commands. Keep the native
+session open across every press, tap, screenshot, runner build and stream.
+A bare PATH `agent-device` or mutating `xcrun` from another shell is outside
+the owner process tree and still waits; do not wrap the external client in another
+`simlease run` while holding the native session. `simlease doctor` identifies
+known dedicated helpers and prints the supported begin/finish recipe.
+
+For the observed agent-device 0.21.25 runner crash in modal inspection, see
+[the verified coordinate interaction workaround](docs/troubleshooting/2026-10-19-agent-device-runner-crash.md).
+
+Read-only `simctl` queries, including device lists, pass through SimLease
+without taking the exclusive lane. Their results are observations and do not
+establish ownership. Mutating standalone shim calls remain complete managed jobs. A standalone boot
+therefore ends with owned-device cleanup. Use a native session for interactive
+work that must stay booted between commands. Devices already booted when the
+session starts are borrowed and remain running after settlement. Close native
+runner sessions and streams before finishing; a live admitted runner keeps
+settlement waiting until it exits.
+
+Finish blocks new bound shim requests and waits for existing admitted wrappers
+before writing settlement. This does not prove that an external daemon or a
+child surviving a killed wrapper has finished. Confirm external settlement
+explicitly.
+
+After all native commands, daemon requests, background work, and capture streams
+have finished, settle that exact session from another terminal:
+
+```sh
+simlease session finish SESSION-ID --settled
+```
+
+`--settled` is your attestation that external work has finished. Finish waits
+for owned-device shutdown and cleanup; an acknowledgment alone is not success.
+Prebooted devices remain running. In T3, `device_close` with `shutdown: false`
+only removes panel bookkeeping and does not prove that device work or capture
+streams have stopped. Close the device with `shutdown: true` when the session
+owns it, and wait for outstanding operations and streams to finish before
+settlement. Do not shut down a borrowed device to finish a session; stop its
+session work and streams through the native tool instead.
+
+If cancellation leaves external work uncertain, do not pass `--settled`.
+An interrupted or killed keeper leaves an unresolved journal. Recovery and new
+jobs remain blocked without shutting down owned devices. Once external work
+is confirmed finished, run `session finish` with the original ID to acknowledge
+it and recover. Failed shutdown remains quarantined; retry after fixing the
+cleanup failure. Session IDs and acknowledgment tokens cannot settle a newer
+session.
+
+This workflow uses stock T3 Nightly. It does not install a native T3 hook or
+modify the signed app. Every native launch still needs an explicit session.
+`simlease hold` remains available for manual terminal reservations; native
+external work should use the settlement-aware session commands above.
+
+`doctor` and `status --json --audit` inspect known running tool processes.
+The menu app repeats this audit every five seconds and displays a warning for
+unmanaged work, unverified native targets, or incomplete inspection. A matching
+UUID inside a native reservation is labeled unverified because a process
+snapshot cannot prove external ownership. Idle daemons, inventory queries, and
+explicit Android, physical-device, or macOS targets are excluded. Audit output
+contains tool names, process identities and device UUIDs, never raw command
+arguments or environment values.
+
+The audit is advisory. Snapshots can miss brief commands and cannot prove that
+persistent daemons or capture helpers are idle. It does not prevent a native
+application from bypassing coordination. GUI applications already running must
+be restarted or configured explicitly to inherit the installed PATH.
+Persistent `agent-device daemon` startup is not wrapped in a lifetime-long
+lease.
 
 Managed `agent-device` clients and daemon starts receive a PATH with SimLease
 shims removed for internal tool lookup, preventing recursive lease acquisition.
 Restart a daemon previously started with a shimmed PATH when its current work
 finishes. Native launchers must configure the same internal tool lookup.
-Daemon requests may outlive a canceled client; keep an explicit reservation
-until the daemon confirms its work has finished. Client process cleanup cannot
-prove that external daemon work has settled.
+Daemon requests may outlive a canceled client; client exit cannot establish
+external settlement.
 
 Name the current Codex thread so waiters can identify it:
 

@@ -7,6 +7,8 @@ public final class MenuViewModel: ObservableObject {
 
     private let provider: any MenuStatusProviding
     private let now: () -> Date
+    private var isRefreshing = false
+    private var isMonitoring = false
 
     public init(
         provider: any MenuStatusProviding,
@@ -18,14 +20,39 @@ public final class MenuViewModel: ObservableObject {
     }
 
     public func refresh() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
         do {
-            state = MenuDisplayState(status: try await provider.fetch(), now: now())
+            let next = MenuDisplayState(status: try await provider.fetch(), now: now())
+            if next != state { state = next }
         } catch {
             state = .metadataError(error.localizedDescription)
         }
     }
 
     public var copyDetailsText: String {
+        var lines = [leaseDetailsText]
+        if let activity = state.activity {
+            for item in activity.activities {
+                lines.append("\(item.kind.rawValue): \(item.tool) PID \(item.process.pid)")
+            }
+            if activity.isIncomplete { lines.append("Activity audit incomplete") }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    public func monitor() async {
+        guard !isMonitoring else { return }
+        isMonitoring = true
+        defer { isMonitoring = false }
+        while !Task.isCancelled {
+            await refresh()
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+        }
+    }
+
+    private var leaseDetailsText: String {
         switch state.kind {
         case .free:
             return "Simulator available"
