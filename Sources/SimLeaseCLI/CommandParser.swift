@@ -3,12 +3,13 @@ import Foundation
 enum ParsedCommand: Equatable {
     case version
     case update
-    case run(deviceIDs: [String], keepRunning: Bool, command: [String])
+    case run(deviceIDs: [String], keepRunning: Bool, keepWarm: Bool = false, command: [String])
     case recover
     case deviceCreate(name: String, deviceType: String, runtime: String)
     case deviceRepair(String, settled: Bool, acknowledgeCrashes: Bool)
     case deviceRecover
     case deviceShutdown([String])
+    case deviceReap
     case sessionBegin(title: String, project: String, deviceIDs: [String], clientPIDs: [Int32] = [])
     case sessionFinish(String)
     case nativeWait(String)
@@ -82,6 +83,7 @@ enum CommandParser {
         case "run":
             var ids = [String]()
             var keepRunning = false
+            var keepWarm = false
             var index = 2
             while index < arguments.count, arguments[index] != "--" {
                 switch arguments[index] {
@@ -92,8 +94,12 @@ enum CommandParser {
                     ids.append(id.uuidString)
                     index += 2
                 case "--keep-running":
-                    guard !keepRunning else { throw CommandParserError.usage }
+                    guard !keepRunning, !keepWarm else { throw CommandParserError.usage }
                     keepRunning = true
+                    index += 1
+                case "--keep-warm":
+                    guard !keepWarm, !keepRunning else { throw CommandParserError.usage }
+                    keepWarm = true
                     index += 1
                 default:
                     throw CommandParserError.usage
@@ -102,7 +108,8 @@ enum CommandParser {
             guard arguments.indices.contains(index), arguments[index] == "--",
                   arguments.indices.contains(index + 1), !arguments[index + 1].isEmpty
             else { throw CommandParserError.usage }
-            return .run(deviceIDs: ids, keepRunning: keepRunning, command: Array(arguments.dropFirst(index + 1)))
+            guard !keepWarm || !ids.isEmpty else { throw CommandParserError.usage }
+            return .run(deviceIDs: ids, keepRunning: keepRunning, keepWarm: keepWarm, command: Array(arguments.dropFirst(index + 1)))
         case "--version":
             guard arguments.count == 2 else {
                 throw CommandParserError.usage
@@ -227,6 +234,10 @@ enum CommandParser {
 
     private static func parseDevice(_ arguments: [String]) throws -> ParsedCommand {
         guard let action = arguments.first else { throw CommandParserError.usage }
+        if action == "reap" {
+            guard arguments.count == 1 else { throw CommandParserError.usage }
+            return .deviceReap
+        }
         if action == "shutdown" {
             var ids = [String]()
             var index = 1

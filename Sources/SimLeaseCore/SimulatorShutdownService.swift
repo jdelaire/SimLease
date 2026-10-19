@@ -50,6 +50,31 @@ public struct SimulatorShutdownService: Sendable {
         let ids = Array(Set(deviceIDs.map { $0.uppercased() })).sorted()
         let handle = try coordinator.acquire(identity: identity, allowUnfinishedShutdown: true, deviceIDs: ids)
         defer { handle.release() }
+        return try shutdownHoldingLane(ids)
+    }
+
+    public func reap(now: Date = Date()) throws -> [SimulatorShutdownResult]? {
+        guard let handle = try coordinator.tryAcquire(identity: identity) else { return nil }
+        defer { handle.release() }
+        return try reapWarmHoldingLane(excluding: [], now: now)
+    }
+
+    public func reapWarmHoldingLane(excluding: Set<String>, now: Date) throws -> [SimulatorShutdownResult] {
+        let store = WarmDeviceStore(paths: paths)
+        let warm = try store.read()
+        guard !warm.isEmpty else { return [] }
+        let states = Dictionary(try devices.inventory().map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first })
+        try store.remove(warm.keys.filter { states[$0] == nil || states[$0] == "Shutdown" })
+        let blocked = try CrashLoopStore(paths: paths).read().blocks
+        let candidates = warm.filter { !excluding.contains($0.key) && states[$0.key] != nil && states[$0.key] != "Shutdown" }
+        let expired = candidates.filter { now.timeIntervalSince($0.value) >= WarmDeviceStore.idleLimit || blocked[$0.key] != nil }.map(\.key)
+        let overflow = candidates.filter { !expired.contains($0.key) }.sorted { $0.value > $1.value }.dropFirst(WarmDeviceStore.capacity).map(\.key)
+        let targets = Array(Set(expired + overflow)).sorted()
+        return targets.isEmpty ? [] : try shutdownHoldingLane(targets)
+    }
+
+    func shutdownHoldingLane(_ ids: [String]) throws -> [SimulatorShutdownResult] {
+        let warm = WarmDeviceStore(paths: paths)
         let pending = try RecoveryFile.read(Journal.self, at: paths.deviceShutdown)?.deviceID
         if let pending, !ids.contains(pending) {
             throw SimulatorTaskError.unfinishedTask("shutdown of \(pending) is unresolved; rerun simlease device shutdown --device \(pending)")
@@ -64,6 +89,7 @@ public struct SimulatorShutdownService: Sendable {
             }
             if device.state == "Shutdown" {
                 if journaled { try FileManager.default.removeItem(at: paths.deviceShutdown) }
+                try warm.remove([id])
                 results.append(SimulatorShutdownResult(deviceID: id, name: device.name, outcome: .alreadyShutdown))
                 continue
             }
@@ -86,6 +112,7 @@ public struct SimulatorShutdownService: Sendable {
                 return results + [SimulatorShutdownResult(deviceID: id, name: device.name, outcome: .unresolved, reason: detail)]
             }
             try FileManager.default.removeItem(at: paths.deviceShutdown)
+            try warm.remove([id])
             results.append(SimulatorShutdownResult(deviceID: id, name: device.name, outcome: .shutdown))
         }
         return results
@@ -101,6 +128,7 @@ public struct SimulatorShutdownService: Sendable {
         }
         let report = activity()
         if let error = report.error { return error }
+        if report.isIncomplete { return "\(report.uninspectedProcessCount) processes could not be inspected" }
         if let process = report.activities.first(where: { $0.deviceIDs.contains { $0.uppercased() == id } }) {
             return "\(process.tool) PID \(process.process.pid) targets it"
         }

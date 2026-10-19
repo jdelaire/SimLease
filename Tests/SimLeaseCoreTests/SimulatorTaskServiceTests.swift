@@ -26,6 +26,175 @@ final class SimulatorTaskServiceTests: XCTestCase {
         XCTAssertThrowsError(try CrashLoopStore(paths: fixture.paths).requireHealthy([fixture.owned]))
     }
 
+    func testCleanJobKeepsOwnedDeviceWarmAndNextJobOwnsIt() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let policy = FakeWarmPolicy()
+        let service = fixture.service(policy: policy)
+        XCTAssertEqual(try fixture.run(exit: 0, service: service), 0)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Booted")
+        XCTAssertEqual(policy.terminated, [fixture.owned])
+        XCTAssertNotNil(try WarmDeviceStore(paths: fixture.paths).read()[fixture.owned])
+
+        var claimed: SimulatorTaskRecord?
+        XCTAssertEqual(try fixture.run(exit: 3, service: service, onStarted: { record in
+            claimed = record
+            XCTAssertNil(try WarmDeviceStore(paths: fixture.paths).read()[fixture.owned])
+        }), 3)
+        XCTAssertEqual(claimed?.ownedDeviceIDs, [fixture.owned])
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+    }
+
+    func testSuccessfulJobWithoutWarmOptInStillShutsDown() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let policy = FakeWarmPolicy()
+        XCTAssertEqual(try fixture.run(exit: 0, keepWarm: false, service: fixture.service(policy: policy)), 0)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+        XCTAssertTrue(policy.terminated.isEmpty)
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+    }
+
+    func testIneligibleOrKeptRunningDevicesAreNeverRegisteredWarm() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let policy = FakeWarmPolicy()
+        policy.warmable = false
+        XCTAssertEqual(try fixture.run(exit: 0, service: fixture.service(policy: policy)), 0)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+
+        policy.warmable = true
+        try fixture.devices.set(fixture.owned, state: "Booted")
+        try WarmDeviceStore(paths: fixture.paths).add([fixture.owned], since: Date())
+        XCTAssertEqual(try fixture.run(exit: 0, keepRunning: true, service: fixture.service(policy: policy)), 0)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Booted")
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+    }
+
+    func testRecoveryShutsDownOwnedDevicesInsteadOfWarming() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        try fixture.devices.set(fixture.owned, state: "Booted")
+        var record = SimulatorTaskRecord(token: UUID().uuidString, owner: ProcessReference(pid: 999_999, startMicroseconds: 1), deviceIDs: [fixture.owned], ownedDeviceIDs: [fixture.owned], phase: .running)
+        record.exitCode = 0
+        try fixture.store.write(record)
+        try fixture.service(policy: FakeWarmPolicy()).recover(identity: fixture.identity)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+    }
+
+    func testRecoveryRemovesWarmOverlapWithoutTakingKeepRunningDevice() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        try fixture.devices.set(fixture.owned, state: "Booted")
+        try WarmDeviceStore(paths: fixture.paths).add([fixture.owned], since: Date())
+        let record = SimulatorTaskRecord(token: UUID().uuidString, owner: ProcessReference(pid: 999_999, startMicroseconds: 1), deviceIDs: [fixture.owned], ownedDeviceIDs: [], phase: .starting)
+        try fixture.store.write(record)
+        try fixture.service(policy: FakeWarmPolicy()).recover(identity: fixture.identity)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Booted")
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+        XCTAssertNil(try fixture.store.read())
+    }
+
+    func testSettlementDoesNotWarmNativeSession() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let policy = FakeWarmPolicy()
+        let code = try fixture.service(policy: policy).run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf Booted > \"$1\"", "job", fixture.devices.path(fixture.owned).path],
+            deviceIDs: [fixture.owned], keepRunning: false, keepWarm: true, environment: [:], identity: fixture.identity,
+            externalSessionID: UUID().uuidString,
+            onStarted: { try NativeSettlementStore(paths: fixture.paths).acknowledge($0) }
+        )
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+        XCTAssertTrue(policy.terminated.isEmpty)
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+    }
+
+    func testCancellationDuringGuestCleanupPreventsWarmCommit() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let policy = FakeWarmPolicy()
+        policy.onTerminate = {
+            _ = kill(getpid(), SIGTERM)
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        XCTAssertNotEqual(try fixture.run(exit: 0, service: fixture.service(policy: policy)), 0)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+        XCTAssertNil(try fixture.store.read())
+    }
+
+    func testRetriedProcessCleanupDoesNotQualifyForWarming() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let ready = fixture.root.appendingPathComponent("cleanup-ready")
+        let helper = fixture.root.appendingPathComponent("cleanup-helper")
+        try Data("trap '/bin/rm -rf \"$JOURNAL\"; exit 0' TERM\n/usr/bin/touch \"$READY\"\nwhile :; do /bin/sleep 0.05; done\n".utf8).write(to: helper)
+        let command = """
+        printf Booted > "$STATE"
+        /bin/sh "$HELPER" &
+        n=0
+        while [ ! -e "$READY" ]; do
+          n=$((n+1)); [ "$n" -lt 300 ] || exit 1
+          /bin/sleep 0.01
+        done
+        exit 0
+        """
+        let policy = FakeWarmPolicy()
+        let code = try fixture.service(policy: policy).run(
+            executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", command],
+            deviceIDs: [fixture.owned], keepRunning: false, keepWarm: true,
+            environment: ["STATE": fixture.devices.path(fixture.owned).path, "JOURNAL": fixture.paths.task.path, "READY": ready.path, "HELPER": helper.path],
+            identity: fixture.identity,
+            onStarted: { _ in
+                try FileManager.default.removeItem(at: fixture.paths.task)
+                try FileManager.default.createDirectory(at: fixture.paths.task, withIntermediateDirectories: true)
+                try Data().write(to: fixture.paths.task.appendingPathComponent("occupied"))
+            }
+        )
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+        XCTAssertTrue(policy.terminated.isEmpty)
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+    }
+
+    func testSignalDuringPostCommitReapingDoesNotRecancelCompletedJob() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let policy = FakeWarmPolicy()
+        policy.onReap = {
+            XCTAssertNil(try fixture.store.read())
+            _ = kill(getpid(), SIGTERM)
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        XCTAssertEqual(try fixture.run(exit: 0, service: fixture.service(policy: policy)), 0)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Booted")
+        XCTAssertNotNil(try WarmDeviceStore(paths: fixture.paths).read()[fixture.owned])
+    }
+
+    func testCleanupCommandGetsClaimedWarmDeviceShutDownFirst() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        try fixture.devices.set(fixture.owned, state: "Booted")
+        try WarmDeviceStore(paths: fixture.paths).add([fixture.owned], since: Date())
+        let tools = fixture.root.appendingPathComponent("tools")
+        try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
+        let xcrun = tools.appendingPathComponent("xcrun")
+        let observed = fixture.root.appendingPathComponent("observed")
+        try Data("#!/bin/sh\n/bin/cat \"$STATE\" > \"$OBSERVED\"\n".utf8).write(to: xcrun)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: xcrun.path)
+        let code = try fixture.service(policy: FakeWarmPolicy()).run(
+            executable: xcrun, arguments: ["simctl", "erase", fixture.owned], deviceIDs: [fixture.owned], keepRunning: false,
+            environment: ["STATE": fixture.devices.path(fixture.owned).path, "OBSERVED": observed.path], identity: fixture.identity
+        )
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(try String(contentsOf: observed, encoding: .utf8), "Shutdown")
+    }
+
     func testBlockedNativeScopeCanSettleWithoutKillingSharedClient() throws {
         let fixture = try TaskFixture()
         defer { fixture.remove() }
@@ -280,13 +449,17 @@ private final class TaskFixture {
         identity = LeaseIdentity(pid: getpid(), cwd: root.path, project: "Task", command: ["task"], source: .terminal, threadID: nil, threadTitle: nil)
     }
 
-    func run(exit: Int, deviceIDs: [String]? = nil, keepRunning: Bool = false) throws -> Int32 {
-        try service.run(
+    func run(exit: Int, deviceIDs: [String]? = nil, keepRunning: Bool = false, keepWarm: Bool = true, service: SimulatorTaskService? = nil, onStarted: (SimulatorTaskRecord) throws -> Void = { _ in }) throws -> Int32 {
+        try (service ?? self.service).run(
             executable: URL(fileURLWithPath: "/bin/sh"),
             arguments: ["-c", "printf Booted > \"$1\"; exit \"$2\"", "job", devices.path(owned).path, String(exit)],
-            deviceIDs: deviceIDs ?? [owned], keepRunning: keepRunning,
-            environment: [:], identity: identity
+            deviceIDs: deviceIDs ?? [owned], keepRunning: keepRunning, keepWarm: keepWarm && !keepRunning,
+            environment: [:], identity: identity, onStarted: onStarted
         )
+    }
+
+    func service(policy: any WarmDevicePolicy) -> SimulatorTaskService {
+        SimulatorTaskService(paths: paths, devices: devices, crashReportDirectory: root.appendingPathComponent("no-reports"), warmPolicy: policy)
     }
 
     func remove() { try? FileManager.default.removeItem(at: root) }
@@ -315,5 +488,19 @@ private final class FileDevices: SimulatorDeviceControlling, @unchecked Sendable
         }
         if failShutdown { throw NSError(domain: "simulator", code: 1) }
         try set(id, state: "Shutdown")
+    }
+}
+
+private final class FakeWarmPolicy: WarmDevicePolicy, @unchecked Sendable {
+    var warmable = true
+    var terminated = [String]()
+    var onTerminate: () -> Void = {}
+    var onReap: () throws -> Void = {}
+
+    func reap(excluding: Set<String>) throws { try onReap() }
+    func canWarm(_ id: String) throws -> Bool { warmable }
+    func terminateApps(_ id: String) throws {
+        terminated.append(id)
+        onTerminate()
     }
 }

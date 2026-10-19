@@ -8,7 +8,7 @@ final class SimulatorShutdownServiceTests: XCTestCase {
         let free = f.add("Free"), paired = f.add("Paired"), queued = f.add("Queued"), targeted = f.add("Targeted"), off = f.add("Off", state: "Shutdown")
         f.devices.paired = [paired]
         try f.store.writeWaiter(LeaseWaiter(id: "waiter", pid: getpid(), waitingSince: Date(), cwd: "/tmp", project: "Set", command: [], source: .codex, threadID: nil, threadTitle: "Set UI", deviceIDs: [queued.lowercased()]))
-        f.report = SimulatorActivityReport(activities: [SimulatorActivity(process: ProcessReference(pid: 7, startMicroseconds: 1), tool: "xcodebuild", kind: .unmanaged, deviceIDs: [targeted])], uninspectedProcessCount: 2)
+        f.report = SimulatorActivityReport(activities: [SimulatorActivity(process: ProcessReference(pid: 7, startMicroseconds: 1), tool: "xcodebuild", kind: .unmanaged, deviceIDs: [targeted])])
 
         let results = try f.service.shutdown(deviceIDs: [free, paired, queued, targeted, off, "99999999-9999-4999-8999-999999999999"])
 
@@ -26,6 +26,38 @@ final class SimulatorShutdownServiceTests: XCTestCase {
         let id = f.add("Free")
         f.report = SimulatorActivityReport(activities: [SimulatorActivity(process: ProcessReference(pid: 7, startMicroseconds: 1), tool: "xcodebuild", kind: .targetUnknown, deviceIDs: [])])
         XCTAssertEqual(try f.service.shutdown(deviceIDs: [id]).first?.outcome, .refused)
+        f.report = SimulatorActivityReport(uninspectedProcessCount: 1)
+        XCTAssertEqual(try f.service.shutdown(deviceIDs: [id]).first?.outcome, .refused)
+        XCTAssertTrue(f.devices.shutdowns.isEmpty)
+    }
+
+    func testReapShutsDownExpiredBlockedAndOverflowWarmDevicesOnly() throws {
+        let f = try ShutdownFixture()
+        defer { f.remove() }
+        let now = Date()
+        let expired = f.add("Expired"), blocked = f.add("Blocked"), newest = f.add("Newest"), newer = f.add("Newer"), oldest = f.add("Oldest"), gone = f.add("Gone", state: "Shutdown")
+        let warm = WarmDeviceStore(paths: f.paths)
+        try warm.add([expired], since: now.addingTimeInterval(-WarmDeviceStore.idleLimit - 1))
+        try warm.add([blocked, oldest], since: now.addingTimeInterval(-120))
+        try warm.add([newer], since: now.addingTimeInterval(-60))
+        try warm.add([newest, gone], since: now.addingTimeInterval(-30))
+        try CrashLoopStore(paths: f.paths).blockInfrastructureFailure(deviceID: blocked)
+
+        let results = try XCTUnwrap(f.service.reap(now: now))
+
+        XCTAssertEqual(Set(results.filter { $0.outcome == .shutdown }.map(\.deviceID)), [expired, blocked, oldest])
+        XCTAssertEqual(Set(try warm.read().keys), [newest, newer])
+        XCTAssertEqual(f.devices.devices[newest]?.state, "Booted")
+    }
+
+    func testReapNeverWaitsForABusyLane() throws {
+        let f = try ShutdownFixture()
+        defer { f.remove() }
+        let id = f.add("Warm")
+        try WarmDeviceStore(paths: f.paths).add([id], since: Date.distantPast)
+        let holder = try XCTUnwrap(f.coordinator.tryAcquire(identity: f.identity))
+        defer { holder.release() }
+        XCTAssertNil(try f.service.reap())
         XCTAssertTrue(f.devices.shutdowns.isEmpty)
     }
 

@@ -92,11 +92,11 @@ public struct MenuDisplayState: Equatable, Sendable {
             symbolName: title != base.menuTitle ? "exclamationmark.triangle.fill" : base.symbolName,
             ownerName: base.ownerName, projectAndSource: base.projectAndSource,
             command: base.command, elapsed: base.elapsed, waiters: base.waiters, error: base.error, activity: activity, crashBlocks: status.crashBlocks ?? [],
-            devices: status.devices.map { Self.devices($0, status: status, ownerName: base.ownerName, waiters: base.waiters) }
+            devices: status.devices.map { Self.devices($0, status: status, ownerName: base.ownerName, waiters: base.waiters, now: now) }
         )
     }
 
-    private static func devices(_ usage: [SimulatorUsage], status: LeaseStatus, ownerName: String?, waiters: [WaiterDisplayItem]) -> [DeviceDisplayItem] {
+    private static func devices(_ usage: [SimulatorUsage], status: LeaseStatus, ownerName: String?, waiters: [WaiterDisplayItem], now: Date) -> [DeviceDisplayItem] {
         let names = Dictionary(waiters.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         let blocked = Set((status.crashBlocks ?? []).map { $0.deviceID.uppercased() })
         return usage.map { device in
@@ -105,6 +105,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             let user = switch device.reservation {
             case .owned: "\(ownerName ?? "Unknown owner") · shuts down after"
             case .borrowed: "\(ownerName ?? "Unknown owner") · stays running after"
+            case .warm: "Kept warm by SimLease · idle \(max(0, Int(now.timeIntervalSince(device.warmSince ?? now) / 60))) min"
             case .unreserved: "No SimLease reservation"
             }
             return DeviceDisplayItem(
@@ -117,7 +118,7 @@ public struct MenuDisplayState: Equatable, Sendable {
                 unmanaged: (status.activity?.activities ?? []).filter { $0.kind == .unmanaged && $0.deviceIDs.contains { $0.uppercased() == device.id } }
                     .map { "\($0.tool) · PID \($0.process.pid)" },
                 crashBlocked: blocked.contains(device.id),
-                canShutDown: device.reservation == .unreserved && device.state == "Booted" && waiting.isEmpty && !targeted
+                canShutDown: [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted
             )
         }
     }

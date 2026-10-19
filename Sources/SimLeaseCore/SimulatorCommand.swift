@@ -1,6 +1,29 @@
 import Foundation
 
 public enum SimulatorCommand {
+    public static func bootTarget(in invocation: [String]) -> String? {
+        guard let arguments = simctlArguments(invocation), arguments.count == 2, arguments[0] == "boot" else { return nil }
+        return UUID(uuidString: arguments[1])?.uuidString
+    }
+
+    public static func shutdownRequiredTargets(in invocation: [String]) -> [String] {
+        guard let arguments = simctlArguments(invocation), let action = arguments.first,
+              ["erase", "delete", "clone", "boot"].contains(action) else { return [] }
+        return arguments.dropFirst().compactMap { UUID(uuidString: $0)?.uuidString }
+    }
+
+    private static func simctlArguments(_ invocation: [String]) -> [String]? {
+        guard let executable = invocation.first else { return nil }
+        let arguments = Array(invocation.dropFirst())
+        switch URL(fileURLWithPath: executable).lastPathComponent {
+        case "simctl": return arguments
+        case "xcrun":
+            guard ProtectedCommand.selectedXcrunTool(in: arguments) == "simctl", let index = arguments.firstIndex(of: "simctl") else { return nil }
+            return Array(arguments.dropFirst(index + 1))
+        default: return nil
+        }
+    }
+
     public static func referencedDeviceIDs(in invocation: [String]) -> [String] {
         guard let executable = invocation.first else { return [] }
         let name = URL(fileURLWithPath: executable).lastPathComponent

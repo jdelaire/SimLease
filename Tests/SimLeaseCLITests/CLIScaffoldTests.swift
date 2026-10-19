@@ -5,6 +5,42 @@ import Darwin
 @testable import SimLeaseCLI
 
 final class CLIScaffoldTests: XCTestCase {
+    func testNestedAbsoluteSimulatorCommandsHandleClaimedWarmDevice() throws {
+        let fixture = try CLIFixture()
+        let id = "11111111-1111-4111-8111-111111111111"
+        let inventory = fixture.root.appendingPathComponent("inventory.json")
+        try JSONSerialization.data(withJSONObject: ["devices": ["test": [["udid": id, "state": "Booted"]]]]).write(to: inventory)
+        let tools = try fixture.makeToolDirectory(name: "xcrun", script: """
+        case "$2" in
+          list) /bin/cat "$INVENTORY" ;;
+          boot) exit 149 ;;
+          shutdown) /usr/bin/sed -i '' 's/Booted/Shutdown/g' "$INVENTORY" ;;
+          erase) /usr/bin/grep -q Shutdown "$INVENTORY" ;;
+          *) exit 1 ;;
+        esac
+        """)
+        let metadata = try MetadataStore(paths: fixture.paths)
+        let coordinator = LeaseCoordinator(paths: fixture.paths, store: metadata)
+        let identity = LeaseIdentity(pid: getpid(), cwd: fixture.root.path, project: "Outer", command: [], source: .terminal, threadID: nil, threadTitle: nil)
+        let holder = try XCTUnwrap(coordinator.tryAcquire(identity: identity))
+        defer { holder.release() }
+        var record = SimulatorTaskRecord(token: UUID().uuidString, owner: try ProcessReference.current(), deviceIDs: [id], ownedDeviceIDs: [id], phase: .running)
+        record.warmClaimedDeviceIDs = [id]
+        let journal = SimulatorTaskStore(paths: fixture.paths)
+        try journal.write(record)
+        defer { try? journal.remove() }
+        let executable = tools.appendingPathComponent("xcrun")
+        let environment = ["SIMLEASE_TOKEN": record.token, "SIMLEASE_XCRUN_PATH": executable.path, "INVENTORY": inventory.path]
+        func invoke(_ action: String) -> Int32 {
+            SimLeaseCLI.run(arguments: ["simlease", "run", "--device", id, "--", executable.path, "simctl", action, id], environment: environment, configuration: fixture.configuration)
+        }
+        XCTAssertEqual(invoke("boot"), 0)
+        try CrashLoopStore(paths: fixture.paths).blockInfrastructureFailure(deviceID: id)
+        XCTAssertEqual(invoke("boot"), 74)
+        try CrashLoopStore(paths: fixture.paths).acknowledge(deviceID: id, at: Date())
+        XCTAssertEqual(invoke("erase"), 0)
+        XCTAssertTrue(try String(contentsOf: inventory, encoding: .utf8).contains("Shutdown"))
+    }
     func testCleanupUsesInternalXcrunWithShimFirstPath() throws {
         let fixture = try CLIFixture()
         let marker = fixture.root.appendingPathComponent("recursive-shim")

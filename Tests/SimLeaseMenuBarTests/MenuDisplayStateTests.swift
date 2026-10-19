@@ -79,6 +79,17 @@ final class MenuDisplayStateTests: XCTestCase {
         XCTAssertNil(MenuDisplayState(status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil), now: Date()).devices)
     }
 
+    func testWarmRowShowsIdleMinutesAndCanShutDown() {
+        let id = "11111111-1111-4111-8111-111111111111"
+        let now = Date(timeIntervalSince1970: 1_000)
+        let status = LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, devices: [
+            SimulatorUsage(id: id, name: "iPhone 18 Pro", runtime: "iOS 27.2", state: "Booted", reservation: .warm, warmSince: now.addingTimeInterval(-185)),
+        ])
+        let device = MenuDisplayState(status: status, now: now).devices?.first
+        XCTAssertEqual(device?.user, "Kept warm by SimLease · idle 3 min")
+        XCTAssertEqual(device?.canShutDown, true)
+    }
+
     func testMissingTitleUsesEightCharacterThreadID() {
         let status = LeaseStatus(
             state: .leased,

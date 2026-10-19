@@ -62,6 +62,21 @@ public struct ProcessSimulatorDeviceManager: SimulatorDeviceManaging {
 
     public func delete(_ id: String) throws { _ = try run(["simctl", "delete", id]) }
 
+    public func terminateApps(_ id: String) throws {
+        let bundles = Self.runningApplications(try run(["simctl", "spawn", id, "launchctl", "list"]))
+        for bundle in bundles { _ = try? run(["simctl", "terminate", id, bundle]) }
+        let remaining = Self.runningApplications(try run(["simctl", "spawn", id, "launchctl", "list"]))
+        guard remaining.isEmpty else { throw DeviceManagementError.failed("apps still running on \(id): \(remaining.sorted().joined(separator: ", "))") }
+    }
+
+    static func runningApplications(_ listing: String) -> Set<String> {
+        Set(listing.split(separator: "\n").compactMap { line -> String? in
+            guard let range = line.range(of: "UIKitApplication:") else { return nil }
+            let bundle = line[range.upperBound...].prefix { $0 != "[" && !$0.isWhitespace }
+            return bundle.isEmpty ? nil : String(bundle)
+        })
+    }
+
     private func run(_ arguments: [String], observation: Bool = false, timeout: TimeInterval? = nil) throws -> String {
         do { return try controller.command(arguments, timeout: timeout) }
         catch SimulatorTaskError.commandTimedOut(let detail) {

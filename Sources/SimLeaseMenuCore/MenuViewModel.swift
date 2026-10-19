@@ -13,6 +13,8 @@ public final class MenuViewModel: ObservableObject {
     private var isMonitoring = false
     private var includesDevices = false
     private var refreshPending = false
+    private var isReaping = false
+    private var lastReap = Date.distantPast
 
     public init(
         provider: any MenuStatusProviding,
@@ -88,6 +90,14 @@ public final class MenuViewModel: ObservableObject {
         defer { isMonitoring = false }
         while !Task.isCancelled {
             await refresh()
+            if !isReaping, now().timeIntervalSince(lastReap) >= 60 {
+                isReaping = true
+                lastReap = now()
+                Task {
+                    try? await provider.reap()
+                    isReaping = false
+                }
+            }
             do { try await Task.sleep(for: .seconds(5)) } catch { return }
         }
     }

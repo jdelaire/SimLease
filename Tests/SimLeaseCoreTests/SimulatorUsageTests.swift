@@ -30,6 +30,23 @@ final class SimulatorUsageTests: XCTestCase {
         XCTAssertEqual(SimulatorUsage.build(inventory: inventory, task: nil).map(\.name), ["Another", "Borrowed", "Owned"])
     }
 
+    func testWarmRegistryMarksOnlyBootedUnreservedDevices() {
+        let warm = "11111111-1111-4111-8111-111111111111", off = "22222222-2222-4222-8222-222222222222"
+        let since = Date(timeIntervalSince1970: 100)
+        let usage = SimulatorUsage.build(inventory: [device(warm, name: "Warm", state: "Booted"), device(off, name: "Off", state: "Shutdown")], task: nil, warm: [warm: since, off: since])
+        XCTAssertEqual(usage.map(\.reservation), [.warm])
+        XCTAssertEqual(usage.first?.warmSince, since)
+    }
+
+    func testBootTargetAndRunningApplicationsParsing() {
+        let id = "11111111-1111-4111-8111-111111111111"
+        XCTAssertEqual(SimulatorCommand.bootTarget(in: ["/usr/bin/xcrun", "simctl", "boot", id.lowercased()]), id)
+        XCTAssertNil(SimulatorCommand.bootTarget(in: ["xcrun", "simctl", "boot", id, "--arch=arm64"]))
+        XCTAssertNil(SimulatorCommand.bootTarget(in: ["xcrun", "simctl", "shutdown", id]))
+        let listing = "PID\tStatus\tLabel\n123\t0\tUIKitApplication:com.example.App[a1b2][rb-legacy]\n-\t0\tcom.apple.springboard\n456\t0\tUIKitApplication:com.example.AppUITests.xctrunner[c3d4][rb-legacy]\n"
+        XCTAssertEqual(ProcessSimulatorDeviceManager.runningApplications(listing), ["com.example.App", "com.example.AppUITests.xctrunner"])
+    }
+
     private func device(_ id: String, name: String, state: String, runtime: String = "com.apple.CoreSimulator.SimRuntime.iOS-27-1") -> ManagedSimulatorDevice {
         ManagedSimulatorDevice(id: id, name: name, deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-17", runtime: runtime, dataPath: "/Devices/\(id)/data", state: state, available: true)
     }

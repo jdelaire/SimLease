@@ -69,11 +69,44 @@ simlease doctor --json
 ```
 
 `--devices` adds booted and reserved simulators with their reservation:
-`owned` devices shut down when the job ends, `borrowed` devices were already
-running and stay up, and `unreserved` devices are booted outside any SimLease
+`owned` devices were booted for the current job, `borrowed` devices were
+already running and stay up, `warm` devices are kept booted by SimLease
+between jobs, and `unreserved` devices are booted outside any SimLease
 reservation. The menu popover lists the same simulators with the lease owner,
 queued threads that declared the device, and unmanaged processes targeting it.
 The menu queries the simulator inventory only while the popover is open.
+
+Opt into a warm device pool for terminal commands that enforce complete guest
+settlement before exiting:
+
+```sh
+simlease run --keep-warm --device DEVICE-UUID -- /path/to/settled-job
+```
+
+`--keep-warm` permits reuse or automatic shutdown of devices the job owns.
+Before exiting, the command must finish or stop every background task, external
+request, capture stream and custom simulator job it started, and remove any
+registration that could restart custom work. SimLease terminates ordinary apps
+but cannot verify this guest settlement. Exit status 0 alone does not prove it.
+Use the flag only when the command enforces that contract. Default jobs keep
+their shutdown boundary. Native sessions always require explicit settlement
+and keep their previous shutdown behavior.
+
+After an opted-in job exits 0 without cancellation, cleanup errors, crash blocks
+or pairing, SimLease terminates ordinary apps and retains its owned device.
+The next job declaring that UUID owns it again without a cold boot. Failed,
+cancelled, crash-blocked and recovered jobs shut it down. `--keep-running`
+retains devices outside the pool and cannot be combined with `--keep-warm`.
+Warm devices become eligible for shutdown after 10 idle minutes, with a
+best-effort limit of 2 warm devices. Reaping runs at job start and finish and
+every minute from the menu when the lane is free, with the same refusal checks
+as `simlease device shutdown`. Devices in use or declared by queued jobs stay
+up until a later pass. Run it by hand with `simlease device reap`.
+
+A command that erases, deletes, clones or boots a claimed warm device gets that
+device shut down first. Nested and bound native `simctl boot` calls on a claimed
+warm device succeed without booting again. Declared UUIDs and normal admission
+checks still apply.
 
 Shut down booted simulators you know are unused:
 

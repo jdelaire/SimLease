@@ -427,6 +427,7 @@ private struct SimulatorUsageList: View {
         if device.crashBlocked || !device.unmanaged.isEmpty { return "exclamationmark.triangle.fill" }
         return switch device.reservation {
         case .owned, .borrowed: "lock.iphone"
+        case .warm: "flame"
         case .unreserved: "iphone"
         }
     }
@@ -436,6 +437,7 @@ private struct SimulatorUsageList: View {
         return switch device.reservation {
         case .owned: .orange
         case .borrowed: .blue
+        case .warm: .teal
         case .unreserved: .secondary
         }
     }

@@ -96,8 +96,8 @@ public enum SimLeaseCLI {
                     "--current-version",
                     SimLeaseBuild.currentVersion.description,
                 ])
-            case .run(let ids, let keepRunning, let command):
-                return try runTask(command: command, deviceIDs: ids, keepRunning: keepRunning, environment: environment, configuration: configuration)
+            case .run(let ids, let keepRunning, let keepWarm, let command):
+                return try runTask(command: command, deviceIDs: ids, keepRunning: keepRunning, keepWarm: keepWarm, environment: environment, configuration: configuration)
             case .recover:
                 let store = try MetadataStore(paths: configuration.paths)
                 let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: arguments, store: store)
@@ -123,18 +123,19 @@ public enum SimLeaseCLI {
                    record.owner.isAncestor(of: getpid()) || record.nativeClients?.contains(where: { $0.isAncestor(of: getpid()) }) == true {
                     throw SimulatorTaskError.commandFailed("simulator shutdown cannot nest inside a managed job or native session")
                 }
-                let xcrun: URL
-                #if DEBUG || SIMLEASE_TESTING
-                xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
-                #else
-                xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
-                #endif
-                let threadID = environment["CODEX_THREAD_ID"]
-                let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: "SimLease", command: arguments, source: threadID == nil ? .terminal : .codex, threadID: threadID, threadTitle: "Shut down simulators")
-                let service = SimulatorShutdownService(paths: configuration.paths, coordinator: try makeCoordinator(configuration: configuration), identity: identity, devices: configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun))
+                let service = try shutdownService(title: "Shut down simulators", arguments: arguments, environment: environment, configuration: configuration)
                 let results = try service.shutdown(deviceIDs: ids)
                 configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(["results": results]), as: UTF8.self) + "\n")
                 return results.contains { $0.outcome == .unresolved } ? 75 : 0
+            case .deviceReap:
+                if let record = try SimulatorTaskStore(paths: configuration.paths).read(),
+                   record.owner.isAncestor(of: getpid()) || record.nativeClients?.contains(where: { $0.isAncestor(of: getpid()) }) == true {
+                    throw SimulatorTaskError.commandFailed("simulator reaping cannot nest inside a managed job or native session")
+                }
+                let results = try shutdownService(title: "Reap warm simulators", arguments: arguments, environment: environment, configuration: configuration).reap()
+                let output = ReapOutput(busy: results == nil, results: results ?? [])
+                configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(output), as: UTF8.self) + "\n")
+                return output.results.contains { $0.outcome == .unresolved } ? 75 : 0
             case .sessionBegin(let title, let project, let ids, let clientPIDs):
                 let id = UUID().uuidString
                 let clients = try NativeClientAdmission.capture(pids: clientPIDs)
@@ -436,7 +437,7 @@ public enum SimLeaseCLI {
             let manager = configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun)
             let relevant = status.waiters.flatMap { $0.deviceIDs ?? [] } + (status.activity?.activities.flatMap(\.deviceIDs) ?? []) + blocks.map(\.deviceID)
             usage = (try? manager.inventory()).map {
-                SimulatorUsage.build(inventory: $0, task: status.state == .leased && task?.owner.pid == status.owner?.pid ? task : nil, relevantIDs: Set(relevant))
+                SimulatorUsage.build(inventory: $0, task: status.state == .leased && task?.owner.pid == status.owner?.pid ? task : nil, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:])
             }
         }
         status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage)
@@ -503,8 +504,32 @@ public enum SimLeaseCLI {
             paths: configuration.paths,
             devices: SimulatorDeviceController(environment: environment, xcrunURL: xcrun),
             timing: configuration.timing, report: configuration.standardError,
-            crashReportDirectory: configuration.crashReportDirectory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
+            crashReportDirectory: configuration.crashReportDirectory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports"),
+            warmPolicy: try? warmPolicy(environment: environment, configuration: configuration)
         )
+    }
+
+    private static func shutdownService(title: String, arguments: [String], environment: [String: String], configuration: CLIConfiguration) throws -> SimulatorShutdownService {
+        let xcrun: URL
+        #if DEBUG || SIMLEASE_TESTING
+        xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+        #else
+        xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+        #endif
+        let threadID = environment["CODEX_THREAD_ID"]
+        let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: "SimLease", command: arguments, source: threadID == nil ? .terminal : .codex, threadID: threadID, threadTitle: title)
+        return SimulatorShutdownService(paths: configuration.paths, coordinator: try makeCoordinator(configuration: configuration), identity: identity, devices: configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun))
+    }
+
+    private static func warmPolicy(environment: [String: String], configuration: CLIConfiguration) throws -> ProcessWarmDevicePolicy {
+        let xcrun: URL
+        #if DEBUG || SIMLEASE_TESTING
+        xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+        #else
+        xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+        #endif
+        let manager = ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun)
+        return ProcessWarmDevicePolicy(paths: configuration.paths, manager: manager, shutdownService: try shutdownService(title: "Reap warm simulators", arguments: [], environment: environment, configuration: configuration))
     }
 
     private static func deviceService(arguments: [String], environment: [String: String], configuration: CLIConfiguration) throws -> DeviceRepairService {
@@ -524,7 +549,7 @@ public enum SimLeaseCLI {
     }
 
     private static func runTask(
-        command: [String], deviceIDs: [String], keepRunning: Bool,
+        command: [String], deviceIDs: [String], keepRunning: Bool, keepWarm: Bool,
         environment: [String: String], configuration: CLIConfiguration
     ) throws -> Int32 {
         guard let name = command.first else { throw CommandParserError.usage }
@@ -545,17 +570,19 @@ public enum SimLeaseCLI {
         let arguments = SimulatorCommand.argumentsForManagedTask(executable: executable.path, arguments: Array(command.dropFirst()), hasDevices: !ids.isEmpty)
         let childEnvironment = ManagedToolEnvironment.make(executable: executable, arguments: arguments, environment: environment)
         if try SimulatorTaskStore(paths: configuration.paths).authorizesNestedCommand(environment: environment, pid: getpid()) {
+            guard !keepWarm else { throw SimulatorTaskError.commandFailed("declare --keep-warm on the outer run only") }
             try SimulatorTaskStore(paths: configuration.paths).validateNestedDevices(ids)
             if !CrashLoopStore.permitsCleanup([executable.path] + arguments) {
                 let declared = try SimulatorTaskStore(paths: configuration.paths).read()?.deviceIDs ?? []
                 try CrashLoopStore(paths: configuration.paths).requireHealthy(ids.isEmpty ? declared : ids)
             }
+            if try prepareWarmCommand(invocation: [executable.path] + arguments, record: SimulatorTaskStore(paths: configuration.paths).read(), environment: environment, configuration: configuration) { return 0 }
             return try ChildProcessRunner.run(executable: executable, arguments: arguments, environment: childEnvironment).exitCode
         }
         let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: command, store: store)
         return try taskService(environment: environment, configuration: configuration).run(
             executable: executable, arguments: arguments, deviceIDs: ids,
-            keepRunning: keepRunning, environment: childEnvironment, identity: identity
+            keepRunning: keepRunning, keepWarm: keepWarm, environment: childEnvironment, identity: identity
         )
     }
 
@@ -582,7 +609,8 @@ public enum SimLeaseCLI {
         let native = !nested && (decision.requiresLease || SimulatorCommand.isXcodebuild(executable: invokedPath, arguments: childArguments))
             ? try NativeClientAdmission.acquire(paths: configuration.paths, invocation: invocation, pid: getpid()) : nil
         defer { withExtendedLifetime(native) {} }
-        let taskDevices = nested ? (try journal.read()?.deviceIDs ?? []) : []
+        let admittedTask = nested || native != nil ? try journal.read() : nil
+        let taskDevices = admittedTask?.deviceIDs ?? []
         let ids = SimulatorCommand.referencedDeviceIDs(in: invocation)
         if nested {
             try journal.validateNestedDevices(SimulatorCommand.referencedDeviceIDs(in: invocation))
@@ -590,6 +618,8 @@ public enum SimLeaseCLI {
                 try CrashLoopStore(paths: configuration.paths).requireHealthy(ids.isEmpty ? taskDevices : ids)
             }
         }
+        if nested || native != nil,
+           try prepareWarmCommand(invocation: invocation, record: admittedTask, environment: environment, configuration: configuration) { return 0 }
         let arguments = SimulatorCommand.argumentsForManagedTask(executable: executable.path, arguments: childArguments, hasDevices: !ids.isEmpty || !taskDevices.isEmpty)
         let childEnvironment = ManagedToolEnvironment.make(
             executable: executable, arguments: arguments, environment: environment,
@@ -607,6 +637,27 @@ public enum SimLeaseCLI {
             executable: executable, arguments: arguments, deviceIDs: ids,
             keepRunning: false, environment: childEnvironment, identity: identity
         )
+    }
+
+    private static func prepareWarmCommand(invocation: [String], record: SimulatorTaskRecord?, environment: [String: String], configuration: CLIConfiguration) throws -> Bool {
+        let claimed = Set(record?.warmClaimedDeviceIDs ?? [])
+        guard !claimed.isEmpty else { return false }
+        let xcrun: URL
+        #if DEBUG || SIMLEASE_TESTING
+        xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+        #else
+        xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+        #endif
+        let controller = SimulatorDeviceController(environment: environment, xcrunURL: xcrun)
+        let boot = SimulatorCommand.bootTarget(in: invocation)
+        if let id = boot, claimed.contains(id), try controller.states()[id] == "Booted" {
+            configuration.standardError("SimLease: \(id) is already booted\n")
+            return true
+        }
+        for id in SimulatorCommand.shutdownRequiredTargets(in: invocation) where claimed.contains(id) && boot == nil {
+            try controller.shutdown(id)
+        }
+        return false
     }
 
     private static func makeCoordinator(
@@ -673,4 +724,9 @@ private struct NativeSessionReady: Encodable {
     let pid: Int32
     let deviceIDs: [String]
     let ownedDeviceIDs: [String]
+}
+
+private struct ReapOutput: Encodable {
+    let busy: Bool
+    let results: [SimulatorShutdownResult]
 }

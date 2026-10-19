@@ -4,6 +4,20 @@ import XCTest
 import SimLeaseCore
 
 final class NativeSessionTests: XCTestCase {
+    func testBoundNativeBootReusesClaimedWarmDeviceAndFinishShutsItDown() throws {
+        let fixture = try NativeFixture()
+        try fixture.setState("Booted")
+        _ = try MetadataStore(paths: fixture.paths)
+        try WarmDeviceStore(paths: fixture.paths).add([fixture.device], since: Date())
+        let (keeper, ready, record) = try fixture.begin(clientPID: getpid())
+        XCTAssertEqual(ready["ownedDeviceIDs"] as? [String], [fixture.device])
+        XCTAssertEqual(try fixture.callShim(["simctl", "boot", fixture.device]), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("native-started").path))
+        XCTAssertEqual(try fixture.call(["session", "finish", record.externalSessionID!, "--settled"]), 0)
+        XCTAssertEqual(try fixture.exit(keeper), 0)
+        XCTAssertTrue(try String(contentsOf: fixture.inventory, encoding: .utf8).contains("Shutdown"))
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+    }
     func testCrashBlockedNativeClientCanStillShutdownAndSettle() throws {
         let fixture = try NativeFixture()
         let (keeper, _, record) = try fixture.begin(clientPID: getpid())
@@ -182,6 +196,7 @@ private final class NativeFixture {
         #!/bin/sh
         if [ "$2" = list ]; then /bin/cat "$NATIVE_INVENTORY"; exit 0; fi
         if [ "$2" = boot ]; then
+          /usr/bin/grep -q Booted "$NATIVE_INVENTORY" && exit 149
           /usr/bin/touch "$NATIVE_ROOT/native-started"
           while [ -f "$NATIVE_ROOT/block-native" ]; do /bin/sleep 0.05; done
         fi
@@ -216,7 +231,7 @@ private final class NativeFixture {
     }
 
     func setState(_ state: String) throws {
-        try JSONSerialization.data(withJSONObject: ["devices": ["test": [["udid": device, "state": state]]]]).write(to: inventory)
+        try JSONSerialization.data(withJSONObject: ["devices": ["test": [["udid": device, "name": "Test device", "state": state, "deviceTypeIdentifier": "test.phone", "dataPath": root.appendingPathComponent(device).path, "isAvailable": true]]]]).write(to: inventory)
     }
 
     func launch(_ arguments: [String], shim: Bool = false, tool: String = "xcrun") throws -> Launch {

@@ -38,6 +38,8 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(try CommandParser.parse(["simlease", "device", "shutdown", "--device", a.lowercased(), "--device", b]), .deviceShutdown([a, b]))
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "shutdown", "--device", a, "--device", a.lowercased()]))
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "shutdown"]))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "reap"]), .deviceReap)
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "reap", "--device", a]))
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "shutdown", "--device", "booted"]))
     }
 
@@ -46,6 +48,9 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(try CommandParser.parse([
             "simlease", "run", "--device", id, "--keep-running", "--", "/bin/true",
         ]), .run(deviceIDs: [id], keepRunning: true, command: ["/bin/true"]))
+        XCTAssertEqual(try CommandParser.parse([
+            "simlease", "run", "--device", id, "--keep-warm", "--", "/bin/true",
+        ]), .run(deviceIDs: [id], keepRunning: false, keepWarm: true, command: ["/bin/true"]))
         XCTAssertEqual(try CommandParser.parse(["simlease", "recover"]), .recover)
         XCTAssertEqual(try CommandParser.parse([
             "simlease", "hold", "--title", "UI verification", "--project", "App", "--device", id,
@@ -54,6 +59,10 @@ final class CommandParserTests: XCTestCase {
             ["simlease", "run", "--device", "booted", "--", "/bin/true"],
             ["simlease", "run", "--device", "../bad", "--", "/bin/true"],
             ["simlease", "run", "--keep-running", "--keep-running", "--", "/bin/true"],
+            ["simlease", "run", "--device", id, "--keep-running", "--keep-warm", "--", "/bin/true"],
+            ["simlease", "run", "--device", id, "--keep-warm", "--keep-running", "--", "/bin/true"],
+            ["simlease", "run", "--device", id, "--keep-warm", "--keep-warm", "--", "/bin/true"],
+            ["simlease", "run", "--keep-warm", "--", "/bin/true"],
             ["simlease", "run", "--"],
         ] {
             XCTAssertThrowsError(try CommandParser.parse(arguments))

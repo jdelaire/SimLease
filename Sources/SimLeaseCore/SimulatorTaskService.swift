@@ -6,13 +6,16 @@ public final class SimulatorTaskService: Sendable {
     private let timing: LeaseTiming
     private let report: @Sendable (String) -> Void
     private let crashReportDirectory: URL
+    private let warmPolicy: (any WarmDevicePolicy)?
 
     public init(
         paths: LeasePaths, devices: any SimulatorDeviceControlling,
         timing: LeaseTiming = .production,
         report: @escaping @Sendable (String) -> Void = { _ in },
-        crashReportDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
+        crashReportDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports"),
+        warmPolicy: (any WarmDevicePolicy)? = nil
     ) {
+        self.warmPolicy = warmPolicy
         self.paths = paths
         self.devices = devices
         self.timing = timing
@@ -21,12 +24,15 @@ public final class SimulatorTaskService: Sendable {
     }
 
     public func run(
-        executable: URL, arguments: [String], deviceIDs: [String], keepRunning: Bool,
+        executable: URL, arguments: [String], deviceIDs: [String], keepRunning: Bool, keepWarm: Bool = false,
         environment: [String: String], identity: LeaseIdentity,
         externalSessionID: String? = nil,
         nativeClients: [ProcessReference] = [],
         onStarted: (SimulatorTaskRecord) throws -> Void = { _ in }
     ) throws -> Int32 {
+        guard !keepWarm || !keepRunning else {
+            throw SimulatorTaskError.commandFailed("--keep-warm and --keep-running cannot be combined")
+        }
         if let externalSessionID, UUID(uuidString: externalSessionID) == nil {
             throw SimulatorTaskError.commandFailed("invalid native session identity")
         }
@@ -54,12 +60,17 @@ public final class SimulatorTaskService: Sendable {
         let source = CrashReportSource(directory: crashReportDirectory)
         _ = try crashes.ingest(source.scan(), now: Date())
         if !CrashLoopStore.permitsCleanup([executable.path] + arguments) { try crashes.requireHealthy(ids) }
+        let warmStore = WarmDeviceStore(paths: paths)
+        if let warmPolicy, try !warmStore.read().isEmpty { try warmPolicy.reap(excluding: Set(ids)) }
+        let warm = warmPolicy == nil ? [:] : try warmStore.read()
         let states = ids.isEmpty ? [:] : try devices.states()
         for id in ids where states[id] == nil { throw SimulatorTaskError.unknownDevice(id) }
+        let claimed = ids.filter { warm[$0] != nil && states[$0] == "Booted" }
         var record = SimulatorTaskRecord(
             token: UUID().uuidString, owner: try ProcessReference.current(), deviceIDs: ids,
-            ownedDeviceIDs: keepRunning ? [] : ids.filter { states[$0] == "Shutdown" }
+            ownedDeviceIDs: keepRunning ? [] : ids.filter { states[$0] == "Shutdown" || claimed.contains($0) }
         )
+        record.warmClaimedDeviceIDs = keepRunning || claimed.isEmpty ? nil : claimed
         record.externalSessionID = externalSessionID
         record.externalWorkSettled = externalSessionID == nil ? nil : false
         record.nativeClients = nativeClients.isEmpty ? nil : nativeClients
@@ -67,12 +78,16 @@ public final class SimulatorTaskService: Sendable {
         record.crashScopeID = crashScopeID
         let store = SimulatorTaskStore(paths: paths)
         try store.write(record)
+        try warmStore.remove(ids.filter { warm[$0] != nil })
+        let needsShutdown = Set(SimulatorCommand.shutdownRequiredTargets(in: [executable.path] + arguments))
+        for id in record.warmClaimedDeviceIDs ?? [] where needsShutdown.contains(id) { try devices.shutdown(id) }
         var childEnvironment = environment
         childEnvironment["SIMLEASE_HELD"] = "1"
         childEnvironment["SIMLEASE_TOKEN"] = record.token
         var code: Int32 = 74
         var jobError: Error?
         var stoppedForCrash = false
+        var processCleanupFailed = false
         var lastScan: TimeInterval = 0
         var monitoringErrorReported = false
         do {
@@ -115,19 +130,36 @@ public final class SimulatorTaskService: Sendable {
                 }
             )
         } catch let error as TaskProcessCleanupError {
+            processCleanupFailed = true
             code = error.exitCode
             report("SimLease: retrying process cleanup: \(error.detail)\n")
         } catch {
             jobError = error
         }
         if stoppedForCrash { code = 70 }
+        var warmable = keepWarm && warmPolicy != nil && externalSessionID == nil && code == 0 && jobError == nil && !processCleanupFailed && !monitoringErrorReported && !stoppedForCrash && signals.current == nil
+        if warmable {
+            do { _ = try crashes.ingest(source.scan(), now: Date()) }
+            catch {
+                warmable = false
+                report("SimLease: crash inspection unavailable; shutting down owned devices: \(error)\n")
+            }
+        }
+        var finished = false
+        var cancellationAtCommit: Int32?
         do {
-            try finish(&record)
+            cancellationAtCommit = try finish(&record, warm: warmable, cancellationSignal: { signals.current })
+            finished = true
         } catch {
             report("SimLease: cleanup failed; lane quarantined: \(error)\n")
             if code == 0 { code = 74 }
         }
+        if warmable, finished {
+            do { try warmPolicy?.reap(excluding: []) }
+            catch { report("SimLease: warm simulator reaping failed: \(error)\n") }
+        }
         if let jobError { throw jobError }
+        if code == 0, let number = cancellationAtCommit { return 128 + number }
         return code
     }
 
@@ -155,7 +187,8 @@ public final class SimulatorTaskService: Sendable {
         try finish(&record)
     }
 
-    private func finish(_ record: inout SimulatorTaskRecord) throws {
+    @discardableResult
+    private func finish(_ record: inout SimulatorTaskRecord, warm: Bool = false, cancellationSignal: () -> Int32? = { nil }) throws -> Int32? {
         let store = SimulatorTaskStore(paths: paths)
         record.phase = .cleaning
         try store.write(record)
@@ -169,22 +202,48 @@ public final class SimulatorTaskService: Sendable {
                 try store.write(record)
             }
             if let child = record.child { try TaskProcessRunner.stopGroup(child) }
+            var warmed = [String]()
             for id in record.ownedDeviceIDs {
-                guard try devices.states()[id] != nil else { continue }
+                guard let current = try devices.states()[id] else { continue }
+                if warm, cancellationSignal() == nil, current == "Booted", let warmPolicy, (try? warmPolicy.canWarm(id)) == true, (try? warmPolicy.terminateApps(id)) != nil, cancellationSignal() == nil {
+                    warmed.append(id)
+                    continue
+                }
                 try devices.shutdown(id)
                 let state = try devices.states()[id]
                 guard state == nil || state == "Shutdown" else {
                     throw SimulatorTaskError.commandFailed("shutdown was not verified for \(id)")
                 }
             }
+            if cancellationSignal() != nil {
+                for id in warmed { try shutdownAndVerify(id) }
+                warmed.removeAll()
+            }
             if record.externalSessionID != nil { try NativeSettlementStore(paths: paths).remove(record) }
             if let scopeID = record.crashScopeID { try CrashLoopStore(paths: paths).endScope(id: scopeID, endedAt: Date()) }
+            let warmStore = WarmDeviceStore(paths: paths)
+            try warmStore.remove(record.deviceIDs)
+            if !warmed.isEmpty { try warmStore.add(warmed, since: Date()) }
+            let cancellation = cancellationSignal()
+            if cancellation != nil {
+                for id in warmed { try shutdownAndVerify(id) }
+                try warmStore.remove(warmed)
+            }
             try store.remove()
+            return cancellation
         } catch {
             record.phase = .quarantined
             record.failure = String(describing: error)
             try store.write(record)
             throw SimulatorTaskError.unfinishedTask(String(describing: error))
+        }
+    }
+
+    private func shutdownAndVerify(_ id: String) throws {
+        try devices.shutdown(id)
+        let state = try devices.states()[id]
+        guard state == nil || state == "Shutdown" else {
+            throw SimulatorTaskError.commandFailed("shutdown was not verified for \(id)")
         }
     }
 }
