@@ -88,15 +88,16 @@ public actor CLIStatusProvider: MenuStatusProviding {
         process.arguments = arguments
         process.standardOutput = stdout
         process.standardError = stderr
+        let exited = AsyncStream<Void> { continuation in
+            process.terminationHandler = { _ in
+                continuation.yield()
+                continuation.finish()
+            }
+        }
         try process.run()
         async let outputTask = Self.read(stdout.fileHandleForReading)
         async let errorTask = Self.read(stderr.fileHandleForReading)
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                process.waitUntilExit()
-                continuation.resume()
-            }
-        }
+        for await _ in exited { break }
 
         let output = await outputTask
         let errorOutput = await errorTask
