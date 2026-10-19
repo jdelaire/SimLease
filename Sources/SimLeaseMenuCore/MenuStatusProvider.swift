@@ -4,15 +4,18 @@ import SimLeaseCore
 public protocol MenuStatusProviding: Sendable {
     func fetch() async throws -> LeaseStatus
     func fetch(includeDevices: Bool) async throws -> LeaseStatus
+    func shutdown(deviceIDs: [String]) async throws -> [SimulatorShutdownResult]
 }
 
 public extension MenuStatusProviding {
     func fetch(includeDevices: Bool) async throws -> LeaseStatus { try await fetch() }
+    func shutdown(deviceIDs: [String]) async throws -> [SimulatorShutdownResult] { throw MenuStatusError.shutdownFailed("unsupported") }
 }
 
 public enum MenuStatusError: LocalizedError, Equatable {
     case commandFailed(code: Int32, stderr: String)
     case invalidJSON
+    case shutdownFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -23,6 +26,8 @@ public enum MenuStatusError: LocalizedError, Equatable {
                 : "simlease status failed with exit code \(code): \(detail)"
         case .invalidJSON:
             return "simlease status returned invalid JSON"
+        case let .shutdownFailed(detail):
+            return "Simulator shutdown failed: \(detail)"
         }
     }
 }
@@ -51,11 +56,36 @@ public actor CLIStatusProvider: MenuStatusProviding {
     }
 
     public func fetch(includeDevices: Bool) async throws -> LeaseStatus {
+        let output = try await run(["status", "--json", "--audit"] + (includeDevices ? ["--devices"] : []))
+        guard let status = try? JSONDecoder.simLease.decode(LeaseStatus.self, from: output) else {
+            throw MenuStatusError.invalidJSON
+        }
+        return status
+    }
+
+    public func shutdown(deviceIDs: [String]) async throws -> [SimulatorShutdownResult] {
+        let (status, output, errors) = try await execute(["device", "shutdown"] + deviceIDs.flatMap { ["--device", $0] })
+        if let value = try? JSONDecoder.simLease.decode([String: [SimulatorShutdownResult]].self, from: output), let results = value["results"] {
+            return results
+        }
+        let detail = String(decoding: errors, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        throw MenuStatusError.shutdownFailed(detail.isEmpty ? "exit code \(status)" : detail)
+    }
+
+    private func run(_ arguments: [String]) async throws -> Data {
+        let (status, output, errors) = try await execute(arguments)
+        guard status == 0 else {
+            throw MenuStatusError.commandFailed(code: status, stderr: String(decoding: errors, as: UTF8.self))
+        }
+        return output
+    }
+
+    private func execute(_ arguments: [String]) async throws -> (Int32, Data, Data) {
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
         process.executableURL = executableURL
-        process.arguments = ["status", "--json", "--audit"] + (includeDevices ? ["--devices"] : [])
+        process.arguments = arguments
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
@@ -70,20 +100,10 @@ public actor CLIStatusProvider: MenuStatusProviding {
 
         let output = await outputTask
         let errorOutput = await errorTask
-        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-            let code = process.terminationReason == .exit
-                ? process.terminationStatus
-                : 128 + process.terminationStatus
-            throw MenuStatusError.commandFailed(
-                code: code,
-                stderr: String(decoding: errorOutput, as: UTF8.self)
-            )
-        }
-
-        guard let status = try? JSONDecoder.simLease.decode(LeaseStatus.self, from: output) else {
-            throw MenuStatusError.invalidJSON
-        }
-        return status
+        let code = process.terminationReason == .exit
+            ? process.terminationStatus
+            : 128 + process.terminationStatus
+        return (code, output, errorOutput)
     }
 
     private static func read(_ handle: FileHandle) async -> Data {

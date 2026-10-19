@@ -75,6 +75,23 @@ reservation. The menu popover lists the same simulators with the lease owner,
 queued threads that declared the device, and unmanaged processes targeting it.
 The menu queries the simulator inventory only while the popover is open.
 
+Shut down booted simulators you know are unused:
+
+```sh
+simlease device shutdown --device UUID [--device UUID ...]
+```
+
+Shutdown takes the simulator lane like any job, so it waits for the current
+job and blocks new work until it finishes. After acquiring the lane it refuses
+devices that are paired, declared by a queued job, or targeted by a visible
+simulator process, and refuses every device while a simulator process has an
+unknown target. It never erases or deletes devices. The process audit cannot
+see Simulator windows or idle device tools, so only name devices nothing is
+using. An interrupted or unverified shutdown reports `unresolved`, exits 75,
+stops the batch, and blocks new work until a later run names that device again
+and verifies its state. The menu offers the same action on
+unreserved booted rows after an inline confirmation that lists each UUID.
+
 `status` reports `free`, `leased`, or `metadataError`. An unfinished cleanup
 appears as an error and blocks new protected work. After a process crash,
 recovery runs before the next protected job, or can be requested directly:

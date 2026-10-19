@@ -38,8 +38,10 @@ public struct DeviceDisplayItem: Equatable, Sendable, Identifiable {
     public let waiting: [String]
     public let unmanaged: [String]
     public let crashBlocked: Bool
+    public let canShutDown: Bool
 
-    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool) {
+    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false) {
+        self.canShutDown = canShutDown
         self.id = id
         self.name = name
         self.detail = detail
@@ -98,6 +100,8 @@ public struct MenuDisplayState: Equatable, Sendable {
         let names = Dictionary(waiters.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         let blocked = Set((status.crashBlocks ?? []).map { $0.deviceID.uppercased() })
         return usage.map { device in
+            let waiting = status.waiters.filter { $0.deviceIDs?.contains { $0.uppercased() == device.id } == true }.compactMap { names[$0.id] }
+            let targeted = (status.activity?.activities ?? []).contains { $0.deviceIDs.isEmpty || $0.deviceIDs.contains { $0.uppercased() == device.id } }
             let user = switch device.reservation {
             case .owned: "\(ownerName ?? "Unknown owner") · shuts down after"
             case .borrowed: "\(ownerName ?? "Unknown owner") · stays running after"
@@ -109,10 +113,11 @@ public struct MenuDisplayState: Equatable, Sendable {
                 detail: [device.runtime, device.state].filter { !$0.isEmpty }.joined(separator: " · "),
                 reservation: device.reservation,
                 user: user,
-                waiting: status.waiters.filter { $0.deviceIDs?.contains { $0.uppercased() == device.id } == true }.compactMap { names[$0.id] },
+                waiting: waiting,
                 unmanaged: (status.activity?.activities ?? []).filter { $0.kind == .unmanaged && $0.deviceIDs.contains { $0.uppercased() == device.id } }
                     .map { "\($0.tool) · PID \($0.process.pid)" },
-                crashBlocked: blocked.contains(device.id)
+                crashBlocked: blocked.contains(device.id),
+                canShutDown: device.reservation == .unreserved && device.state == "Booted" && waiting.isEmpty && !targeted
             )
         }
     }

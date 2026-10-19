@@ -53,8 +53,10 @@ public struct ProcessSimulatorDeviceManager: SimulatorDeviceManaging {
     public func shutdown(_ id: String) throws {
         guard try inventory().first(where: { $0.id == id })?.state != "Shutdown" else { return }
         _ = try run(["simctl", "shutdown", id])
-        guard try inventory().first(where: { $0.id == id })?.state == "Shutdown" else {
-            throw DeviceManagementError.unsettled("shutdown was not verified for \(id)")
+        let deadline = Date(timeIntervalSinceNow: bootTimeout)
+        while try inventory().first(where: { $0.id == id })?.state != "Shutdown" {
+            guard Date() < deadline else { throw DeviceManagementError.unsettled("shutdown was not verified for \(id)") }
+            Thread.sleep(forTimeInterval: 0.2)
         }
     }
 

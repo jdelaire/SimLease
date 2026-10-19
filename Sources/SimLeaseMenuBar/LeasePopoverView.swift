@@ -76,7 +76,13 @@ struct LeasePopoverView: View {
             }
             if let devices = viewModel.state.devices {
                 Divider()
-                SimulatorUsageList(devices: devices)
+                SimulatorUsageList(
+                    devices: devices,
+                    shuttingDown: viewModel.shuttingDown,
+                    message: viewModel.shutdownMessage,
+                    laneBusy: viewModel.state.kind == .leased,
+                    onShutDown: { ids in Task { await viewModel.shutdown(ids) } }
+                )
             }
             if let activity = viewModel.state.activity, !activity.activities.isEmpty || activity.isIncomplete {
                 SimulatorActivityNotice(report: activity)
@@ -289,11 +295,36 @@ private struct SimulatorActivityNotice: View {
 
 private struct SimulatorUsageList: View {
     let devices: [DeviceDisplayItem]
+    let shuttingDown: Set<String>
+    let message: String?
+    let laneBusy: Bool
+    let onShutDown: ([String]) -> Void
+    @State private var confirming: [DeviceDisplayItem] = []
+
+    private var unused: [DeviceDisplayItem] {
+        devices.filter { $0.canShutDown && !shuttingDown.contains($0.id) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Simulators · \(devices.count)")
-                .font(.subheadline.weight(.semibold))
+            HStack {
+                Text("Simulators · \(devices.count)")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if unused.count > 1 {
+                    Button("Shut Down Unused (\(unused.count))") { confirming = unused }
+                        .controlSize(.small)
+                        .disabled(!confirming.isEmpty)
+                }
+            }
+            if !confirming.isEmpty {
+                confirmation
+            }
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if devices.isEmpty {
                 Text("No booted or reserved simulators")
                     .font(.caption)
@@ -314,6 +345,20 @@ private struct SimulatorUsageList: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                            if shuttingDown.contains(device.id) {
+                                ProgressView()
+                                    .controlSize(.mini)
+                            } else if device.canShutDown {
+                                Button {
+                                    confirming = [device]
+                                } label: {
+                                    Image(systemName: "power")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(!confirming.isEmpty)
+                                .help("Shut down \(device.name)")
+                                .accessibilityLabel("Shut down \(device.name)")
+                            }
                         }
                         Text(device.user)
                             .font(.caption)
@@ -344,6 +389,38 @@ private struct SimulatorUsageList: View {
             }
         }
         .textSelection(.enabled)
+    }
+
+    private var confirmation: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(confirming.count == 1 ? "Shut down this simulator?" : "Shut down \(confirming.count) simulators?")
+                .font(.caption.weight(.semibold))
+            ForEach(confirming) { device in
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(device.name)
+                        .font(.caption)
+                    Text(device.id)
+                        .font(.caption2.monospaced())
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Text("SimLease cannot see Simulator windows or idle device tools. Continue only if nothing uses these simulators.\(laneBusy ? " Shutdown waits for the current job." : "")")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") { confirming = [] }
+                Button("Shut Down") {
+                    let ids = confirming.map(\.id)
+                    confirming = []
+                    onShutDown(ids)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .controlSize(.small)
+        }
+        .padding(8)
+        .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func symbol(_ device: DeviceDisplayItem) -> String {

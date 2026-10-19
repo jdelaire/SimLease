@@ -4,6 +4,8 @@ import Combine
 @MainActor
 public final class MenuViewModel: ObservableObject {
     @Published public private(set) var state: MenuDisplayState
+    @Published public private(set) var shuttingDown: Set<String> = []
+    @Published public private(set) var shutdownMessage: String?
 
     private let provider: any MenuStatusProviding
     private let now: () -> Date
@@ -37,6 +39,21 @@ public final class MenuViewModel: ObservableObject {
                 state = .metadataError(error.localizedDescription)
             }
         } while refreshPending
+    }
+
+    public func shutdown(_ ids: [String]) async {
+        let pending = Set(ids).subtracting(shuttingDown)
+        guard !pending.isEmpty else { return }
+        shuttingDown.formUnion(pending)
+        shutdownMessage = nil
+        do {
+            let refused = try await provider.shutdown(deviceIDs: pending.sorted()).filter { [.refused, .unresolved].contains($0.outcome) }
+            shutdownMessage = refused.isEmpty ? nil : refused.map { "\($0.name ?? $0.deviceID): \($0.reason ?? "refused")" }.joined(separator: "\n")
+        } catch {
+            shutdownMessage = error.localizedDescription
+        }
+        shuttingDown.subtract(pending)
+        await refresh()
     }
 
     public func setDevicesVisible(_ visible: Bool) async {

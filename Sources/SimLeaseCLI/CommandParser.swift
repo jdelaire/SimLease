@@ -8,6 +8,7 @@ enum ParsedCommand: Equatable {
     case deviceCreate(name: String, deviceType: String, runtime: String)
     case deviceRepair(String, settled: Bool, acknowledgeCrashes: Bool)
     case deviceRecover
+    case deviceShutdown([String])
     case sessionBegin(title: String, project: String, deviceIDs: [String], clientPIDs: [Int32] = [])
     case sessionFinish(String)
     case nativeWait(String)
@@ -226,6 +227,18 @@ enum CommandParser {
 
     private static func parseDevice(_ arguments: [String]) throws -> ParsedCommand {
         guard let action = arguments.first else { throw CommandParserError.usage }
+        if action == "shutdown" {
+            var ids = [String]()
+            var index = 1
+            while index < arguments.count {
+                guard arguments[index] == "--device", arguments.indices.contains(index + 1),
+                      let id = UUID(uuidString: arguments[index + 1])?.uuidString, !ids.contains(id) else { throw CommandParserError.usage }
+                ids.append(id)
+                index += 2
+            }
+            guard !ids.isEmpty else { throw CommandParserError.usage }
+            return .deviceShutdown(ids)
+        }
         var values = [String: String]()
         var flags = Set<String>()
         var index = 1

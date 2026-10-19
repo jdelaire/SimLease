@@ -51,6 +51,23 @@ final class MenuViewModelTests: XCTestCase {
         XCTAssertEqual(model.state, .metadataError("status exploded"))
     }
 
+    func testShutdownSendsConfirmedDevicesAndShowsRefusals() async {
+        let id = "11111111-1111-4111-8111-111111111111"
+        let provider = ShutdownStub(status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, devices: [
+            SimulatorUsage(id: id, name: "iPhone Air", runtime: "iOS 27.1", state: "Booted", reservation: .unreserved),
+        ]), results: [SimulatorShutdownResult(deviceID: id, name: "iPhone Air", outcome: .refused, reason: "simulator is paired")])
+        let model = MenuViewModel(provider: provider)
+        await model.setDevicesVisible(true)
+        XCTAssertEqual(model.state.devices?.map(\.canShutDown), [true])
+
+        await model.shutdown([id])
+
+        let requested = await provider.requested
+        XCTAssertEqual(requested, [[id]])
+        XCTAssertEqual(model.shutdownMessage, "iPhone Air: simulator is paired")
+        XCTAssertTrue(model.shuttingDown.isEmpty)
+    }
+
     func testCopyDetailsContainsVisibleLeaseDetails() async {
         let model = MenuViewModel(
             provider: StatusStub(status: leasedStatus(waiters: [waiter(title: "Waiting task")])),
@@ -204,6 +221,23 @@ private actor StatusStub: MenuStatusProviding {
     }
 
     func fetch() async throws -> LeaseStatus { status }
+}
+
+private actor ShutdownStub: MenuStatusProviding {
+    let status: LeaseStatus
+    let results: [SimulatorShutdownResult]
+    var requested = [[String]]()
+
+    init(status: LeaseStatus, results: [SimulatorShutdownResult]) {
+        self.status = status
+        self.results = results
+    }
+
+    func fetch() async throws -> LeaseStatus { status }
+    func shutdown(deviceIDs: [String]) async throws -> [SimulatorShutdownResult] {
+        requested.append(deviceIDs)
+        return results
+    }
 }
 
 private actor SequenceStatusStub: MenuStatusProviding {

@@ -118,6 +118,23 @@ public enum SimLeaseCLI {
                 try deviceService(arguments: arguments, environment: environment, configuration: configuration).recoverCreation(settled: true)
                 configuration.standardOutput("{\"state\":\"recovered\",\"note\":\"Recorded devices were preserved; inspect crash blocks before reuse\"}\n")
                 return 0
+            case .deviceShutdown(let ids):
+                if let record = try SimulatorTaskStore(paths: configuration.paths).read(),
+                   record.owner.isAncestor(of: getpid()) || record.nativeClients?.contains(where: { $0.isAncestor(of: getpid()) }) == true {
+                    throw SimulatorTaskError.commandFailed("simulator shutdown cannot nest inside a managed job or native session")
+                }
+                let xcrun: URL
+                #if DEBUG || SIMLEASE_TESTING
+                xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+                #else
+                xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+                #endif
+                let threadID = environment["CODEX_THREAD_ID"]
+                let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: "SimLease", command: arguments, source: threadID == nil ? .terminal : .codex, threadID: threadID, threadTitle: "Shut down simulators")
+                let service = SimulatorShutdownService(paths: configuration.paths, coordinator: try makeCoordinator(configuration: configuration), identity: identity, devices: configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun))
+                let results = try service.shutdown(deviceIDs: ids)
+                configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(["results": results]), as: UTF8.self) + "\n")
+                return results.contains { $0.outcome == .unresolved } ? 75 : 0
             case .sessionBegin(let title, let project, let ids, let clientPIDs):
                 let id = UUID().uuidString
                 let clients = try NativeClientAdmission.capture(pids: clientPIDs)
