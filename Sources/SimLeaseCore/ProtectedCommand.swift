@@ -72,6 +72,10 @@ public enum ProtectedCommand {
             index += 2
         }
         guard arguments.indices.contains(index) else { return false }
+        if arguments[index] == "runtime" {
+            let rest = Array(arguments.dropFirst(index + 1))
+            return rest.first == "list" || (rest.first == "match" && rest.dropFirst().first == "list")
+        }
         return ["list", "help", "--help", "-h", "--version", "getenv", "get_app_container", "get_app_info", "listapps"].contains(arguments[index])
     }
 
