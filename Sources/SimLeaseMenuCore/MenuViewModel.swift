@@ -113,13 +113,14 @@ public final class MenuViewModel: ObservableObject {
                 "Owner: \(state.ownerName ?? "Unknown")",
                 "Project: \(state.projectAndSource ?? "Unknown")",
                 "Command: \(state.command ?? "Unknown")",
-                "Elapsed: \(state.elapsed ?? "Unknown")",
+                "Elapsed: \(state.elapsed ?? "Unknown")\(state.typicalDuration.map { " (\($0))" } ?? "")",
                 "Waiting: \(state.waiters.count)",
             ]
+            if let idle = state.nativeIdle { lines.append(idle) }
             for waiter in state.waiters {
                 lines.append("- \(waiter.name)")
                 lines.append(
-                    "  \(waiter.projectAndSource) · \(waiter.elapsed)"
+                    "  \(waiter.projectAndSource) · \(waiter.elapsed)\(waiter.estimate.map { " · \($0)" } ?? "")"
                 )
                 lines.append("  \(waiter.command)")
                 if let threadID = waiter.threadID {

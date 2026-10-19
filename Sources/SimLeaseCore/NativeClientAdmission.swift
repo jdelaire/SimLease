@@ -38,6 +38,7 @@ public final class NativeClientAdmission {
             }
             try CrashLoopStore(paths: paths).requireHealthy(record.deviceIDs)
         }
+        if let sessionID = record.externalSessionID { try? LaneHistoryStore(paths: paths).recordNativeActivity(sessionID: sessionID, at: Date()) }
         return NativeClientAdmission(gate: gate)
     }
 

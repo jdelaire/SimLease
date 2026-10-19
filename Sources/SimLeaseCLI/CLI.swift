@@ -440,7 +440,14 @@ public enum SimLeaseCLI {
                 SimulatorUsage.build(inventory: $0, task: status.state == .leased && task?.owner.pid == status.owner?.pid ? task : nil, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:])
             }
         }
-        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage)
+        let history = LaneHistoryStore(paths: configuration.paths)
+        let projects = Set(status.waiters.map(\.project) + (status.owner.map { [$0.project] } ?? []))
+        let durations = history.typicalDurations(projects: projects)
+        var nativeIdleSince: Date?
+        if status.state == .leased, let owner = status.owner, let task, task.owner.pid == owner.pid, task.phase == .running, let sessionID = task.externalSessionID {
+            nativeIdleSince = max(owner.acquiredAt, history.lastNativeActivity(sessionID: sessionID) ?? owner.acquiredAt)
+        }
+        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage, typicalDurations: durations.isEmpty ? nil : durations, nativeIdleSince: nativeIdleSince)
         if json {
             let data = try JSONEncoder.simLease.encode(status)
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")

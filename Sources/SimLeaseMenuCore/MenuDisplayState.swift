@@ -9,6 +9,7 @@ public struct WaiterDisplayItem: Equatable, Sendable, Identifiable {
     public let command: String
     public let threadID: String?
     public let cwd: String
+    public let estimate: String?
 
     public init(
         id: String,
@@ -17,8 +18,10 @@ public struct WaiterDisplayItem: Equatable, Sendable, Identifiable {
         elapsed: String,
         command: String,
         threadID: String?,
-        cwd: String
+        cwd: String,
+        estimate: String? = nil
     ) {
+        self.estimate = estimate
         self.id = id
         self.name = name
         self.projectAndSource = projectAndSource
@@ -72,6 +75,8 @@ public struct MenuDisplayState: Equatable, Sendable {
     public let activity: SimulatorActivityReport?
     public let crashBlocks: [CrashLoopTrigger]
     public let devices: [DeviceDisplayItem]?
+    public let typicalDuration: String?
+    public let nativeIdle: String?
 
     public var waiterNames: [String] {
         waiters.map(\.name)
@@ -87,13 +92,33 @@ public struct MenuDisplayState: Equatable, Sendable {
         else if activity?.isIncomplete == true { title = "Simulator · Audit incomplete" }
         else if activity?.activities.isEmpty == false { title = "Simulator · Unverified" }
         else { title = base.menuTitle }
+        let typical = status.typicalDurations ?? [:]
+        let leased = base.kind == .leased ? status.owner : nil
+        let ownerTypical = leased.flatMap { typical[$0.project] }
+        var ahead = ownerTypical.map { max($0 - now.timeIntervalSince(leased!.acquiredAt), 60) }
+        var estimates = [String: String]()
+        for waiter in status.waiters.sorted(by: { $0.waitingSince < $1.waitingSince }) {
+            guard let wait = ahead else { break }
+            estimates[waiter.id] = "starts in ≈ \(Self.minutes(wait))"
+            ahead = typical[waiter.project].map { wait + $0 }
+        }
+        let waiters = base.waiters.map {
+            WaiterDisplayItem(id: $0.id, name: $0.name, projectAndSource: $0.projectAndSource, elapsed: $0.elapsed, command: $0.command, threadID: $0.threadID, cwd: $0.cwd, estimate: estimates[$0.id])
+        }
+        let idle = leased == nil ? nil : status.nativeIdleSince.map { now.timeIntervalSince($0) }.flatMap { $0 >= 600 ? $0 : nil }
         self.init(
             kind: base.kind, menuTitle: title,
             symbolName: title != base.menuTitle ? "exclamationmark.triangle.fill" : base.symbolName,
             ownerName: base.ownerName, projectAndSource: base.projectAndSource,
-            command: base.command, elapsed: base.elapsed, waiters: base.waiters, error: base.error, activity: activity, crashBlocks: status.crashBlocks ?? [],
-            devices: status.devices.map { Self.devices($0, status: status, ownerName: base.ownerName, waiters: base.waiters, now: now) }
+            command: base.command, elapsed: base.elapsed, waiters: waiters, error: base.error, activity: activity, crashBlocks: status.crashBlocks ?? [],
+            devices: status.devices.map { Self.devices($0, status: status, ownerName: base.ownerName, waiters: waiters, now: now) },
+            typicalDuration: ownerTypical.map { "usually ≈ \(Self.minutes($0))" },
+            nativeIdle: idle.map { "No native device commands for \(Self.minutes($0)). Finish the session if it is done." }
         )
+    }
+
+    private static func minutes(_ seconds: Double) -> String {
+        "\(max(1, Int((seconds / 60).rounded()))) min"
     }
 
     private static func devices(_ usage: [SimulatorUsage], status: LeaseStatus, ownerName: String?, waiters: [WaiterDisplayItem], now: Date) -> [DeviceDisplayItem] {
@@ -169,6 +194,8 @@ public struct MenuDisplayState: Equatable, Sendable {
             activity = nil
             crashBlocks = []
             devices = nil
+            typicalDuration = nil
+            nativeIdle = nil
         }
     }
 
@@ -212,8 +239,12 @@ public struct MenuDisplayState: Equatable, Sendable {
         error: String?,
         activity: SimulatorActivityReport? = nil,
         crashBlocks: [CrashLoopTrigger] = [],
-        devices: [DeviceDisplayItem]? = nil
+        devices: [DeviceDisplayItem]? = nil,
+        typicalDuration: String? = nil,
+        nativeIdle: String? = nil
     ) {
+        self.typicalDuration = typicalDuration
+        self.nativeIdle = nativeIdle
         self.devices = devices
         self.kind = kind
         self.menuTitle = menuTitle

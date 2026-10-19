@@ -195,6 +195,13 @@ final class SimulatorTaskServiceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: observed, encoding: .utf8), "Shutdown")
     }
 
+    func testFinishedJobsBuildProjectDurationHistory() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        for code in [0, 1, 0] { _ = try fixture.run(exit: code) }
+        XCTAssertNotNil(LaneHistoryStore(paths: fixture.paths).typicalDurations(projects: ["Task"])["Task"])
+    }
+
     func testBlockedNativeScopeCanSettleWithoutKillingSharedClient() throws {
         let fixture = try TaskFixture()
         defer { fixture.remove() }

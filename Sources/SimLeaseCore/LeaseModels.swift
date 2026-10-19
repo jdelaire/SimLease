@@ -89,6 +89,8 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
     public let activity: SimulatorActivityReport?
     public let crashBlocks: [CrashLoopTrigger]?
     public let devices: [SimulatorUsage]?
+    public let typicalDurations: [String: Double]?
+    public let nativeIdleSince: Date?
 
     public init(
         state: State,
@@ -97,9 +99,13 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
         error: String?,
         activity: SimulatorActivityReport? = nil,
         crashBlocks: [CrashLoopTrigger]? = nil,
-        devices: [SimulatorUsage]? = nil
+        devices: [SimulatorUsage]? = nil,
+        typicalDurations: [String: Double]? = nil,
+        nativeIdleSince: Date? = nil
     ) {
         self.devices = devices
+        self.typicalDurations = typicalDurations
+        self.nativeIdleSince = nativeIdleSince
         self.state = state
         self.owner = owner
         self.waiters = waiters

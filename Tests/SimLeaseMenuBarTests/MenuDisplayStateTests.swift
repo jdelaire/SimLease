@@ -90,6 +90,23 @@ final class MenuDisplayStateTests: XCTestCase {
         XCTAssertEqual(device?.canShutDown, true)
     }
 
+    func testQueueEstimatesChainTypicalDurationsUntilOneIsUnknown() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let queued = ["B", "C", "D"].enumerated().map { index, project in
+            LeaseWaiter(id: project, pid: 2, waitingSince: now.addingTimeInterval(Double(index)), cwd: "/tmp/\(project)", project: project, command: [], source: .codex, threadID: nil, threadTitle: project)
+        }
+        let status = LeaseStatus(
+            state: .leased, owner: owner(acquiredAt: now.addingTimeInterval(-120), threadTitle: "A"), waiters: queued.reversed(), error: nil,
+            typicalDurations: ["AnimAtlas": 600, "B": 300, "D": 60], nativeIdleSince: now.addingTimeInterval(-900)
+        )
+        let state = MenuDisplayState(status: status, now: now)
+        XCTAssertEqual(state.typicalDuration, "usually ≈ 10 min")
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: state.waiters.map { ($0.id, $0.estimate) }), ["B": "starts in ≈ 8 min", "C": "starts in ≈ 13 min", "D": nil])
+        XCTAssertEqual(state.nativeIdle, "No native device commands for 15 min. Finish the session if it is done.")
+        let recent = LeaseStatus(state: .leased, owner: owner(threadTitle: "A"), waiters: [], error: nil, nativeIdleSince: now.addingTimeInterval(-300))
+        XCTAssertNil(MenuDisplayState(status: recent, now: now).nativeIdle)
+    }
+
     func testMissingTitleUsesEightCharacterThreadID() {
         let status = LeaseStatus(
             state: .leased,

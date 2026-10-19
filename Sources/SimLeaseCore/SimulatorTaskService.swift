@@ -158,6 +158,7 @@ public final class SimulatorTaskService: Sendable {
             do { try warmPolicy?.reap(excluding: []) }
             catch { report("SimLease: warm simulator reaping failed: \(error)\n") }
         }
+        try? LaneHistoryStore(paths: paths).record(project: identity.project, startedAt: handle.owner.acquiredAt, endedAt: Date())
         if let jobError { throw jobError }
         if code == 0, let number = cancellationAtCommit { return 128 + number }
         return code

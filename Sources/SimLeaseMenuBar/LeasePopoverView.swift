@@ -151,6 +151,16 @@ struct LeasePopoverView: View {
                     .lineLimit(1)
                     .help(ownerName)
             }
+            if let typical = viewModel.state.typicalDuration {
+                Text("This project \(typical)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let idle = viewModel.state.nativeIdle {
+                Label(idle, systemImage: "moon.zzz")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if let command = viewModel.state.command {
                 Text(command)
                     .font(.system(.caption, design: .monospaced))
@@ -173,7 +183,7 @@ struct LeasePopoverView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Text(
-                                "\(waiter.projectAndSource) · \(waiter.elapsed)"
+                                ([waiter.projectAndSource, waiter.elapsed] + (waiter.estimate.map { [$0] } ?? [])).joined(separator: " · ")
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)

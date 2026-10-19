@@ -76,6 +76,16 @@ reservation. The menu popover lists the same simulators with the lease owner,
 queued threads that declared the device, and unmanaged processes targeting it.
 The menu queries the simulator inventory only while the popover is open.
 
+`status --json` also reports `typicalDurations`, the median lane hold time of
+the last 20 jobs per project once a project has 3 finished jobs, and
+`nativeIdleSince` for a native session, the later of its start and its last
+admitted native command. The menu shows the owner's typical duration, a
+"starts in ≈ N min" estimate for each waiter assuming arrival order, and a
+warning when a native session has admitted no device command for 10 minutes.
+Estimates stop at the first waiter whose project has no history. Lane
+admission is not strictly first come, first served, and the idle warning
+never ends a session.
+
 Opt into a warm device pool for terminal commands that enforce complete guest
 settlement before exiting:
 
