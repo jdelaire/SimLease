@@ -10,6 +10,7 @@ enum ParsedCommand: Equatable {
     case deviceRecover
     case deviceShutdown([String])
     case deviceReap
+    case deviceAcknowledge(String)
     case config(maxLanes: Int?)
     case sessionBegin(title: String, project: String, deviceIDs: [String], clientPIDs: [Int32] = [])
     case sessionFinish(String)
@@ -280,6 +281,9 @@ enum CommandParser {
                   type.hasPrefix("com.apple.CoreSimulator.SimDeviceType."), runtime.hasPrefix("com.apple.CoreSimulator.SimRuntime."),
                   flags.contains("--disposable"), flags.isSubset(of: ["--disposable", "--json"]) else { throw CommandParserError.usage }
             return .deviceCreate(name: name, deviceType: type, runtime: runtime)
+        case "acknowledge":
+            guard values.count == 1, flags.isEmpty || flags == ["--json"], let value = values["--device"], let id = UUID(uuidString: value) else { throw CommandParserError.usage }
+            return .deviceAcknowledge(id.uuidString)
         case "repair":
             guard values.count == 1, let value = values["--device"], let id = UUID(uuidString: value),
                   flags.isSubset(of: ["--settled", "--acknowledge-crashes", "--json"]) else { throw CommandParserError.usage }

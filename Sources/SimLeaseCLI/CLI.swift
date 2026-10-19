@@ -132,6 +132,12 @@ public enum SimLeaseCLI {
                 let results = try service.shutdown(deviceIDs: ids)
                 configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(["results": results]), as: UTF8.self) + "\n")
                 return results.contains { $0.outcome == .unresolved } ? 75 : 0
+            case .deviceAcknowledge(let id):
+                let crashes = CrashLoopStore(paths: configuration.paths)
+                let blocked = try crashes.read().blocks[id] != nil
+                if blocked { try crashes.acknowledge(deviceID: id, at: Date()) }
+                configuration.standardOutput("{\"deviceID\":\"\(id)\",\"acknowledged\":\(blocked)}\n")
+                return 0
             case .deviceReap:
                 if insideManagedWork(configuration) {
                     throw SimulatorTaskError.commandFailed("simulator reaping cannot nest inside a managed job or native session")

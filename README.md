@@ -368,6 +368,16 @@ investigating the cause:
 simlease device repair --device DEVICE-UUID --acknowledge-crashes
 ```
 
+When the cause is fixed elsewhere, such as a runtime update, clear the block
+without booting the device or waiting for a lane:
+
+```sh
+simlease device acknowledge --device DEVICE-UUID
+```
+
+The crash history is kept, and new repeated crashes block the device again.
+The menu alert offers the same action as Allow retries.
+
 This retains incident history. It does not claim that the app crash is fixed.
 Device recovery cannot nest inside a managed job or bound native client.
 

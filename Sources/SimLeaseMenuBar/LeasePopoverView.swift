@@ -51,7 +51,9 @@ struct LeasePopoverView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    ForEach(viewModel.state.alerts) { AlertCard(alert: $0) }
+                    ForEach(viewModel.state.alerts) { alert in
+                        AlertCard(alert: alert) { id in Task { await viewModel.acknowledgeCrashes(deviceID: id) } }
+                    }
                     if viewModel.state.kind == .leased {
                         nowRunning
                         if !viewModel.state.waiters.isEmpty { queue }
@@ -330,6 +332,7 @@ private extension View {
 
 private struct AlertCard: View {
     let alert: MenuAlert
+    let onAcknowledge: (String) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -344,14 +347,21 @@ private struct AlertCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if let label = alert.copyLabel, let text = alert.copyText {
-                    Button(label) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(text, forType: .string)
+                HStack(spacing: 12) {
+                    if let id = alert.acknowledgeDeviceID {
+                        Button("Allow retries") { onAcknowledge(id) }
+                            .controlSize(.small)
+                            .help("Clears the block for this simulator. New repeated crashes block it again.")
                     }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                    .help(text)
+                    if let label = alert.copyLabel, let text = alert.copyText {
+                        Button(label) {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(text, forType: .string)
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                        .help(text)
+                    }
                 }
             }
             Spacer(minLength: 0)

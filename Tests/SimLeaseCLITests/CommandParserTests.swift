@@ -39,6 +39,8 @@ final class CommandParserTests: XCTestCase {
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "shutdown", "--device", a, "--device", a.lowercased()]))
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "shutdown"]))
         XCTAssertEqual(try CommandParser.parse(["simlease", "device", "reap"]), .deviceReap)
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "acknowledge", "--device", a.lowercased()]), .deviceAcknowledge(a))
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "acknowledge"]))
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "reap", "--device", a]))
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "shutdown", "--device", "booted"]))
     }

@@ -118,8 +118,8 @@ final class MenuDisplayStateTests: XCTestCase {
         )
         let alerts = MenuDisplayState(status: status, now: Date()).alerts
         XCTAssertEqual(alerts.map(\.id), ["crash-\(blocked)", "unmanaged", "audit"])
-        XCTAssertEqual(alerts.first?.detail, "New jobs on iPhone 18 Pro · iOS 27.2 are blocked until the crash is reviewed.")
-        XCTAssertEqual(alerts.first?.copyText, "simlease device repair --device \(blocked) --acknowledge-crashes")
+        XCTAssertEqual(alerts.first?.acknowledgeDeviceID, blocked)
+        XCTAssertEqual(alerts.first?.copyText, "simlease device acknowledge --device \(blocked)")
     }
 
     func testQueueRowsUseProjectHeadlinesArrivalOrderAndTargets() {

@@ -31,6 +31,17 @@ final class DeviceCLITests: XCTestCase {
         XCTAssertEqual(devices.first?["runtime"] as? String, "iOS 27.2")
     }
 
+    func testAcknowledgeClearsCrashBlockWithoutTheLane() throws {
+        let f = try DeviceCLIFixture()
+        defer { f.remove() }
+        try CrashLoopStore(paths: f.paths).blockInfrastructureFailure(deviceID: f.device)
+        let holder = try XCTUnwrap(LeaseCoordinator(paths: f.paths, store: MetadataStore(paths: f.paths)).tryAcquire(identity: LeaseIdentity(pid: getppid(), cwd: "/tmp", project: "Busy", command: [], source: .terminal, threadID: nil, threadTitle: nil)))
+        defer { holder.release() }
+        XCTAssertEqual(f.call(["device", "acknowledge", "--device", f.device.lowercased()]), 0)
+        XCTAssertEqual(try f.output()["acknowledged"] as? Bool, true)
+        XCTAssertTrue(try CrashLoopStore(paths: f.paths).read().blocks.isEmpty)
+    }
+
     func testDeviceRecoveryCannotNestInsideOwnedJob() throws {
         let f = try DeviceCLIFixture()
         defer { f.remove() }

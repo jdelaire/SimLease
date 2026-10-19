@@ -91,8 +91,10 @@ public struct MenuAlert: Equatable, Sendable, Identifiable {
     public let detail: String
     public let copyLabel: String?
     public let copyText: String?
+    public let acknowledgeDeviceID: String?
 
-    public init(id: String, severity: Severity, title: String, detail: String, copyLabel: String? = nil, copyText: String? = nil) {
+    public init(id: String, severity: Severity, title: String, detail: String, copyLabel: String? = nil, copyText: String? = nil, acknowledgeDeviceID: String? = nil) {
+        self.acknowledgeDeviceID = acknowledgeDeviceID
         self.id = id
         self.severity = severity
         self.title = title
@@ -248,8 +250,9 @@ public struct MenuDisplayState: Equatable, Sendable {
             let place = usage[block.deviceID.uppercased()].map { "\($0.name) · \($0.runtime)" } ?? "simulator \(block.deviceID.prefix(8))"
             alerts.append(MenuAlert(
                 id: "crash-\(block.deviceID)", severity: .critical, title: "\(block.processName) keeps crashing",
-                detail: "New jobs on \(place) are blocked until the crash is reviewed.",
-                copyLabel: "Copy unblock command", copyText: "simlease device repair --device \(block.deviceID) --acknowledge-crashes"
+                detail: "New jobs on \(place) are blocked until the crash is reviewed. Allow retries once the cause is fixed; new repeated crashes block it again.",
+                copyLabel: "Copy unblock command", copyText: "simlease device acknowledge --device \(block.deviceID)",
+                acknowledgeDeviceID: block.deviceID
             ))
         }
         let activities = status.activity?.activities ?? []

@@ -58,6 +58,12 @@ public final class MenuViewModel: ObservableObject {
         await refresh()
     }
 
+    public func acknowledgeCrashes(deviceID: String) async {
+        do { try await provider.acknowledgeCrashes(deviceID: deviceID) }
+        catch { shutdownMessage = error.localizedDescription }
+        await refresh()
+    }
+
     public func setDevicesVisible(_ visible: Bool) async {
         includesDevices = visible
         if visible { await refresh() }

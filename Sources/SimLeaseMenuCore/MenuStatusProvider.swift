@@ -6,12 +6,14 @@ public protocol MenuStatusProviding: Sendable {
     func fetch(includeDevices: Bool) async throws -> LeaseStatus
     func shutdown(deviceIDs: [String]) async throws -> [SimulatorShutdownResult]
     func reap() async throws
+    func acknowledgeCrashes(deviceID: String) async throws
 }
 
 public extension MenuStatusProviding {
     func fetch(includeDevices: Bool) async throws -> LeaseStatus { try await fetch() }
     func shutdown(deviceIDs: [String]) async throws -> [SimulatorShutdownResult] { throw MenuStatusError.shutdownFailed("unsupported") }
     func reap() async throws {}
+    func acknowledgeCrashes(deviceID: String) async throws {}
 }
 
 public enum MenuStatusError: LocalizedError, Equatable {
@@ -76,6 +78,10 @@ public actor CLIStatusProvider: MenuStatusProviding {
 
     public func reap() async throws {
         _ = try await execute(["device", "reap"])
+    }
+
+    public func acknowledgeCrashes(deviceID: String) async throws {
+        _ = try await run(["device", "acknowledge", "--device", deviceID])
     }
 
     private func run(_ arguments: [String]) async throws -> Data {
