@@ -55,6 +55,19 @@ final class LaneAdmissionTests: XCTestCase {
         XCTAssertEqual(handle.lanes, [1])
     }
 
+    func testOneBusyCompileWindowDoesNotCloseTheLane() {
+        var state = HeadroomGate.State()
+        let start = Date(timeIntervalSince1970: 5_000)
+        func sample(idle: UInt64, total: UInt64) -> HeadroomSample {
+            HeadroomSample(memoryFreePercent: 70, compressorBytes: 0, swapoutBytes: 0, idleTicks: idle, totalTicks: total, load: 50, cpus: 10)
+        }
+        _ = HeadroomGate.evaluate(&state, sample: sample(idle: 0, total: 0), now: start)
+        XCTAssertTrue(HeadroomGate.evaluate(&state, sample: sample(idle: 600, total: 1000), now: start.addingTimeInterval(30)).open)
+        XCTAssertTrue(HeadroomGate.evaluate(&state, sample: sample(idle: 600, total: 2000), now: start.addingTimeInterval(60)).open)
+        XCTAssertTrue(HeadroomGate.evaluate(&state, sample: sample(idle: 600, total: 3000), now: start.addingTimeInterval(90)).open)
+        XCTAssertFalse(HeadroomGate.evaluate(&state, sample: sample(idle: 600, total: 4000), now: start.addingTimeInterval(120)).open)
+    }
+
     func testGateClosesUnderPressureAndReopensOnlyAfterRecovery() {
         var state = HeadroomGate.State()
         let start = Date(timeIntervalSince1970: 1_000)

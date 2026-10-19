@@ -35,8 +35,8 @@ struct DashboardView: View {
                         panel("Memory free", "Extra lanes open at 45% and close below 40%.") {
                             HeadroomChart(samples: summary.samples, value: { $0.memoryFreePercent }, lines: [(45, "opens"), (40, "closes")], since: viewModel.since)
                         }
-                        panel("CPU idle", "Extra lanes need at least 35%.") {
-                            HeadroomChart(samples: summary.samples, value: { $0.cpuIdlePercent }, lines: [(35, "needed")], since: viewModel.since)
+                        panel("CPU idle", "Smoothed. Extra lanes open at 30% and close below 20%.") {
+                            HeadroomChart(samples: summary.samples, value: { $0.cpuIdlePercent }, lines: [(30, "opens"), (20, "closes")], since: viewModel.since)
                         }
                     }
                     HStack(alignment: .top, spacing: 12) {

@@ -42,8 +42,8 @@ struct HeadroomGauges: View {
                     .help("Memory free \(memory)%. Extra lanes open at 45% and close below 40%.")
             }
             if let idle = headroom.cpuIdlePercent {
-                RingGauge(value: Double(idle) / 100, color: idle >= 35 ? ProjectColors.good : ProjectColors.warning, label: "\(idle)%", caption: "CPU idle")
-                    .help("CPU idle \(idle)%. Extra lanes need at least 35%.")
+                RingGauge(value: Double(idle) / 100, color: idle >= 30 ? ProjectColors.good : idle >= 20 ? ProjectColors.warning : ProjectColors.critical, label: "\(idle)%", caption: "CPU idle")
+                    .help("CPU idle \(idle)%, smoothed over about 3 minutes. Extra lanes open at 30% and close below 20%.")
             }
             if let load = headroom.load {
                 VStack(alignment: .leading, spacing: 0) {

@@ -88,8 +88,10 @@ public struct HeadroomGate: Sendable {
     public static let closeFreePercent = 40
     public static let maximumCompressorGrowthPerMinute: Double = 256 * 1_048_576
     public static let maximumSwapoutBytesPerMinute: Double = 64 * 1_048_576
-    public static let minimumCPUIdle = 0.35
-    public static let recovery: TimeInterval = 120
+    public static let openCPUIdle = 0.30
+    public static let closeCPUIdle = 0.20
+    public static let cpuSmoothing = 0.35
+    public static let recovery: TimeInterval = 60
     public static let admissionSpacing: TimeInterval = 90
     public static let sampleInterval: TimeInterval = 30
 
@@ -139,7 +141,10 @@ public struct HeadroomGate: Sendable {
             let elapsed = now.timeIntervalSince(sampledAt)
             if elapsed >= sampleInterval {
                 let ticks = Double(sample.totalTicks &- previous.totalTicks)
-                state.cpuIdle = ticks > 0 ? Double(sample.idleTicks &- previous.idleTicks) / ticks : state.cpuIdle
+                if ticks > 0 {
+                    let current = Double(sample.idleTicks &- previous.idleTicks) / ticks
+                    state.cpuIdle = state.cpuIdle.map { $0 + cpuSmoothing * (current - $0) } ?? current
+                }
                 state.compressorGrowth = (Double(sample.compressorBytes) - Double(previous.compressorBytes)) / elapsed * 60
                 state.swapoutGrowth = Double(sample.swapoutBytes &- previous.swapoutBytes) / elapsed * 60
                 state.sample = sample
@@ -155,7 +160,7 @@ public struct HeadroomGate: Sendable {
             "memory \(sample.memoryFreePercent)% free"
         } else if state.cpuIdle == nil {
             "measuring headroom"
-        } else if let idle = state.cpuIdle, idle < minimumCPUIdle {
+        } else if let idle = state.cpuIdle, idle < (recovered ? closeCPUIdle : openCPUIdle) {
             "CPU busy, \(Int(idle * 100))% idle"
         } else if let growth = state.compressorGrowth, growth > maximumCompressorGrowthPerMinute {
             "memory compression growing"
