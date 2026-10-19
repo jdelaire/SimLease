@@ -243,6 +243,7 @@ private func writeCrashReports(directory: URL, device: String) throws {
     let date = DateFormatter()
     date.locale = Locale(identifier: "en_US_POSIX")
     date.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSSSS Z"
+    usleep(2_000)
     let now = date.string(from: Date())
     for id in ["one", "two"] {
         let body: [String: Any] = [
