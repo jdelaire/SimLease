@@ -91,7 +91,7 @@ public struct HeadroomGate: Sendable {
     public static let minimumCPUIdle = 0.35
     public static let recovery: TimeInterval = 120
     public static let admissionSpacing: TimeInterval = 90
-    public static let sampleInterval: TimeInterval = 5
+    public static let sampleInterval: TimeInterval = 30
 
     struct State: Codable, Equatable {
         var sample: HeadroomSample?

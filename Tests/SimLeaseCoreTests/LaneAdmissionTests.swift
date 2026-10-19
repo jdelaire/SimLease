@@ -62,16 +62,16 @@ final class LaneAdmissionTests: XCTestCase {
             HeadroomSample(memoryFreePercent: free, compressorBytes: 0, swapoutBytes: 0, idleTicks: idle, totalTicks: idle * 2, load: 2, cpus: 10)
         }
         XCTAssertEqual(HeadroomGate.evaluate(&state, sample: sample(60, idle: 100), now: start).reason, "measuring headroom")
-        XCTAssertTrue(HeadroomGate.evaluate(&state, sample: sample(60, idle: 200), now: start.addingTimeInterval(10)).open)
+        XCTAssertEqual(HeadroomGate.evaluate(&state, sample: sample(60, idle: 150), now: start.addingTimeInterval(10)).reason, "measuring headroom")
+        XCTAssertTrue(HeadroomGate.evaluate(&state, sample: sample(60, idle: 200), now: start.addingTimeInterval(40)).open)
         var busyDisk = state
-        var heavy = sample(60, idle: 250)
-        heavy = HeadroomSample(memoryFreePercent: heavy.memoryFreePercent, compressorBytes: 0, swapoutBytes: 0, idleTicks: heavy.idleTicks, totalTicks: heavy.totalTicks, load: 400, cpus: 10)
-        XCTAssertTrue(HeadroomGate.evaluate(&busyDisk, sample: heavy, now: start.addingTimeInterval(12)).open)
-        XCTAssertEqual(HeadroomGate.evaluate(&state, sample: sample(39, idle: 300), now: start.addingTimeInterval(20)).reason, "memory 39% free")
-        XCTAssertFalse(HeadroomGate.evaluate(&state, sample: sample(60, idle: 400), now: start.addingTimeInterval(60)).open)
-        XCTAssertTrue(HeadroomGate.evaluate(&state, sample: sample(60, idle: 500), now: start.addingTimeInterval(150)).open)
-        state.lastAdmissionAt = start.addingTimeInterval(140)
-        XCTAssertEqual(HeadroomGate.evaluate(&state, sample: sample(60, idle: 600), now: start.addingTimeInterval(160)).reason, "spacing admissions")
+        let heavy = HeadroomSample(memoryFreePercent: 60, compressorBytes: 0, swapoutBytes: 0, idleTicks: 250, totalTicks: 500, load: 400, cpus: 10)
+        XCTAssertTrue(HeadroomGate.evaluate(&busyDisk, sample: heavy, now: start.addingTimeInterval(45)).open)
+        XCTAssertEqual(HeadroomGate.evaluate(&state, sample: sample(39, idle: 300), now: start.addingTimeInterval(50)).reason, "memory 39% free")
+        XCTAssertFalse(HeadroomGate.evaluate(&state, sample: sample(60, idle: 400), now: start.addingTimeInterval(90)).open)
+        XCTAssertTrue(HeadroomGate.evaluate(&state, sample: sample(60, idle: 500), now: start.addingTimeInterval(180)).open)
+        state.lastAdmissionAt = start.addingTimeInterval(170)
+        XCTAssertEqual(HeadroomGate.evaluate(&state, sample: sample(60, idle: 600), now: start.addingTimeInterval(190)).reason, "spacing admissions")
     }
 }
 
@@ -87,7 +87,7 @@ private final class LaneFixture {
         let free = gateOpen ? 80 : 10
         var state = HeadroomGate.State()
         state.sample = HeadroomSample(memoryFreePercent: free, compressorBytes: 0, swapoutBytes: 0, idleTicks: 0, totalTicks: 0, load: 1, cpus: 10)
-        state.sampledAt = Date().addingTimeInterval(-10)
+        state.sampledAt = Date().addingTimeInterval(-40)
         try RecoveryFile.write(state, at: paths.gate)
         let gate = HeadroomGate(paths: paths, sampler: { HeadroomSample(memoryFreePercent: free, compressorBytes: 0, swapoutBytes: 0, idleTicks: 900, totalTicks: 1000, load: 1, cpus: 10) })
         identity = LeaseIdentity(pid: getpid(), cwd: paths.root.path, project: "Lanes", command: [], source: .terminal, threadID: nil, threadTitle: nil)
