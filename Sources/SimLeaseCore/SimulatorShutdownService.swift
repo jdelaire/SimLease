@@ -50,16 +50,30 @@ public struct SimulatorShutdownService: Sendable {
         let ids = Array(Set(deviceIDs.map { $0.uppercased() })).sorted()
         let handle = try coordinator.acquire(identity: identity, allowUnfinishedShutdown: true, deviceIDs: ids)
         defer { handle.release() }
-        return try shutdownHoldingLane(ids)
+        while true {
+            if let descriptor = try HostLaneLock.acquire(url: paths.reapLock) {
+                defer { HostLaneLock.release(url: paths.reapLock, descriptor: descriptor) }
+                return try shutdownHoldingLane(ids)
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
     }
 
     public func reap(now: Date = Date()) throws -> [SimulatorShutdownResult]? {
-        guard let handle = try coordinator.tryAcquire(identity: identity) else { return nil }
-        defer { handle.release() }
-        return try reapWarmHoldingLane(excluding: [], now: now)
+        let status = try coordinator.status()
+        guard !(status.lanes ?? []).contains(where: \.exclusive),
+              !FileManager.default.fileExists(atPath: paths.deviceShutdown.path) || status.state == .free
+        else { return nil }
+        return try reapWarmHoldingLane(excluding: [], now: now, busy: nil)
     }
 
     public func reapWarmHoldingLane(excluding: Set<String>, now: Date) throws -> [SimulatorShutdownResult] {
+        try reapWarmHoldingLane(excluding: excluding, now: now, busy: []) ?? []
+    }
+
+    private func reapWarmHoldingLane(excluding: Set<String>, now: Date, busy: [SimulatorShutdownResult]?) throws -> [SimulatorShutdownResult]? {
+        guard let reapLock = try HostLaneLock.acquire(url: paths.reapLock) else { return busy }
+        defer { HostLaneLock.release(url: paths.reapLock, descriptor: reapLock) }
         let store = WarmDeviceStore(paths: paths)
         let warm = try store.read()
         guard !warm.isEmpty else { return [] }
@@ -69,7 +83,12 @@ public struct SimulatorShutdownService: Sendable {
         let candidates = warm.filter { !excluding.contains($0.key) && states[$0.key] != nil && states[$0.key] != "Shutdown" }
         let expired = candidates.filter { now.timeIntervalSince($0.value) >= WarmDeviceStore.idleLimit || blocked[$0.key] != nil }.map(\.key)
         let overflow = candidates.filter { !expired.contains($0.key) }.sorted { $0.value > $1.value }.dropFirst(WarmDeviceStore.capacity).map(\.key)
-        let targets = Array(Set(expired + overflow)).sorted()
+        var locks = [(URL, Int32)]()
+        defer { for (url, descriptor) in locks { HostLaneLock.release(url: url, descriptor: descriptor) } }
+        for id in Array(Set(expired + overflow)).sorted() {
+            if let descriptor = try HostLaneLock.acquire(url: paths.deviceLock(id)) { locks.append((paths.deviceLock(id), descriptor)) }
+        }
+        let targets = locks.map { $0.0.deletingPathExtension().lastPathComponent }
         return targets.isEmpty ? [] : try shutdownHoldingLane(targets)
     }
 
@@ -125,6 +144,9 @@ public struct SimulatorShutdownService: Sendable {
         guard status.state != .metadataError else { return status.error ?? "lease metadata is unreadable" }
         if let waiter = status.waiters.first(where: { $0.deviceIDs?.contains { $0.uppercased() == id } == true }) {
             return "queued job \(waiter.threadTitle ?? waiter.project) declared it"
+        }
+        if SimulatorTaskStore.records(base: paths).contains(where: { _, record in record.deviceIDs.contains { $0.uppercased() == id } }) {
+            return "a running or unfinished job declared it"
         }
         let report = activity()
         if let error = report.error { return error }

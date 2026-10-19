@@ -25,6 +25,7 @@ public final class SimulatorTaskService: Sendable {
 
     public func run(
         executable: URL, arguments: [String], deviceIDs: [String], keepRunning: Bool, keepWarm: Bool = false,
+        laneZeroOnly: Bool = false,
         environment: [String: String], identity: LeaseIdentity,
         externalSessionID: String? = nil,
         nativeClients: [ProcessReference] = [],
@@ -40,15 +41,23 @@ public final class SimulatorTaskService: Sendable {
         let metadata = try MetadataStore(paths: paths)
         let coordinator = LeaseCoordinator(paths: paths, store: metadata, timing: timing)
         let ids = Array(Set(deviceIDs.map { $0.uppercased() })).sorted()
+        let invocation = [executable.path] + arguments
+        let unscoped = ProtectedCommand.classify(invocation: invocation).requiresLease && SimulatorCommand.referencedDeviceIDs(in: invocation).isEmpty
+        let request = LaneRequest(
+            deviceIDs: ids, exclusive: ids.isEmpty || unscoped, laneZeroOnly: laneZeroOnly || externalSessionID != nil,
+            workspaceKey: SimulatorCommand.workspaceKey(in: invocation, cwd: identity.cwd)
+        )
         let handle = try coordinator.acquire(
             identity: identity,
             onWaitReport: { [report] in report("SimLease: waiting for \($0.owner?.project ?? "simulator owner")\n") },
             cancellationSignal: { signals.current },
             allowUnfinishedTask: true,
-            deviceIDs: ids
+            deviceIDs: ids,
+            request: request
         )
         defer { handle.release() }
-        try recoverPending()
+        let lanePaths = handle.paths
+        try recoverPending(lanes: handle.lanes)
         if let number = signals.current { return 128 + number }
         guard nativeClients.isEmpty || externalSessionID != nil else {
             throw SimulatorTaskError.commandFailed("native clients require a native session")
@@ -71,12 +80,13 @@ public final class SimulatorTaskService: Sendable {
             ownedDeviceIDs: keepRunning ? [] : ids.filter { states[$0] == "Shutdown" || claimed.contains($0) }
         )
         record.warmClaimedDeviceIDs = keepRunning || claimed.isEmpty ? nil : claimed
+        record.exclusive = handle.lanes.count > 1 || request.exclusive ? true : nil
         record.externalSessionID = externalSessionID
         record.externalWorkSettled = externalSessionID == nil ? nil : false
         record.nativeClients = nativeClients.isEmpty ? nil : nativeClients
         let crashScopeID = UUID().uuidString
         record.crashScopeID = crashScopeID
-        let store = SimulatorTaskStore(paths: paths)
+        let store = SimulatorTaskStore(paths: lanePaths)
         try store.write(record)
         try warmStore.remove(ids.filter { warm[$0] != nil })
         let needsShutdown = Set(SimulatorCommand.shutdownRequiredTargets(in: [executable.path] + arguments))
@@ -84,6 +94,7 @@ public final class SimulatorTaskService: Sendable {
         var childEnvironment = environment
         childEnvironment["SIMLEASE_HELD"] = "1"
         childEnvironment["SIMLEASE_TOKEN"] = record.token
+        childEnvironment["SIMLEASE_LANE"] = String(lanePaths.lane)
         var code: Int32 = 74
         var jobError: Error?
         var stoppedForCrash = false
@@ -148,7 +159,7 @@ public final class SimulatorTaskService: Sendable {
         var finished = false
         var cancellationAtCommit: Int32?
         do {
-            cancellationAtCommit = try finish(&record, warm: warmable, cancellationSignal: { signals.current })
+            cancellationAtCommit = try finish(&record, lane: lanePaths, warm: warmable, cancellationSignal: { signals.current })
             finished = true
         } catch {
             report("SimLease: cleanup failed; lane quarantined: \(error)\n")
@@ -171,26 +182,28 @@ public final class SimulatorTaskService: Sendable {
             throw SimulatorTaskError.unfinishedTask("another job holds the lane")
         }
         defer { handle.release() }
-        try recoverPending()
+        try recoverPending(lanes: handle.lanes)
     }
 
-    private func recoverPending() throws {
-        let store = SimulatorTaskStore(paths: paths)
-        guard var record = try store.read() else { return }
-        if record.phase != .quarantined {
-            switch record.owner.state {
-            case .missing, .reused: break
-            case .matching, .unknown:
-                throw SimulatorTaskError.unfinishedTask("owner \(record.owner.pid) is live or unverifiable")
+    private func recoverPending(lanes: [Int]) throws {
+        for lane in lanes.map(paths.lane) {
+            let store = SimulatorTaskStore(paths: lane)
+            guard var record = try store.read() else { continue }
+            if record.phase != .quarantined {
+                switch record.owner.state {
+                case .missing, .reused: break
+                case .matching, .unknown:
+                    throw SimulatorTaskError.unfinishedTask("owner \(record.owner.pid) is live or unverifiable")
+                }
             }
+            report("SimLease: recovering unfinished task \(record.token)\n")
+            try finish(&record, lane: lane)
         }
-        report("SimLease: recovering unfinished task \(record.token)\n")
-        try finish(&record)
     }
 
     @discardableResult
-    private func finish(_ record: inout SimulatorTaskRecord, warm: Bool = false, cancellationSignal: () -> Int32? = { nil }) throws -> Int32? {
-        let store = SimulatorTaskStore(paths: paths)
+    private func finish(_ record: inout SimulatorTaskRecord, lane: LeasePaths, warm: Bool = false, cancellationSignal: () -> Int32? = { nil }) throws -> Int32? {
+        let store = SimulatorTaskStore(paths: lane)
         record.phase = .cleaning
         try store.write(record)
         do {

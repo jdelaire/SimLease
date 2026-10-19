@@ -10,6 +10,7 @@ enum ParsedCommand: Equatable {
     case deviceRecover
     case deviceShutdown([String])
     case deviceReap
+    case config(maxLanes: Int?)
     case sessionBegin(title: String, project: String, deviceIDs: [String], clientPIDs: [Int32] = [])
     case sessionFinish(String)
     case nativeWait(String)
@@ -115,6 +116,13 @@ enum CommandParser {
                 throw CommandParserError.usage
             }
             return .version
+        case "config":
+            let flags = Array(arguments.dropFirst(2))
+            if flags.isEmpty { return .config(maxLanes: nil) }
+            guard flags.count == 2, flags[0] == "--max-lanes", let value = Int(flags[1]), (1...3).contains(value) else {
+                throw CommandParserError.usage
+            }
+            return .config(maxLanes: value)
         case "update":
             guard arguments.count == 2 else {
                 throw CommandParserError.usage

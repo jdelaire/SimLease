@@ -49,6 +49,8 @@ public struct LeaseWaiter: Codable, Equatable, Sendable {
     public let threadID: String?
     public let threadTitle: String?
     public let deviceIDs: [String]?
+    public let exclusive: Bool?
+    public let heartbeatAt: Date?
 
     public init(
         id: String,
@@ -60,9 +62,13 @@ public struct LeaseWaiter: Codable, Equatable, Sendable {
         source: LeaseSource,
         threadID: String?,
         threadTitle: String?,
-        deviceIDs: [String]? = nil
+        deviceIDs: [String]? = nil,
+        exclusive: Bool? = nil,
+        heartbeatAt: Date? = nil
     ) {
         self.deviceIDs = deviceIDs
+        self.exclusive = exclusive
+        self.heartbeatAt = heartbeatAt
         self.id = id
         self.pid = pid
         self.waitingSince = waitingSince
@@ -72,6 +78,20 @@ public struct LeaseWaiter: Codable, Equatable, Sendable {
         self.source = source
         self.threadID = threadID
         self.threadTitle = threadTitle
+    }
+}
+
+public struct LaneStatus: Codable, Equatable, Sendable {
+    public let lane: Int
+    public let owner: LeaseOwner
+    public let deviceIDs: [String]
+    public let exclusive: Bool
+
+    public init(lane: Int, owner: LeaseOwner, deviceIDs: [String], exclusive: Bool) {
+        self.lane = lane
+        self.owner = owner
+        self.deviceIDs = deviceIDs
+        self.exclusive = exclusive
     }
 }
 
@@ -92,6 +112,9 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
     public let typicalDurations: [String: Double]?
     public let nativeIdleSince: Date?
     public let staleRuntimes: [StaleRuntime]?
+    public let lanes: [LaneStatus]?
+    public let laneLimit: Int?
+    public let gate: LaneGateStatus?
 
     public init(
         state: State,
@@ -103,9 +126,15 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
         devices: [SimulatorUsage]? = nil,
         typicalDurations: [String: Double]? = nil,
         nativeIdleSince: Date? = nil,
-        staleRuntimes: [StaleRuntime]? = nil
+        staleRuntimes: [StaleRuntime]? = nil,
+        lanes: [LaneStatus]? = nil,
+        laneLimit: Int? = nil,
+        gate: LaneGateStatus? = nil
     ) {
         self.staleRuntimes = staleRuntimes
+        self.lanes = lanes
+        self.laneLimit = laneLimit
+        self.gate = gate
         self.devices = devices
         self.typicalDurations = typicalDurations
         self.nativeIdleSince = nativeIdleSince

@@ -7,16 +7,37 @@ public enum LeaseAcquisitionError: Error, Equatable {
     case systemCall(String, Int32)
 }
 
+public struct LaneRequest: Equatable, Sendable {
+    public let deviceIDs: [String]
+    public let exclusive: Bool
+    public let laneZeroOnly: Bool
+    public let workspaceKey: String?
+
+    public init(deviceIDs: [String], exclusive: Bool, laneZeroOnly: Bool = false, workspaceKey: String? = nil) {
+        self.deviceIDs = Array(Set(deviceIDs.map { $0.uppercased() })).sorted()
+        self.exclusive = exclusive || deviceIDs.isEmpty
+        self.laneZeroOnly = laneZeroOnly
+        self.workspaceKey = workspaceKey
+    }
+
+    public static let exclusive = LaneRequest(deviceIDs: [], exclusive: true)
+}
+
 public final class LeaseHandle: @unchecked Sendable {
     public let owner: LeaseOwner
-    private let store: MetadataStore
+    public let paths: LeasePaths
+    public let lanes: [Int]
+    private let laneLocks: [(LeasePaths, Int32)]
+    private let resourceLocks: [(URL, Int32)]
     private let stateLock = NSLock()
-    private var fileDescriptor: Int32?
+    private var released = false
 
-    fileprivate init(owner: LeaseOwner, store: MetadataStore, fileDescriptor: Int32) {
+    fileprivate init(owner: LeaseOwner, paths: LeasePaths, laneLocks: [(LeasePaths, Int32)], resourceLocks: [(URL, Int32)]) {
         self.owner = owner
-        self.store = store
-        self.fileDescriptor = fileDescriptor
+        self.paths = paths
+        self.lanes = laneLocks.map(\.0.lane)
+        self.laneLocks = laneLocks
+        self.resourceLocks = resourceLocks
     }
 
     deinit {
@@ -25,25 +46,33 @@ public final class LeaseHandle: @unchecked Sendable {
 
     public func release() {
         stateLock.lock()
-        guard let descriptor = fileDescriptor else {
+        guard !released else {
             stateLock.unlock()
             return
         }
-        fileDescriptor = nil
+        released = true
         stateLock.unlock()
-
-        HostLaneLock.release(paths: store.paths, descriptor: descriptor) {
-            try? store.removeOwner()
+        for (lane, descriptor) in laneLocks.reversed() {
+            HostLaneLock.release(paths: lane, descriptor: descriptor) {
+                try? MetadataStore(paths: lane).removeOwner()
+            }
+        }
+        for (url, descriptor) in resourceLocks.reversed() {
+            HostLaneLock.release(url: url, descriptor: descriptor)
         }
     }
 }
 
 public final class LeaseCoordinator: @unchecked Sendable {
+    public static let heartbeatInterval: TimeInterval = 5
+    public static let staleHeartbeat: TimeInterval = 20
+
     private let paths: LeasePaths
     private let store: MetadataStore
     private let timing: LeaseTiming
     private let clock: any LeaseClock
     private let processInspector: any ProcessIdentityInspecting
+    private let gate: HeadroomGate
 
     public init(
         paths: LeasePaths,
@@ -51,13 +80,15 @@ public final class LeaseCoordinator: @unchecked Sendable {
         timing: LeaseTiming = .production,
         clock: any LeaseClock = SystemLeaseClock(),
         processInspector: any ProcessIdentityInspecting =
-            SystemProcessIdentityInspector()
+            SystemProcessIdentityInspector(),
+        gate: HeadroomGate? = nil
     ) {
-        self.paths = paths
+        self.paths = paths.lane(0)
         self.store = store
         self.timing = timing
         self.clock = clock
         self.processInspector = processInspector
+        self.gate = gate ?? HeadroomGate(paths: paths.lane(0))
     }
 
     public func acquire(
@@ -67,29 +98,20 @@ public final class LeaseCoordinator: @unchecked Sendable {
         allowUnfinishedTask: Bool = false,
         allowUnfinishedRepair: Bool = false,
         allowUnfinishedShutdown: Bool = false,
-        deviceIDs: [String] = []
+        deviceIDs: [String] = [],
+        request: LaneRequest = .exclusive
     ) throws -> LeaseHandle {
         let started = clock.monotonicNow()
         var nextReport = timing.reportInterval
         let waitingSince = clock.wallNow()
-        let waiter = LeaseWaiter(
-            id: "\(identity.pid)-\(UUID().uuidString)",
-            pid: identity.pid,
-            waitingSince: waitingSince,
-            cwd: identity.cwd,
-            project: identity.project,
-            command: identity.command,
-            source: identity.source,
-            threadID: identity.threadID,
-            threadTitle: identity.threadTitle,
-            deviceIDs: deviceIDs.isEmpty ? nil : deviceIDs
-        )
+        let declared = request.exclusive ? deviceIDs : request.deviceIDs
+        var waiter = makeWaiter(identity: identity, waitingSince: waitingSince, deviceIDs: declared, exclusive: request.exclusive, heartbeatAt: waitingSince)
 
         try store.writeWaiter(waiter)
         defer { try? store.removeWaiter(id: waiter.id) }
 
         while true {
-            if let handle = try tryAcquire(identity: identity, allowUnfinishedTask: allowUnfinishedTask, allowUnfinishedRepair: allowUnfinishedRepair, allowUnfinishedShutdown: allowUnfinishedShutdown) {
+            if let handle = try tryAcquire(identity: identity, allowUnfinishedTask: allowUnfinishedTask, allowUnfinishedRepair: allowUnfinishedRepair, allowUnfinishedShutdown: allowUnfinishedShutdown, request: request, waiter: waiter) {
                 try store.removeWaiter(id: waiter.id)
                 return handle
             }
@@ -106,13 +128,64 @@ public final class LeaseCoordinator: @unchecked Sendable {
                 onWaitReport(try status())
                 nextReport += timing.reportInterval
             }
+            let now = clock.wallNow()
+            if now.timeIntervalSince(waiter.heartbeatAt ?? waitingSince) >= Self.heartbeatInterval {
+                waiter = makeWaiter(identity: identity, waitingSince: waitingSince, deviceIDs: declared, exclusive: request.exclusive, heartbeatAt: now, id: waiter.id)
+                try? store.writeWaiter(waiter)
+            }
             try clock.sleep(for: timing.pollInterval)
         }
     }
 
-    public func tryAcquire(identity: LeaseIdentity, allowUnfinishedTask: Bool = false, allowUnfinishedRepair: Bool = false, allowUnfinishedShutdown: Bool = false) throws -> LeaseHandle? {
-        guard let descriptor = try HostLaneLock.acquire(paths: paths) else {
-            return nil
+    public func tryAcquire(identity: LeaseIdentity, allowUnfinishedTask: Bool = false, allowUnfinishedRepair: Bool = false, allowUnfinishedShutdown: Bool = false, request: LaneRequest = .exclusive) throws -> LeaseHandle? {
+        try tryAcquire(identity: identity, allowUnfinishedTask: allowUnfinishedTask, allowUnfinishedRepair: allowUnfinishedRepair, allowUnfinishedShutdown: allowUnfinishedShutdown, request: request, waiter: nil)
+    }
+
+    private func tryAcquire(identity: LeaseIdentity, allowUnfinishedTask: Bool, allowUnfinishedRepair: Bool, allowUnfinishedShutdown: Bool, request: LaneRequest, waiter: LeaseWaiter?) throws -> LeaseHandle? {
+        let config = LaneConfig.read(paths)
+        var laneLocks = [(LeasePaths, Int32)]()
+        var resourceLocks = [(URL, Int32)]()
+        func releaseAll() {
+            for (lane, descriptor) in laneLocks.reversed() { HostLaneLock.release(paths: lane, descriptor: descriptor) {} }
+            for (url, descriptor) in resourceLocks.reversed() { HostLaneLock.release(url: url, descriptor: descriptor) }
+        }
+        if request.exclusive {
+            for lane in paths.allLanes {
+                guard let descriptor = try HostLaneLock.acquire(paths: lane) else {
+                    releaseAll()
+                    return nil
+                }
+                laneLocks.append((lane, descriptor))
+            }
+        } else {
+            if config.maxLanes > 1, let waiter, try blockedByOlderExclusiveWaiter(waiter) { return nil }
+            let reserving = try paths.allLanes.filter { lane in
+                guard let record = try SimulatorTaskStore(paths: lane).read() else { return false }
+                return !Set(record.deviceIDs.map { $0.uppercased() }).isDisjoint(with: request.deviceIDs)
+            }
+            guard reserving.count <= 1 else { return nil }
+            let keys = request.deviceIDs.map(paths.deviceLock) + (request.workspaceKey.map { [paths.workspaceLock($0)] } ?? [])
+            for url in keys {
+                guard let descriptor = try HostLaneLock.acquire(url: url) else {
+                    releaseAll()
+                    return nil
+                }
+                resourceLocks.append((url, descriptor))
+            }
+            let candidates = reserving.isEmpty
+                ? [0] + (config.maxLanes > 1 && !request.laneZeroOnly ? Array(1..<config.maxLanes) : [])
+                : [reserving[0].lane]
+            for index in candidates {
+                if index > 0, reserving.isEmpty, !gate.check(now: clock.wallNow()).open { break }
+                if let descriptor = try HostLaneLock.acquire(paths: paths.lane(index)) {
+                    laneLocks.append((paths.lane(index), descriptor))
+                    break
+                }
+            }
+            guard !laneLocks.isEmpty else {
+                releaseAll()
+                return nil
+            }
         }
 
         let owner = LeaseOwner(
@@ -132,82 +205,120 @@ public final class LeaseCoordinator: @unchecked Sendable {
             if !allowUnfinishedShutdown, FileManager.default.fileExists(atPath: paths.deviceShutdown.path) {
                 throw SimulatorTaskError.unfinishedTask("simulator shutdown is unresolved; rerun simlease device shutdown")
             }
-            if !allowUnfinishedTask, let record = try SimulatorTaskStore(paths: paths).read() {
-                throw SimulatorTaskError.unfinishedTask(record.failure ?? record.phase.rawValue)
+            if !allowUnfinishedTask {
+                for (lane, _) in laneLocks {
+                    if let record = try SimulatorTaskStore(paths: lane).read() {
+                        throw SimulatorTaskError.unfinishedTask(record.failure ?? record.phase.rawValue)
+                    }
+                }
             }
-            try store.writeOwner(owner)
-            return LeaseHandle(owner: owner, store: store, fileDescriptor: descriptor)
+            for (lane, _) in laneLocks { try MetadataStore(paths: lane).writeOwner(owner) }
+            gate.recordAdmission(now: owner.acquiredAt)
+            return LeaseHandle(owner: owner, paths: laneLocks[0].0, laneLocks: laneLocks, resourceLocks: resourceLocks)
         } catch {
-            HostLaneLock.release(paths: paths, descriptor: descriptor) {}
+            for (lane, _) in laneLocks { try? MetadataStore(paths: lane).removeOwner() }
+            releaseAll()
             throw error
         }
     }
 
-    public func status() throws -> LeaseStatus {
-        try HostLaneLock.probe(paths: paths) { isFree in
-            try status(isFree: isFree)
+    private func blockedByOlderExclusiveWaiter(_ waiter: LeaseWaiter) throws -> Bool {
+        let now = clock.wallNow()
+        return try activeWaiters(from: store.readWaiters()).contains { other in
+            other.id != waiter.id && other.exclusive == true
+                && (other.waitingSince, other.id) < (waiter.waitingSince, waiter.id)
+                && now.timeIntervalSince(other.heartbeatAt ?? other.waitingSince) < Self.staleHeartbeat
         }
     }
 
-    private func status(isFree: Bool) throws -> LeaseStatus {
+    private func makeWaiter(identity: LeaseIdentity, waitingSince: Date, deviceIDs: [String], exclusive: Bool, heartbeatAt: Date, id: String? = nil) -> LeaseWaiter {
+        LeaseWaiter(
+            id: id ?? "\(identity.pid)-\(UUID().uuidString)",
+            pid: identity.pid,
+            waitingSince: waitingSince,
+            cwd: identity.cwd,
+            project: identity.project,
+            command: identity.command,
+            source: identity.source,
+            threadID: identity.threadID,
+            threadTitle: identity.threadTitle,
+            deviceIDs: deviceIDs.isEmpty ? nil : deviceIDs,
+            exclusive: exclusive ? true : nil,
+            heartbeatAt: heartbeatAt
+        )
+    }
+
+    public func status() throws -> LeaseStatus {
         let waiters: [LeaseWaiter]
         do {
             waiters = try activeWaiters(from: store.readWaiters())
         } catch {
-            return LeaseStatus(
-                state: .metadataError,
-                owner: nil,
-                waiters: [],
-                error: "waiter metadata error: \(error)"
-            )
+            return LeaseStatus(state: .metadataError, owner: nil, waiters: [], error: "waiter metadata error: \(error)")
         }
-
-        let owner: LeaseOwner?
-        do {
-            owner = try store.readOwner()
-        } catch {
-            return LeaseStatus(
-                state: .metadataError,
-                owner: nil,
-                waiters: waiters,
-                error: "owner metadata error: \(error)"
-            )
+        var lanes = [LaneStatus]()
+        var firstOwner: LeaseOwner?
+        for lane in paths.allLanes {
+            let result: Result<LaneStatus?, LaneMetadataError> = try HostLaneLock.probe(paths: lane) { isFree in
+                laneStatus(lane, isFree: isFree)
+            }
+            switch result {
+            case .failure(let failure):
+                return LeaseStatus(state: .metadataError, owner: failure.owner, waiters: waiters, error: failure.message)
+            case .success(let status):
+                guard let status else { continue }
+                firstOwner = firstOwner ?? status.owner
+                if let index = lanes.firstIndex(where: { $0.owner == status.owner }) {
+                    let existing = lanes[index]
+                    lanes[index] = LaneStatus(lane: existing.lane, owner: existing.owner, deviceIDs: existing.deviceIDs + status.deviceIDs, exclusive: true)
+                } else {
+                    lanes.append(status)
+                }
+            }
         }
-
-        if isFree {
+        guard let firstOwner else {
             if FileManager.default.fileExists(atPath: paths.deviceRecovery.path) {
-                return LeaseStatus(state: .metadataError, owner: owner, waiters: waiters, error: "unfinished device recovery; resume simlease device repair with --settled")
+                return LeaseStatus(state: .metadataError, owner: nil, waiters: waiters, error: "unfinished device recovery; resume simlease device repair with --settled")
             }
             if FileManager.default.fileExists(atPath: paths.deviceShutdown.path) {
-                return LeaseStatus(state: .metadataError, owner: owner, waiters: waiters, error: "unfinished simulator shutdown; rerun simlease device shutdown")
-            }
-            do {
-                if let record = try SimulatorTaskStore(paths: paths).read() {
-                    return LeaseStatus(state: .metadataError, owner: owner, waiters: waiters, error: "unfinished task \(record.token): \(record.failure ?? record.phase.rawValue); run simlease recover")
-                }
-            } catch {
-                return LeaseStatus(state: .metadataError, owner: owner, waiters: waiters, error: "task metadata error: \(error)")
-            }
-            guard owner == nil else {
-                return LeaseStatus(
-                    state: .metadataError,
-                    owner: owner,
-                    waiters: waiters,
-                    error: "owner metadata exists while lease is free"
-                )
+                return LeaseStatus(state: .metadataError, owner: nil, waiters: waiters, error: "unfinished simulator shutdown; rerun simlease device shutdown")
             }
             return LeaseStatus(state: .free, owner: nil, waiters: waiters, error: nil)
         }
+        return LeaseStatus(state: .leased, owner: firstOwner, waiters: waiters, error: nil, lanes: lanes)
+    }
 
-        guard let owner else {
-            return LeaseStatus(
-                state: .metadataError,
-                owner: nil,
-                waiters: waiters,
-                error: "owner metadata missing while lease is held"
-            )
+    private struct LaneMetadataError: Error {
+        let message: String
+        let owner: LeaseOwner?
+    }
+
+    private func laneStatus(_ lane: LeasePaths, isFree: Bool) -> Result<LaneStatus?, LaneMetadataError> {
+        let label = lane.lane == 0 ? "" : " in lane \(lane.lane + 1)"
+        let owner: LeaseOwner?
+        do {
+            owner = try MetadataStore(paths: lane).readOwner()
+        } catch {
+            return .failure(LaneMetadataError(message: "owner metadata error\(label): \(error)", owner: nil))
         }
-        return LeaseStatus(state: .leased, owner: owner, waiters: waiters, error: nil)
+        let record: SimulatorTaskRecord?
+        do {
+            record = try SimulatorTaskStore(paths: lane).read()
+        } catch {
+            return .failure(LaneMetadataError(message: "task metadata error\(label): \(error)", owner: owner))
+        }
+        if isFree {
+            if let record {
+                return .failure(LaneMetadataError(message: "unfinished task \(record.token)\(label): \(record.failure ?? record.phase.rawValue); run simlease recover", owner: owner))
+            }
+            if owner != nil {
+                return .failure(LaneMetadataError(message: "owner metadata exists while lease is free\(label)", owner: owner))
+            }
+            return .success(nil)
+        }
+        guard let owner else {
+            return .failure(LaneMetadataError(message: "owner metadata missing while lease is held\(label)", owner: nil))
+        }
+        return .success(LaneStatus(lane: lane.lane, owner: owner, deviceIDs: record?.deviceIDs ?? [], exclusive: false))
     }
 
     private func activeWaiters(
@@ -227,5 +338,4 @@ public final class LeaseCoordinator: @unchecked Sendable {
         }
         return active
     }
-
 }

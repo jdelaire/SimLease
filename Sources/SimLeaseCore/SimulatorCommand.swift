@@ -1,6 +1,22 @@
 import Foundation
 
 public enum SimulatorCommand {
+    public static func workspaceKey(in invocation: [String], cwd: String) -> String {
+        let arguments = Array(invocation.dropFirst())
+        func value(_ name: String) -> String? {
+            for (index, argument) in arguments.enumerated() {
+                if argument == name, arguments.indices.contains(index + 1) { return arguments[index + 1] }
+                if argument.hasPrefix(name + "=") { return String(argument.dropFirst(name.count + 1)) }
+            }
+            return nil
+        }
+        let base = URL(fileURLWithPath: cwd, isDirectory: true)
+        for name in ["-derivedDataPath", "-workspace", "-project"] {
+            if let path = value(name) { return URL(fileURLWithPath: path, relativeTo: base).standardizedFileURL.path }
+        }
+        return base.standardizedFileURL.path
+    }
+
     public static func bootTarget(in invocation: [String]) -> String? {
         guard let arguments = simctlArguments(invocation), arguments.count == 2, arguments[0] == "boot" else { return nil }
         return UUID(uuidString: arguments[1])?.uuidString

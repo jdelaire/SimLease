@@ -88,6 +88,12 @@ public enum SimLeaseCLI {
                     "simlease \(SimLeaseBuild.currentVersion)\n"
                 )
                 return 0
+            case .config(let maxLanes):
+                if let maxLanes { try LaneConfig.write(LaneConfig(maxLanes: maxLanes), paths: configuration.paths) }
+                let config = LaneConfig.read(configuration.paths)
+                let output = ConfigOutput(maxLanes: config.maxLanes, gate: config.maxLanes > 1 ? HeadroomGate(paths: configuration.paths).check() : nil)
+                configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(output), as: UTF8.self) + "\n")
+                return 0
             case .update:
                 guard let runner = configuration.updateRunner else {
                     throw UpdateRunnerError.missingUpdater
@@ -119,8 +125,7 @@ public enum SimLeaseCLI {
                 configuration.standardOutput("{\"state\":\"recovered\",\"note\":\"Recorded devices were preserved; inspect crash blocks before reuse\"}\n")
                 return 0
             case .deviceShutdown(let ids):
-                if let record = try SimulatorTaskStore(paths: configuration.paths).read(),
-                   record.owner.isAncestor(of: getpid()) || record.nativeClients?.contains(where: { $0.isAncestor(of: getpid()) }) == true {
+                if insideManagedWork(configuration) {
                     throw SimulatorTaskError.commandFailed("simulator shutdown cannot nest inside a managed job or native session")
                 }
                 let service = try shutdownService(title: "Shut down simulators", arguments: arguments, environment: environment, configuration: configuration)
@@ -128,8 +133,7 @@ public enum SimLeaseCLI {
                 configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(["results": results]), as: UTF8.self) + "\n")
                 return results.contains { $0.outcome == .unresolved } ? 75 : 0
             case .deviceReap:
-                if let record = try SimulatorTaskStore(paths: configuration.paths).read(),
-                   record.owner.isAncestor(of: getpid()) || record.nativeClients?.contains(where: { $0.isAncestor(of: getpid()) }) == true {
+                if insideManagedWork(configuration) {
                     throw SimulatorTaskError.commandFailed("simulator reaping cannot nest inside a managed job or native session")
                 }
                 let results = try shutdownService(title: "Reap warm simulators", arguments: arguments, environment: environment, configuration: configuration).reap()
@@ -205,7 +209,7 @@ public enum SimLeaseCLI {
             }
         } catch CommandParserError.usage {
             configuration.standardError(
-                "Usage: simlease <run|session|device|recover|doctor|status|name|hold|clean|update|--version>\n"
+                "Usage: simlease <run|session|device|recover|doctor|status|config|name|hold|clean|update|--version>\n"
             )
             return 64
         } catch UpdateRunnerError.missingUpdater {
@@ -421,10 +425,11 @@ public enum SimLeaseCLI {
     ) throws -> Int32 {
         let coordinator = try makeCoordinator(configuration: configuration)
         var status = try coordinator.status()
-        let task = try? SimulatorTaskStore(paths: configuration.paths).read()
+        let heldLanes = Set((status.lanes ?? []).map(\.owner).map(\.pid))
+        let tasks = SimulatorTaskStore.records(base: configuration.paths).filter { heldLanes.contains($0.1.owner.pid) }.map { ($0.0.lane, $0.1) }
         if audit {
-            let report = SimulatorActivityAudit().scan(lease: status, task: task)
-            status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: report)
+            let report = SimulatorActivityAudit().scan(status: status, base: configuration.paths)
+            status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: report, lanes: status.lanes)
         }
         let blocks = try CrashLoopStore(paths: configuration.paths).read().blocks.values.sorted { $0.deviceID < $1.deviceID }
         var usage: [SimulatorUsage]?
@@ -440,17 +445,19 @@ public enum SimLeaseCLI {
             let relevant = status.waiters.flatMap { $0.deviceIDs ?? [] } + (status.activity?.activities.flatMap(\.deviceIDs) ?? []) + blocks.map(\.deviceID)
             stale = configuration.deviceManager == nil ? RuntimeCompatibility.cached(paths: configuration.paths, environment: environment, xcrunURL: xcrun) : []
             usage = (try? manager.inventory()).map {
-                SimulatorUsage.build(inventory: $0, task: status.state == .leased && task?.owner.pid == status.owner?.pid ? task : nil, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:], staleRuntimes: Set((stale ?? []).map(\.identifier)))
+                SimulatorUsage.build(inventory: $0, tasks: tasks, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:], staleRuntimes: Set((stale ?? []).map(\.identifier)))
             }
         }
+        let laneLimit = LaneConfig.read(configuration.paths).maxLanes
+        let gateStatus = laneLimit > 1 && devices ? HeadroomGate(paths: configuration.paths).check() : nil
         let history = LaneHistoryStore(paths: configuration.paths)
         let projects = Set(status.waiters.map(\.project) + (status.owner.map { [$0.project] } ?? []))
         let durations = history.typicalDurations(projects: projects)
         var nativeIdleSince: Date?
-        if status.state == .leased, let owner = status.owner, let task, task.owner.pid == owner.pid, task.phase == .running, let sessionID = task.externalSessionID {
+        if status.state == .leased, let owner = status.owner, let task = tasks.first(where: { $0.0 == 0 })?.1, task.owner.pid == owner.pid, task.phase == .running, let sessionID = task.externalSessionID {
             nativeIdleSince = max(owner.acquiredAt, history.lastNativeActivity(sessionID: sessionID) ?? owner.acquiredAt)
         }
-        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage, typicalDurations: durations.isEmpty ? nil : durations, nativeIdleSince: nativeIdleSince, staleRuntimes: stale?.isEmpty == false ? stale : nil)
+        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage, typicalDurations: durations.isEmpty ? nil : durations, nativeIdleSince: nativeIdleSince, staleRuntimes: stale?.isEmpty == false ? stale : nil, lanes: status.lanes, laneLimit: laneLimit, gate: gateStatus)
         if json {
             let data = try JSONEncoder.simLease.encode(status)
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
@@ -498,7 +505,7 @@ public enum SimLeaseCLI {
         return try taskService(environment: environment, configuration: configuration).run(
             executable: URL(fileURLWithPath: "/bin/sh"),
             arguments: ["-c", "while :; do /bin/sleep 3600; done"],
-            deviceIDs: deviceIDs, keepRunning: keepRunning, environment: environment, identity: identity
+            deviceIDs: deviceIDs, keepRunning: keepRunning, laneZeroOnly: true, environment: environment, identity: identity
         )
     }
 
@@ -544,8 +551,7 @@ public enum SimLeaseCLI {
     }
 
     private static func deviceService(arguments: [String], environment: [String: String], configuration: CLIConfiguration) throws -> DeviceRepairService {
-        if let record = try SimulatorTaskStore(paths: configuration.paths).read(),
-           record.owner.isAncestor(of: getpid()) || record.nativeClients?.contains(where: { $0.isAncestor(of: getpid()) }) == true {
+        if insideManagedWork(configuration) {
             throw SimulatorTaskError.commandFailed("device recovery cannot nest inside a managed job or native session; finish and settle it first")
         }
         let store = try MetadataStore(paths: configuration.paths)
@@ -580,14 +586,16 @@ public enum SimLeaseCLI {
         let ids = deviceIDs + SimulatorCommand.referencedDeviceIDs(in: command)
         let arguments = SimulatorCommand.argumentsForManagedTask(executable: executable.path, arguments: Array(command.dropFirst()), hasDevices: !ids.isEmpty)
         let childEnvironment = ManagedToolEnvironment.make(executable: executable, arguments: arguments, environment: environment)
-        if try SimulatorTaskStore(paths: configuration.paths).authorizesNestedCommand(environment: environment, pid: getpid()) {
+        if let lane = try SimulatorTaskStore.authorizedLane(base: configuration.paths, environment: environment, pid: getpid()) {
             guard !keepWarm else { throw SimulatorTaskError.commandFailed("declare --keep-warm on the outer run only") }
-            try SimulatorTaskStore(paths: configuration.paths).validateNestedDevices(ids)
+            let laneStore = SimulatorTaskStore(paths: lane)
+            try laneStore.validateNestedDevices(ids)
+            try requireScopedTarget([executable.path] + arguments, record: laneStore.read(), configuration: configuration)
             if !CrashLoopStore.permitsCleanup([executable.path] + arguments) {
-                let declared = try SimulatorTaskStore(paths: configuration.paths).read()?.deviceIDs ?? []
+                let declared = try laneStore.read()?.deviceIDs ?? []
                 try CrashLoopStore(paths: configuration.paths).requireHealthy(ids.isEmpty ? declared : ids)
             }
-            if try prepareWarmCommand(invocation: [executable.path] + arguments, record: SimulatorTaskStore(paths: configuration.paths).read(), environment: environment, configuration: configuration) { return 0 }
+            if try prepareWarmCommand(invocation: [executable.path] + arguments, record: laneStore.read(), environment: environment, configuration: configuration) { return 0 }
             return try ChildProcessRunner.run(executable: executable, arguments: arguments, environment: childEnvironment).exitCode
         }
         let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: command, store: store)
@@ -616,8 +624,9 @@ public enum SimLeaseCLI {
         let childArguments = Array(invocation.dropFirst())
         let decision = ProtectedCommand.classify(invocation: invocation)
 
-        let journal = SimulatorTaskStore(paths: configuration.paths)
-        let nested = try journal.authorizesNestedCommand(environment: environment, pid: getpid())
+        let authorizedLane = try SimulatorTaskStore.authorizedLane(base: configuration.paths, environment: environment, pid: getpid())
+        let nested = authorizedLane != nil
+        let journal = SimulatorTaskStore(paths: authorizedLane ?? configuration.paths)
         let native = !nested && (decision.requiresLease || SimulatorCommand.isXcodebuild(executable: invokedPath, arguments: childArguments))
             ? try NativeClientAdmission.acquire(paths: configuration.paths, invocation: invocation, pid: getpid()) : nil
         defer { withExtendedLifetime(native) {} }
@@ -626,6 +635,7 @@ public enum SimLeaseCLI {
         let ids = SimulatorCommand.referencedDeviceIDs(in: invocation)
         if nested {
             try journal.validateNestedDevices(SimulatorCommand.referencedDeviceIDs(in: invocation))
+            if decision.requiresLease { try requireScopedTarget(invocation, record: admittedTask, configuration: configuration) }
             if decision.requiresLease, !CrashLoopStore.permitsCleanup(invocation) {
                 try CrashLoopStore(paths: configuration.paths).requireHealthy(ids.isEmpty ? taskDevices : ids)
             }
@@ -650,6 +660,20 @@ public enum SimLeaseCLI {
             executable: executable, arguments: arguments, deviceIDs: ids,
             keepRunning: false, environment: childEnvironment, identity: identity
         )
+    }
+
+    private static func insideManagedWork(_ configuration: CLIConfiguration) -> Bool {
+        SimulatorTaskStore.records(base: configuration.paths).contains { _, record in
+            record.owner.isAncestor(of: getpid()) || record.nativeClients?.contains(where: { $0.isAncestor(of: getpid()) }) == true
+        }
+    }
+
+    private static func requireScopedTarget(_ invocation: [String], record: SimulatorTaskRecord?, configuration: CLIConfiguration) throws {
+        guard record?.exclusive != true, LaneConfig.read(configuration.paths).maxLanes > 1,
+              ProtectedCommand.classify(invocation: invocation).requiresLease,
+              SimulatorCommand.referencedDeviceIDs(in: invocation).isEmpty
+        else { return }
+        throw SimulatorTaskError.commandFailed("several simulator lanes are enabled; name the simulator UUID in nested commands, for example -destination id=UUID")
     }
 
     private static func prepareWarmCommand(invocation: [String], record: SimulatorTaskRecord?, environment: [String: String], configuration: CLIConfiguration) throws -> Bool {
@@ -759,4 +783,9 @@ private struct NativeSessionReady: Encodable {
 private struct ReapOutput: Encodable {
     let busy: Bool
     let results: [SimulatorShutdownResult]
+}
+
+private struct ConfigOutput: Encodable {
+    let maxLanes: Int
+    let gate: LaneGateStatus?
 }

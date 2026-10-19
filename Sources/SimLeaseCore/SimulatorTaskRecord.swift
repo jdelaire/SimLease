@@ -39,6 +39,7 @@ public struct SimulatorTaskRecord: Codable, Equatable, Sendable {
     public var nativeClients: [ProcessReference]?
     public var crashScopeID: String?
     public var warmClaimedDeviceIDs: [String]?
+    public var exclusive: Bool?
 
     public init(
         token: String, owner: ProcessReference, deviceIDs: [String],
@@ -68,6 +69,7 @@ public struct SimulatorTaskStore: Sendable {
     }
 
     public func write(_ record: SimulatorTaskRecord) throws {
+        try FileManager.default.createDirectory(at: paths.laneRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try JSONEncoder().encode(record).write(to: paths.task, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: paths.task.path)
         let handle = try FileHandle(forWritingTo: paths.task)
@@ -89,6 +91,17 @@ public struct SimulatorTaskStore: Sendable {
               owner.pid == record.owner.pid
         else { return false }
         return true
+    }
+
+    public static func authorizedLane(base: LeasePaths, environment: [String: String], pid: Int32) throws -> LeasePaths? {
+        for lane in base.allLanes where try SimulatorTaskStore(paths: lane).authorizesNestedCommand(environment: environment, pid: pid) {
+            return lane
+        }
+        return nil
+    }
+
+    public static func records(base: LeasePaths) -> [(LeasePaths, SimulatorTaskRecord)] {
+        base.allLanes.compactMap { lane in (try? SimulatorTaskStore(paths: lane).read()).flatMap { $0 }.map { (lane, $0) } }
     }
 
     public func validateNestedDevices(_ ids: [String]) throws {

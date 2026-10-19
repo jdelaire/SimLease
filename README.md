@@ -60,6 +60,27 @@ and simulator launches hidden inside arbitrary scripts cannot establish device
 ownership; declare every intended UUID on the outer scope. Nested commands
 inherit a validated task token instead of acquiring another lane.
 
+Allow more than one simulator job at a time:
+
+```sh
+simlease config --max-lanes 2
+simlease config
+```
+
+The default is one lane. With more lanes, a job that declares device UUIDs
+takes per-device locks and a lock on its DerivedData, project or working
+directory, then the first free lane. Lanes after the first open only while
+the Mac has headroom: memory at least 45% free (closing below 40%), CPU at
+least 35% idle, modest compressor and swap growth, load below 1.5 times the
+core count, two minutes after the last shortfall and 90 seconds after the last
+admission. Running jobs are never stopped when headroom drops. Jobs without
+declared UUIDs, simulator commands without a UUID target, and device
+shutdown, repair, recovery and cleanup take every lane. Native sessions and
+`hold` use the first lane. A queued exclusive job stops new single-lane
+admissions until it runs. With several lanes, nested simulator commands must
+name their UUID. An unfinished job record keeps its devices reserved until
+recovery.
+
 Inspect coordination and command coverage:
 
 ```sh

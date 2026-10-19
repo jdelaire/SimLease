@@ -11,9 +11,8 @@ enum CoverageDoctor {
             )
             return Command(name: name, path: executable?.path, shimmed: executable?.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL)
         }
-        let journal = try SimulatorTaskStore(paths: configuration.paths).read()
         let coordinator = LeaseCoordinator(paths: configuration.paths, store: try MetadataStore(paths: configuration.paths))
-        let activity = SimulatorActivityAudit().scan(lease: try coordinator.status(), task: journal)
+        let activity = SimulatorActivityAudit().scan(status: try coordinator.status(), base: configuration.paths)
         let clients = activity.nativeClients ?? []
         let blocks = try CrashLoopStore(paths: configuration.paths).read().blocks.values.sorted { $0.deviceID < $1.deviceID }
         let binding = clients.flatMap { ["--client-pid", String($0.process.pid)] }

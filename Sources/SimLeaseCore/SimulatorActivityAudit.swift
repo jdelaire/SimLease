@@ -7,6 +7,19 @@ public struct SimulatorActivityAudit: Sendable {
     init(reader: any SimulatorProcessReading) { self.reader = reader }
 
     public func scan(lease: LeaseStatus, task: SimulatorTaskRecord?) -> SimulatorActivityReport {
+        scan(contexts: [(lease, task)])
+    }
+
+    public func scan(status: LeaseStatus, base: LeasePaths) -> SimulatorActivityReport {
+        let contexts: [(LeaseStatus, SimulatorTaskRecord?)] = (status.lanes ?? []).isEmpty
+            ? [(status, status.state == .leased ? ((try? SimulatorTaskStore(paths: base).read()) ?? nil) : nil)]
+            : (status.lanes ?? []).map { lane in
+                (LeaseStatus(state: .leased, owner: lane.owner, waiters: [], error: nil), (try? SimulatorTaskStore(paths: base.lane(lane.lane)).read()) ?? nil)
+            }
+        return scan(contexts: contexts)
+    }
+
+    public func scan(contexts: [(LeaseStatus, SimulatorTaskRecord?)]) -> SimulatorActivityReport {
         var snapshots = [SimulatorProcessSnapshot]()
         var incomplete = 0
         do {
@@ -28,8 +41,27 @@ public struct SimulatorActivityAudit: Sendable {
         } catch {
             return SimulatorActivityReport(error: "Process inventory could not be inspected")
         }
-        let report = Self.evaluate(processes: snapshots, lease: lease, task: task)
+        let report = Self.combine(contexts.map { Self.evaluate(processes: snapshots, lease: $0.0, task: $0.1) })
         return SimulatorActivityReport(activities: report.activities, uninspectedProcessCount: incomplete, nativeClients: report.nativeClients ?? [])
+    }
+
+    static func combine(_ reports: [SimulatorActivityReport]) -> SimulatorActivityReport {
+        guard let first = reports.first else { return SimulatorActivityReport() }
+        let activities = first.activities.compactMap { activity -> SimulatorActivity? in
+            let matches = reports.compactMap { $0.activities.first { $0.id == activity.id } }
+            guard matches.count == reports.count else { return nil }
+            return matches.first { $0.kind == .reservedNative } ?? activity
+        }
+        var clients = [SimulatorNativeClient]()
+        for client in reports.flatMap({ $0.nativeClients ?? [] }) {
+            if let index = clients.firstIndex(where: { $0.process == client.process }) {
+                if client.bound { clients[index] = client }
+            } else {
+                clients.append(client)
+            }
+        }
+        clients.sort { $0.process.pid < $1.process.pid }
+        return SimulatorActivityReport(activities: activities, nativeClients: clients)
     }
 
     static func evaluate(processes: [SimulatorProcessSnapshot], lease: LeaseStatus, task: SimulatorTaskRecord?) -> SimulatorActivityReport {
