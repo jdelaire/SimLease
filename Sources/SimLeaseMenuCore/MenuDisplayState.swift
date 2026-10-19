@@ -10,6 +10,10 @@ public struct WaiterDisplayItem: Equatable, Sendable, Identifiable {
     public let threadID: String?
     public let cwd: String
     public let estimate: String?
+    public let headline: String
+    public let subheadline: String
+    public let waited: String
+    public let targets: [String]
 
     public init(
         id: String,
@@ -19,9 +23,17 @@ public struct WaiterDisplayItem: Equatable, Sendable, Identifiable {
         command: String,
         threadID: String?,
         cwd: String,
-        estimate: String? = nil
+        estimate: String? = nil,
+        headline: String? = nil,
+        subheadline: String? = nil,
+        waited: String? = nil,
+        targets: [String] = []
     ) {
         self.estimate = estimate
+        self.headline = headline ?? name
+        self.subheadline = subheadline ?? projectAndSource
+        self.waited = waited ?? elapsed
+        self.targets = targets
         self.id = id
         self.name = name
         self.projectAndSource = projectAndSource
@@ -42,8 +54,12 @@ public struct DeviceDisplayItem: Equatable, Sendable, Identifiable {
     public let unmanaged: [String]
     public let crashBlocked: Bool
     public let canShutDown: Bool
+    public let runtime: String
+    public let state: String
 
-    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false) {
+    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "") {
+        self.runtime = runtime
+        self.state = state
         self.canShutDown = canShutDown
         self.id = id
         self.name = name
@@ -53,6 +69,32 @@ public struct DeviceDisplayItem: Equatable, Sendable, Identifiable {
         self.waiting = waiting
         self.unmanaged = unmanaged
         self.crashBlocked = crashBlocked
+    }
+}
+
+public struct MenuAlert: Equatable, Sendable, Identifiable {
+    public enum Severity: Int, Comparable, Sendable {
+        case critical
+        case warning
+        case info
+
+        public static func < (lhs: Severity, rhs: Severity) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    public let id: String
+    public let severity: Severity
+    public let title: String
+    public let detail: String
+    public let copyLabel: String?
+    public let copyText: String?
+
+    public init(id: String, severity: Severity, title: String, detail: String, copyLabel: String? = nil, copyText: String? = nil) {
+        self.id = id
+        self.severity = severity
+        self.title = title
+        self.detail = detail
+        self.copyLabel = copyLabel
+        self.copyText = copyText
     }
 }
 
@@ -77,6 +119,11 @@ public struct MenuDisplayState: Equatable, Sendable {
     public let devices: [DeviceDisplayItem]?
     public let typicalDuration: String?
     public let nativeIdle: String?
+    public let alerts: [MenuAlert]
+    public let ownerHeadline: String?
+    public let ownerSubheadline: String?
+    public let ownerElapsedSeconds: Double?
+    public let ownerTypicalSeconds: Double?
 
     public var waiterNames: [String] {
         waiters.map(\.name)
@@ -102,10 +149,23 @@ public struct MenuDisplayState: Equatable, Sendable {
             estimates[waiter.id] = "starts in ≈ \(Self.minutes(wait))"
             ahead = typical[waiter.project].map { wait + $0 }
         }
-        let waiters = base.waiters.map {
-            WaiterDisplayItem(id: $0.id, name: $0.name, projectAndSource: $0.projectAndSource, elapsed: $0.elapsed, command: $0.command, threadID: $0.threadID, cwd: $0.cwd, estimate: estimates[$0.id])
+        let usage = Dictionary((status.devices ?? []).map { ($0.id.uppercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        let recorded = Dictionary(status.waiters.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let arrival = { (item: WaiterDisplayItem) in recorded[item.id]?.waitingSince ?? .distantFuture }
+        let waiters = base.waiters.sorted { arrival($0) < arrival($1) }.map { item -> WaiterDisplayItem in
+            let waiter = recorded[item.id]
+            let labels = waiter.map { Self.labels(title: $0.threadTitle, threadID: $0.threadID, source: $0.source, project: $0.project) }
+            let targets = (waiter?.deviceIDs ?? []).map { id in
+                usage[id.uppercased()].map { "\($0.name) · \($0.runtime)" } ?? String(id.prefix(8))
+            }
+            return WaiterDisplayItem(
+                id: item.id, name: item.name, projectAndSource: item.projectAndSource, elapsed: item.elapsed, command: item.command,
+                threadID: item.threadID, cwd: item.cwd, estimate: estimates[item.id], headline: labels?.0, subheadline: labels?.1,
+                waited: waiter.map { "waiting \(Self.minutes(now.timeIntervalSince($0.waitingSince)))" }, targets: targets
+            )
         }
         let idle = leased == nil ? nil : status.nativeIdleSince.map { now.timeIntervalSince($0) }.flatMap { $0 >= 600 ? $0 : nil }
+        let ownerLabels = leased.map { Self.labels(title: $0.threadTitle, threadID: $0.threadID, source: $0.source, project: $0.project) }
         self.init(
             kind: base.kind, menuTitle: title,
             symbolName: title != base.menuTitle ? "exclamationmark.triangle.fill" : base.symbolName,
@@ -113,8 +173,58 @@ public struct MenuDisplayState: Equatable, Sendable {
             command: base.command, elapsed: base.elapsed, waiters: waiters, error: base.error, activity: activity, crashBlocks: status.crashBlocks ?? [],
             devices: status.devices.map { Self.devices($0, status: status, ownerName: base.ownerName, waiters: waiters, now: now) },
             typicalDuration: ownerTypical.map { "usually ≈ \(Self.minutes($0))" },
-            nativeIdle: idle.map { "No native device commands for \(Self.minutes($0)). Finish the session if it is done." }
+            nativeIdle: idle.map { "No native device commands for \(Self.minutes($0)). Finish the session if it is done." },
+            alerts: status.state == .metadataError ? [] : Self.alerts(status: status, usage: usage, idle: idle),
+            ownerHeadline: ownerLabels?.0, ownerSubheadline: ownerLabels?.1,
+            ownerElapsedSeconds: leased.map { max(0, now.timeIntervalSince($0.acquiredAt)) }, ownerTypicalSeconds: ownerTypical
         )
+    }
+
+    private static func labels(title: String?, threadID: String?, source: LeaseSource, project: String) -> (String, String) {
+        if source == .manualXcode { return ("Manual Xcode", project) }
+        if let title, !title.isEmpty { return (title, "\(project) · \(sourceName(source))") }
+        if let threadID, !threadID.isEmpty { return (project, "\(sourceName(source)) · \(threadID.prefix(8))") }
+        return (project, sourceName(source))
+    }
+
+    private static func alerts(status: LeaseStatus, usage: [String: SimulatorUsage], idle: Double?) -> [MenuAlert] {
+        var alerts = [MenuAlert]()
+        for block in status.crashBlocks ?? [] {
+            let place = usage[block.deviceID.uppercased()].map { "\($0.name) · \($0.runtime)" } ?? "simulator \(block.deviceID.prefix(8))"
+            alerts.append(MenuAlert(
+                id: "crash-\(block.deviceID)", severity: .critical, title: "\(block.processName) keeps crashing",
+                detail: "New jobs on \(place) are blocked until the crash is reviewed.",
+                copyLabel: "Copy unblock command", copyText: "simlease device repair --device \(block.deviceID) --acknowledge-crashes"
+            ))
+        }
+        let activities = status.activity?.activities ?? []
+        let outside = activities.filter { $0.kind == .unmanaged }
+        if !outside.isEmpty {
+            alerts.append(MenuAlert(
+                id: "unmanaged", severity: .warning, title: "Simulator work outside SimLease",
+                detail: outside.prefix(3).map { "\($0.tool) PID \($0.process.pid)" }.joined(separator: ", ") + (outside.count > 3 ? " and \(outside.count - 3) more" : "") + " can collide with leased jobs."
+            ))
+        }
+        let unverified = activities.filter { $0.kind != .unmanaged }
+        if !unverified.isEmpty {
+            alerts.append(MenuAlert(
+                id: "unverified", severity: .info, title: "Ownership unverified",
+                detail: unverified.prefix(3).map { "\($0.tool) PID \($0.process.pid)" }.joined(separator: ", ") + " matched a reservation, which does not prove who started it."
+            ))
+        }
+        if let activity = status.activity, activity.isIncomplete {
+            alerts.append(MenuAlert(
+                id: "audit", severity: .info, title: "Process audit incomplete",
+                detail: activity.error ?? "\(activity.uninspectedProcessCount) processes could not be inspected."
+            ))
+        }
+        if let idle {
+            alerts.append(MenuAlert(
+                id: "native-idle", severity: .warning, title: "Native session looks idle",
+                detail: "No device commands for \(minutes(idle)). Finish the session if it is done; it holds the lane."
+            ))
+        }
+        return alerts.sorted { $0.severity < $1.severity }
     }
 
     private static func minutes(_ seconds: Double) -> String {
@@ -122,7 +232,7 @@ public struct MenuDisplayState: Equatable, Sendable {
     }
 
     private static func devices(_ usage: [SimulatorUsage], status: LeaseStatus, ownerName: String?, waiters: [WaiterDisplayItem], now: Date) -> [DeviceDisplayItem] {
-        let names = Dictionary(waiters.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let names = Dictionary(waiters.map { ($0.id, $0.headline) }, uniquingKeysWith: { first, _ in first })
         let blocked = Set((status.crashBlocks ?? []).map { $0.deviceID.uppercased() })
         return usage.map { device in
             let waiting = status.waiters.filter { $0.deviceIDs?.contains { $0.uppercased() == device.id } == true }.compactMap { names[$0.id] }
@@ -143,7 +253,8 @@ public struct MenuDisplayState: Equatable, Sendable {
                 unmanaged: (status.activity?.activities ?? []).filter { $0.kind == .unmanaged && $0.deviceIDs.contains { $0.uppercased() == device.id } }
                     .map { "\($0.tool) · PID \($0.process.pid)" },
                 crashBlocked: blocked.contains(device.id),
-                canShutDown: [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted
+                canShutDown: [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted,
+                runtime: device.runtime, state: device.state
             )
         }
     }
@@ -196,6 +307,11 @@ public struct MenuDisplayState: Equatable, Sendable {
             devices = nil
             typicalDuration = nil
             nativeIdle = nil
+            alerts = []
+            ownerHeadline = nil
+            ownerSubheadline = nil
+            ownerElapsedSeconds = nil
+            ownerTypicalSeconds = nil
         }
     }
 
@@ -241,10 +357,20 @@ public struct MenuDisplayState: Equatable, Sendable {
         crashBlocks: [CrashLoopTrigger] = [],
         devices: [DeviceDisplayItem]? = nil,
         typicalDuration: String? = nil,
-        nativeIdle: String? = nil
+        nativeIdle: String? = nil,
+        alerts: [MenuAlert] = [],
+        ownerHeadline: String? = nil,
+        ownerSubheadline: String? = nil,
+        ownerElapsedSeconds: Double? = nil,
+        ownerTypicalSeconds: Double? = nil
     ) {
         self.typicalDuration = typicalDuration
         self.nativeIdle = nativeIdle
+        self.alerts = alerts
+        self.ownerHeadline = ownerHeadline
+        self.ownerSubheadline = ownerSubheadline
+        self.ownerElapsedSeconds = ownerElapsedSeconds
+        self.ownerTypicalSeconds = ownerTypicalSeconds
         self.devices = devices
         self.kind = kind
         self.menuTitle = menuTitle

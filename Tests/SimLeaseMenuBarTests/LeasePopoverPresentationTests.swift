@@ -30,11 +30,8 @@ final class LeasePopoverPresentationTests: XCTestCase {
     func testFreeStateExplainsThatTestingCanStart() {
         let presentation = LeasePopoverPresentation(state: .free)
 
-        XCTAssertEqual(presentation.title, "Simulator available")
-        XCTAssertEqual(
-            presentation.description,
-            "Ready for simulator testing."
-        )
+        XCTAssertEqual(presentation.title, "Simulator free")
+        XCTAssertEqual(presentation.description, "Ready for simulator work")
     }
 
     func testMetadataErrorPreservesExactMessage() {
@@ -42,7 +39,7 @@ final class LeasePopoverPresentationTests: XCTestCase {
             state: .metadataError("metadata exploded")
         )
 
-        XCTAssertEqual(presentation.title, "Simulator status error")
+        XCTAssertEqual(presentation.title, "Status unavailable")
         XCTAssertEqual(presentation.description, "metadata exploded")
     }
 
@@ -68,7 +65,9 @@ final class LeasePopoverPresentationTests: XCTestCase {
 
         let presentation = LeasePopoverPresentation(state: state)
 
-        XCTAssertEqual(presentation.title, "Simulator in use")
-        XCTAssertEqual(presentation.description, "SimLease · Codex")
+        XCTAssertEqual(presentation.title, "Simulator busy")
+        XCTAssertEqual(presentation.description, "Nobody waiting")
+        XCTAssertEqual(state.ownerHeadline, "Owner task")
+        XCTAssertEqual(state.ownerSubheadline, "SimLease · Codex")
     }
 }

@@ -55,7 +55,7 @@ final class LeasePopoverRenderingTests: XCTestCase {
             let output = outputDirectory.appending(path: "\(item.name).png")
             try data.write(to: output)
 
-            XCTAssertEqual(image.size.width, 320, accuracy: 1)
+            XCTAssertEqual(image.size.width, 360, accuracy: 1)
             XCTAssertGreaterThan(image.size.height, 80)
             XCTAssertLessThan(image.size.height, 600)
             print("popover-capture: \(output.path)")
@@ -68,7 +68,8 @@ final class LeasePopoverRenderingTests: XCTestCase {
             waiterNames: (1...20).map { "Waiting simulator thread \($0)" }
         )
 
-        XCTAssertGreaterThanOrEqual(populatedHeight - emptyHeight, 650)
+        XCTAssertGreaterThan(populatedHeight - emptyHeight, 300)
+        XCTAssertLessThanOrEqual(populatedHeight, 820)
     }
 
     private func renderedHeight(waiterNames: [String]) async throws -> CGFloat {

@@ -45,7 +45,8 @@ final class MenuDisplayStateTests: XCTestCase {
                     elapsed: "05:00",
                     command: "xcrun simctl list",
                     threadID: "019fbb00-c552-7933",
-                    cwd: "/tmp/Set"
+                    cwd: "/tmp/Set",
+                    waited: "waiting 5 min"
                 ),
             ]
         )
@@ -73,8 +74,8 @@ final class MenuDisplayStateTests: XCTestCase {
         let devices = MenuDisplayState(status: status, now: Date()).devices
 
         XCTAssertEqual(devices, [
-            DeviceDisplayItem(id: id, name: "iPhone 17 Pro", detail: "iOS 27.2 · Booted", reservation: .owned, user: "[AnimAtlas] Onboarding · shuts down after", waiting: ["[Set] Release validation"], unmanaged: [], crashBlocked: false),
-            DeviceDisplayItem(id: other, name: "iPhone Air", detail: "iOS 27.1 · Booted", reservation: .unreserved, user: "No SimLease reservation", waiting: [], unmanaged: ["simctl · PID 42"], crashBlocked: true),
+            DeviceDisplayItem(id: id, name: "iPhone 17 Pro", detail: "iOS 27.2 · Booted", reservation: .owned, user: "[AnimAtlas] Onboarding · shuts down after", waiting: ["[Set] Release validation"], unmanaged: [], crashBlocked: false, runtime: "iOS 27.2", state: "Booted"),
+            DeviceDisplayItem(id: other, name: "iPhone Air", detail: "iOS 27.1 · Booted", reservation: .unreserved, user: "No SimLease reservation", waiting: [], unmanaged: ["simctl · PID 42"], crashBlocked: true, runtime: "iOS 27.1", state: "Booted"),
         ])
         XCTAssertNil(MenuDisplayState(status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil), now: Date()).devices)
     }
@@ -105,6 +106,39 @@ final class MenuDisplayStateTests: XCTestCase {
         XCTAssertEqual(state.nativeIdle, "No native device commands for 15 min. Finish the session if it is done.")
         let recent = LeaseStatus(state: .leased, owner: owner(threadTitle: "A"), waiters: [], error: nil, nativeIdleSince: now.addingTimeInterval(-300))
         XCTAssertNil(MenuDisplayState(status: recent, now: now).nativeIdle)
+    }
+
+    func testAlertsNameTheBlockedDeviceAndRankBySeverity() {
+        let blocked = "11111111-1111-4111-8111-111111111111"
+        let status = LeaseStatus(
+            state: .free, owner: nil, waiters: [], error: nil,
+            activity: SimulatorActivityReport(activities: [SimulatorActivity(process: ProcessReference(pid: 9, startMicroseconds: 1), tool: "simctl", kind: .unmanaged, deviceIDs: [])], uninspectedProcessCount: 1),
+            crashBlocks: [CrashLoopTrigger(deviceID: blocked, scopeID: "scope", processName: "ExplorerDex", signature: "sig", occurredAt: Date())],
+            devices: [SimulatorUsage(id: blocked, name: "iPhone 18 Pro", runtime: "iOS 27.2", state: "Shutdown", reservation: .unreserved)]
+        )
+        let alerts = MenuDisplayState(status: status, now: Date()).alerts
+        XCTAssertEqual(alerts.map(\.id), ["crash-\(blocked)", "unmanaged", "audit"])
+        XCTAssertEqual(alerts.first?.detail, "New jobs on iPhone 18 Pro · iOS 27.2 are blocked until the crash is reviewed.")
+        XCTAssertEqual(alerts.first?.copyText, "simlease device repair --device \(blocked) --acknowledge-crashes")
+    }
+
+    func testQueueRowsUseProjectHeadlinesArrivalOrderAndTargets() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let target = "0C4D6F06-8ADF-4785-BD18-6A0F566689A8"
+        let status = LeaseStatus(
+            state: .leased, owner: owner(threadTitle: "A"),
+            waiters: [
+                LeaseWaiter(id: "late", pid: 3, waitingSince: now.addingTimeInterval(-60), cwd: "/tmp/thai", project: "thai-srs", command: [], source: .codex, threadID: nil, threadTitle: "Duo slide"),
+                LeaseWaiter(id: "early", pid: 2, waitingSince: now.addingTimeInterval(-660), cwd: "/tmp/set", project: "set", command: [], source: .terminal, threadID: nil, threadTitle: nil, deviceIDs: [target]),
+            ],
+            error: nil,
+            devices: [SimulatorUsage(id: target, name: "Set Smoke iPhone 17 Pro", runtime: "iOS 27.0", state: "Shutdown", reservation: .unreserved)]
+        )
+        let waiters = MenuDisplayState(status: status, now: now).waiters
+        XCTAssertEqual(waiters.map(\.headline), ["set", "Duo slide"])
+        XCTAssertEqual(waiters.map(\.subheadline), ["Terminal", "thai-srs · Codex"])
+        XCTAssertEqual(waiters.first?.waited, "waiting 11 min")
+        XCTAssertEqual(waiters.first?.targets, ["Set Smoke iPhone 17 Pro · iOS 27.0"])
     }
 
     func testMissingTitleUsesEightCharacterThreadID() {
