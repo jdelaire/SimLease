@@ -39,7 +39,7 @@ final class LeasePopoverRenderingTests: XCTestCase {
             let model = MenuViewModel(
                 provider: RenderStatusProvider(status: item.status)
             )
-            await model.refresh()
+            await model.setDevicesVisible(true)
             let renderer = ImageRenderer(
                 content: LeasePopoverView(viewModel: model)
                     .background(Color(nsColor: .windowBackgroundColor))
@@ -57,7 +57,7 @@ final class LeasePopoverRenderingTests: XCTestCase {
 
             XCTAssertEqual(image.size.width, 320, accuracy: 1)
             XCTAssertGreaterThan(image.size.height, 80)
-            XCTAssertLessThan(image.size.height, 400)
+            XCTAssertLessThan(image.size.height, 600)
             print("popover-capture: \(output.path)")
         }
     }
@@ -126,10 +126,16 @@ final class LeasePopoverRenderingTests: XCTestCase {
                     command: ["xcrun", "simctl", "list"],
                     source: .codex,
                     threadID: nil,
-                    threadTitle: "Set UI tests"
+                    threadTitle: "Set UI tests",
+                    deviceIDs: ["5855AB2E-0078-4A4B-9149-780B23A0AA1C"]
                 ),
             ],
-            error: nil
+            error: nil,
+            devices: [
+                SimulatorUsage(id: "5855AB2E-0078-4A4B-9149-780B23A0AA1C", name: "iPhone 17 Pro", runtime: "iOS 27.2", state: "Booted", reservation: .owned),
+                SimulatorUsage(id: "D61765E6-0EEC-4D07-83EA-4FB7DD535AB0", name: "iPhone 17", runtime: "iOS 27.2", state: "Booted", reservation: .borrowed),
+                SimulatorUsage(id: "0BD66E05-B117-43A2-9483-4E2F2011751F", name: "iPhone Air", runtime: "iOS 27.1", state: "Booted", reservation: .unreserved),
+            ]
         )
     }
 }

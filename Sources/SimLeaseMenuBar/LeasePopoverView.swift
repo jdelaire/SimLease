@@ -74,6 +74,10 @@ struct LeasePopoverView: View {
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
             }
+            if let devices = viewModel.state.devices {
+                Divider()
+                SimulatorUsageList(devices: devices)
+            }
             if let activity = viewModel.state.activity, !activity.activities.isEmpty || activity.isIncomplete {
                 SimulatorActivityNotice(report: activity)
             }
@@ -85,7 +89,8 @@ struct LeasePopoverView: View {
         .padding(16)
         .frame(width: 320)
         .animation(.easeInOut(duration: 0.15), value: viewModel.state.kind)
-        .task { await viewModel.refresh() }
+        .onAppear { Task { await viewModel.setDevicesVisible(true) } }
+        .onDisappear { Task { await viewModel.setDevicesVisible(false) } }
     }
 
     @ViewBuilder
@@ -279,5 +284,82 @@ private struct SimulatorActivityNotice: View {
         }
         .font(.caption)
         .textSelection(.enabled)
+    }
+}
+
+private struct SimulatorUsageList: View {
+    let devices: [DeviceDisplayItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Simulators · \(devices.count)")
+                .font(.subheadline.weight(.semibold))
+            if devices.isEmpty {
+                Text("No booted or reserved simulators")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(devices) { device in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: symbol(device))
+                        .foregroundStyle(color(device))
+                        .frame(width: 16)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(device.name)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 6)
+                            Text(device.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Text(device.user)
+                            .font(.caption)
+                            .foregroundStyle(device.reservation == .unreserved ? .secondary : .primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if device.crashBlocked {
+                            Text("Crash blocked")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                        ForEach(device.unmanaged, id: \.self) { process in
+                            Text("Outside lease · \(process)")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.orange)
+                        }
+                        ForEach(device.waiting, id: \.self) { name in
+                            Text("Next · \(name)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+                .help("\(device.name)\n\(device.id)\n\(device.detail)\n\(device.user)")
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    private func symbol(_ device: DeviceDisplayItem) -> String {
+        if device.crashBlocked || !device.unmanaged.isEmpty { return "exclamationmark.triangle.fill" }
+        return switch device.reservation {
+        case .owned, .borrowed: "lock.iphone"
+        case .unreserved: "iphone"
+        }
+    }
+
+    private func color(_ device: DeviceDisplayItem) -> Color {
+        if device.crashBlocked || !device.unmanaged.isEmpty { return .orange }
+        return switch device.reservation {
+        case .owned: .orange
+        case .borrowed: .blue
+        case .unreserved: .secondary
+        }
     }
 }

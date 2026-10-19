@@ -64,8 +64,16 @@ Inspect coordination and command coverage:
 
 ```sh
 simlease status --json --audit
+simlease status --devices
 simlease doctor --json
 ```
+
+`--devices` adds booted and reserved simulators with their reservation:
+`owned` devices shut down when the job ends, `borrowed` devices were already
+running and stay up, and `unreserved` devices are booted outside any SimLease
+reservation. The menu popover lists the same simulators with the lease owner,
+queued threads that declared the device, and unmanaged processes targeting it.
+The menu queries the simulator inventory only while the popover is open.
 
 `status` reports `free`, `leased`, or `metadataError`. An unfinished cleanup
 appears as an error and blocks new protected work. After a process crash,

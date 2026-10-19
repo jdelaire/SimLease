@@ -9,6 +9,8 @@ public final class MenuViewModel: ObservableObject {
     private let now: () -> Date
     private var isRefreshing = false
     private var isMonitoring = false
+    private var includesDevices = false
+    private var refreshPending = false
 
     public init(
         provider: any MenuStatusProviding,
@@ -20,19 +22,36 @@ public final class MenuViewModel: ObservableObject {
     }
 
     public func refresh() async {
-        guard !isRefreshing else { return }
+        guard !isRefreshing else {
+            refreshPending = true
+            return
+        }
         isRefreshing = true
         defer { isRefreshing = false }
-        do {
-            let next = MenuDisplayState(status: try await provider.fetch(), now: now())
-            if next != state { state = next }
-        } catch {
-            state = .metadataError(error.localizedDescription)
-        }
+        repeat {
+            refreshPending = false
+            do {
+                let next = MenuDisplayState(status: try await provider.fetch(includeDevices: includesDevices), now: now())
+                if next != state { state = next }
+            } catch {
+                state = .metadataError(error.localizedDescription)
+            }
+        } while refreshPending
+    }
+
+    public func setDevicesVisible(_ visible: Bool) async {
+        includesDevices = visible
+        if visible { await refresh() }
     }
 
     public var copyDetailsText: String {
         var lines = [leaseDetailsText]
+        for device in state.devices ?? [] {
+            lines.append("Simulator: \(device.name) \(device.id) · \(device.detail)")
+            lines.append("  \(device.user)")
+            for name in device.waiting { lines.append("  Waiting: \(name)") }
+            for process in device.unmanaged { lines.append("  Unmanaged: \(process)") }
+        }
         for block in state.crashBlocks {
             lines.append("Crash blocked: \(block.processName) on \(block.deviceID)")
             lines.append("Inspect crash cause, then simlease device repair --device \(block.deviceID) --acknowledge-crashes")

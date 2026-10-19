@@ -17,6 +17,20 @@ final class DeviceCLITests: XCTestCase {
         XCTAssertEqual((try f.output()["crashBlocks"] as? [[String: Any]])?.first?["deviceID"] as? String, f.device)
     }
 
+    func testStatusDevicesReportsLeaseReservation() throws {
+        let f = try DeviceCLIFixture()
+        defer { f.remove() }
+        XCTAssertEqual(f.call(["device", "create", "--name", "Disposable Check", "--type", f.type, "--runtime", f.runtime, "--disposable"]), 0)
+        let handle = try XCTUnwrap(LeaseCoordinator(paths: f.paths, store: MetadataStore(paths: f.paths)).tryAcquire(identity: LeaseIdentity(pid: getpid(), cwd: "/tmp/App", project: "App", command: ["xcodebuild", "test"], source: .terminal, threadID: nil, threadTitle: "UI tests")))
+        defer { handle.release() }
+        try SimulatorTaskStore(paths: f.paths).write(SimulatorTaskRecord(token: "test", owner: try ProcessReference.current(), deviceIDs: [f.device], ownedDeviceIDs: [f.device], phase: .running))
+        XCTAssertEqual(f.call(["status", "--json", "--devices"]), 0)
+        let devices = try XCTUnwrap(try f.output()["devices"] as? [[String: Any]])
+        XCTAssertEqual(devices.map { $0["id"] as? String }, [f.device])
+        XCTAssertEqual(devices.first?["reservation"] as? String, "owned")
+        XCTAssertEqual(devices.first?["runtime"] as? String, "iOS 27.2")
+    }
+
     func testDeviceRecoveryCannotNestInsideOwnedJob() throws {
         let f = try DeviceCLIFixture()
         defer { f.remove() }

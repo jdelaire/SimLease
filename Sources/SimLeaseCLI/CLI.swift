@@ -141,8 +141,8 @@ public enum SimLeaseCLI {
                 return 0
             case .nativeWait(let id):
                 return try NativeSessionController.waitForAcknowledgment(paths: configuration.paths, id: id, environment: environment)
-            case .status(let json, let audit):
-                return try runStatus(json: json, audit: audit, configuration: configuration)
+            case .status(let json, let audit, let devices):
+                return try runStatus(json: json, audit: audit, devices: devices, environment: environment, configuration: configuration)
             case .doctor(let json):
                 return try CoverageDoctor.run(json: json, environment: environment, configuration: configuration)
             case .name(let title):
@@ -396,21 +396,39 @@ public enum SimLeaseCLI {
     private static func runStatus(
         json: Bool,
         audit: Bool,
+        devices: Bool,
+        environment: [String: String],
         configuration: CLIConfiguration
     ) throws -> Int32 {
         let coordinator = try makeCoordinator(configuration: configuration)
         var status = try coordinator.status()
+        let task = try? SimulatorTaskStore(paths: configuration.paths).read()
         if audit {
-            let report = SimulatorActivityAudit().scan(lease: status, task: try? SimulatorTaskStore(paths: configuration.paths).read())
+            let report = SimulatorActivityAudit().scan(lease: status, task: task)
             status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: report)
         }
         let blocks = try CrashLoopStore(paths: configuration.paths).read().blocks.values.sorted { $0.deviceID < $1.deviceID }
-        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks)
+        var usage: [SimulatorUsage]?
+        if devices {
+            let xcrun: URL
+            #if DEBUG || SIMLEASE_TESTING
+            xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+            #else
+            xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+            #endif
+            let manager = configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun)
+            let relevant = status.waiters.flatMap { $0.deviceIDs ?? [] } + (status.activity?.activities.flatMap(\.deviceIDs) ?? []) + blocks.map(\.deviceID)
+            usage = (try? manager.inventory()).map {
+                SimulatorUsage.build(inventory: $0, task: status.state == .leased && task?.owner.pid == status.owner?.pid ? task : nil, relevantIDs: Set(relevant))
+            }
+        }
+        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage)
         if json {
             let data = try JSONEncoder.simLease.encode(status)
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
         } else {
             configuration.standardOutput("\(status.state.rawValue)\n")
+            for device in usage ?? [] { configuration.standardOutput("\(device.reservation.rawValue): \(device.name) \(device.id) \(device.state)\n") }
             for block in blocks { configuration.standardOutput("Crash blocked: \(block.processName) on \(block.deviceID)\n") }
             if let activity = status.activity {
                 for item in activity.activities { configuration.standardOutput("\(item.kind.rawValue): \(item.tool) PID \(item.process.pid)\n") }

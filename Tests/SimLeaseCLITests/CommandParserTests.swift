@@ -33,6 +33,7 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(try CommandParser.parse(["simlease", "status", "--audit", "--json"]), .status(json: true, audit: true))
         XCTAssertEqual(try CommandParser.parse(["simlease", "status", "--json", "--audit"]), .status(json: true, audit: true))
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "status", "--audit", "--audit"]))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "status", "--devices", "--json", "--audit"]), .status(json: true, audit: true, devices: true))
     }
 
     func testParsesTaskScopeAndRejectsAmbiguousDeviceSelection() throws {

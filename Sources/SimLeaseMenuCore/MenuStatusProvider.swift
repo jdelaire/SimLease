@@ -3,6 +3,11 @@ import SimLeaseCore
 
 public protocol MenuStatusProviding: Sendable {
     func fetch() async throws -> LeaseStatus
+    func fetch(includeDevices: Bool) async throws -> LeaseStatus
+}
+
+public extension MenuStatusProviding {
+    func fetch(includeDevices: Bool) async throws -> LeaseStatus { try await fetch() }
 }
 
 public enum MenuStatusError: LocalizedError, Equatable {
@@ -42,11 +47,15 @@ public actor CLIStatusProvider: MenuStatusProviding {
     }
 
     public func fetch() async throws -> LeaseStatus {
+        try await fetch(includeDevices: false)
+    }
+
+    public func fetch(includeDevices: Bool) async throws -> LeaseStatus {
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
         process.executableURL = executableURL
-        process.arguments = ["status", "--json", "--audit"]
+        process.arguments = ["status", "--json", "--audit"] + (includeDevices ? ["--devices"] : [])
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
@@ -138,7 +147,12 @@ public struct PreviewStatusProvider: MenuStatusProviding {
                     threadTitle: threadTitle
                 )
             }
-            status = LeaseStatus(state: .leased, owner: owner, waiters: waiters, error: nil)
+            let devices = [
+                SimulatorUsage(id: "5855AB2E-0078-4A4B-9149-780B23A0AA1C", name: "iPhone 17 Pro", runtime: "iOS 27.2", state: "Booted", reservation: .owned),
+                SimulatorUsage(id: "D61765E6-0EEC-4D07-83EA-4FB7DD535AB0", name: "iPhone 17", runtime: "iOS 27.2", state: "Booted", reservation: .borrowed),
+                SimulatorUsage(id: "0BD66E05-B117-43A2-9483-4E2F2011751F", name: "iPhone Air", runtime: "iOS 27.1", state: "Booted", reservation: .unreserved),
+            ]
+            status = LeaseStatus(state: .leased, owner: owner, waiters: waiters, error: nil, devices: devices)
         case "error":
             status = LeaseStatus(
                 state: .metadataError,

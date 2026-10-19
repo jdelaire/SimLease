@@ -33,11 +33,13 @@ public final class SimulatorTaskService: Sendable {
         let signals = TaskSignals()
         let metadata = try MetadataStore(paths: paths)
         let coordinator = LeaseCoordinator(paths: paths, store: metadata, timing: timing)
+        let ids = Array(Set(deviceIDs.map { $0.uppercased() })).sorted()
         let handle = try coordinator.acquire(
             identity: identity,
             onWaitReport: { [report] in report("SimLease: waiting for \($0.owner?.project ?? "simulator owner")\n") },
             cancellationSignal: { signals.current },
-            allowUnfinishedTask: true
+            allowUnfinishedTask: true,
+            deviceIDs: ids
         )
         defer { handle.release() }
         try recoverPending()
@@ -48,7 +50,6 @@ public final class SimulatorTaskService: Sendable {
         for client in nativeClients where client.state != .matching {
             throw SimulatorTaskError.unverifiedProcess(client.pid)
         }
-        let ids = Array(Set(deviceIDs.map { $0.uppercased() })).sorted()
         let crashes = CrashLoopStore(paths: paths)
         let source = CrashReportSource(directory: crashReportDirectory)
         _ = try crashes.ingest(source.scan(), now: Date())

@@ -48,6 +48,7 @@ public struct LeaseWaiter: Codable, Equatable, Sendable {
     public let source: LeaseSource
     public let threadID: String?
     public let threadTitle: String?
+    public let deviceIDs: [String]?
 
     public init(
         id: String,
@@ -58,8 +59,10 @@ public struct LeaseWaiter: Codable, Equatable, Sendable {
         command: [String],
         source: LeaseSource,
         threadID: String?,
-        threadTitle: String?
+        threadTitle: String?,
+        deviceIDs: [String]? = nil
     ) {
+        self.deviceIDs = deviceIDs
         self.id = id
         self.pid = pid
         self.waitingSince = waitingSince
@@ -85,6 +88,7 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
     public let error: String?
     public let activity: SimulatorActivityReport?
     public let crashBlocks: [CrashLoopTrigger]?
+    public let devices: [SimulatorUsage]?
 
     public init(
         state: State,
@@ -92,8 +96,10 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
         waiters: [LeaseWaiter],
         error: String?,
         activity: SimulatorActivityReport? = nil,
-        crashBlocks: [CrashLoopTrigger]? = nil
+        crashBlocks: [CrashLoopTrigger]? = nil,
+        devices: [SimulatorUsage]? = nil
     ) {
+        self.devices = devices
         self.state = state
         self.owner = owner
         self.waiters = waiters

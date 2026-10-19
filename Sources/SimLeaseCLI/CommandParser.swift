@@ -12,7 +12,7 @@ enum ParsedCommand: Equatable {
     case sessionFinish(String)
     case nativeWait(String)
     case doctor(json: Bool)
-    case status(json: Bool, audit: Bool = false)
+    case status(json: Bool, audit: Bool = false, devices: Bool = false)
     case name(String)
     case hold(title: String, project: String, deviceIDs: [String] = [], keepRunning: Bool = false)
     case cleanPlan(json: Bool)
@@ -114,10 +114,10 @@ enum CommandParser {
             return .update
         case "status":
             let flags = Array(arguments.dropFirst(2))
-            guard Set(flags).count == flags.count, flags.allSatisfy({ ["--json", "--audit"].contains($0) }) else {
+            guard Set(flags).count == flags.count, flags.allSatisfy({ ["--json", "--audit", "--devices"].contains($0) }) else {
                 throw CommandParserError.usage
             }
-            return .status(json: flags.contains("--json"), audit: flags.contains("--audit"))
+            return .status(json: flags.contains("--json"), audit: flags.contains("--audit"), devices: flags.contains("--devices"))
         case "doctor":
             guard arguments.count <= 3,
                   arguments.count == 2 || arguments[2] == "--json"

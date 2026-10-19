@@ -29,6 +29,28 @@ public struct WaiterDisplayItem: Equatable, Sendable, Identifiable {
     }
 }
 
+public struct DeviceDisplayItem: Equatable, Sendable, Identifiable {
+    public let id: String
+    public let name: String
+    public let detail: String
+    public let reservation: SimulatorUsage.Reservation
+    public let user: String
+    public let waiting: [String]
+    public let unmanaged: [String]
+    public let crashBlocked: Bool
+
+    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+        self.reservation = reservation
+        self.user = user
+        self.waiting = waiting
+        self.unmanaged = unmanaged
+        self.crashBlocked = crashBlocked
+    }
+}
+
 public struct MenuDisplayState: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case free
@@ -47,6 +69,7 @@ public struct MenuDisplayState: Equatable, Sendable {
     public let error: String?
     public let activity: SimulatorActivityReport?
     public let crashBlocks: [CrashLoopTrigger]
+    public let devices: [DeviceDisplayItem]?
 
     public var waiterNames: [String] {
         waiters.map(\.name)
@@ -66,8 +89,32 @@ public struct MenuDisplayState: Equatable, Sendable {
             kind: base.kind, menuTitle: title,
             symbolName: title != base.menuTitle ? "exclamationmark.triangle.fill" : base.symbolName,
             ownerName: base.ownerName, projectAndSource: base.projectAndSource,
-            command: base.command, elapsed: base.elapsed, waiters: base.waiters, error: base.error, activity: activity, crashBlocks: status.crashBlocks ?? []
+            command: base.command, elapsed: base.elapsed, waiters: base.waiters, error: base.error, activity: activity, crashBlocks: status.crashBlocks ?? [],
+            devices: status.devices.map { Self.devices($0, status: status, ownerName: base.ownerName, waiters: base.waiters) }
         )
+    }
+
+    private static func devices(_ usage: [SimulatorUsage], status: LeaseStatus, ownerName: String?, waiters: [WaiterDisplayItem]) -> [DeviceDisplayItem] {
+        let names = Dictionary(waiters.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let blocked = Set((status.crashBlocks ?? []).map { $0.deviceID.uppercased() })
+        return usage.map { device in
+            let user = switch device.reservation {
+            case .owned: "\(ownerName ?? "Unknown owner") · shuts down after"
+            case .borrowed: "\(ownerName ?? "Unknown owner") · stays running after"
+            case .unreserved: "No SimLease reservation"
+            }
+            return DeviceDisplayItem(
+                id: device.id,
+                name: device.name,
+                detail: [device.runtime, device.state].filter { !$0.isEmpty }.joined(separator: " · "),
+                reservation: device.reservation,
+                user: user,
+                waiting: status.waiters.filter { $0.deviceIDs?.contains { $0.uppercased() == device.id } == true }.compactMap { names[$0.id] },
+                unmanaged: (status.activity?.activities ?? []).filter { $0.kind == .unmanaged && $0.deviceIDs.contains { $0.uppercased() == device.id } }
+                    .map { "\($0.tool) · PID \($0.process.pid)" },
+                crashBlocked: blocked.contains(device.id)
+            )
+        }
     }
 
     private init(leaseStatus status: LeaseStatus, now: Date) {
@@ -115,6 +162,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             error = nil
             activity = nil
             crashBlocks = []
+            devices = nil
         }
     }
 
@@ -157,8 +205,10 @@ public struct MenuDisplayState: Equatable, Sendable {
         waiters: [WaiterDisplayItem],
         error: String?,
         activity: SimulatorActivityReport? = nil,
-        crashBlocks: [CrashLoopTrigger] = []
+        crashBlocks: [CrashLoopTrigger] = [],
+        devices: [DeviceDisplayItem]? = nil
     ) {
+        self.devices = devices
         self.kind = kind
         self.menuTitle = menuTitle
         self.symbolName = symbolName

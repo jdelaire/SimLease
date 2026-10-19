@@ -52,6 +52,33 @@ final class MenuDisplayStateTests: XCTestCase {
         XCTAssertEqual(state.kind, .leased)
     }
 
+    func testDeviceRowsShowOwnerQueueAndOutsideWork() {
+        let id = "11111111-1111-4111-8111-111111111111"
+        let other = "22222222-2222-4222-8222-222222222222"
+        var queued = waiter(title: "[Set] Release validation")
+        queued = LeaseWaiter(id: queued.id, pid: queued.pid, waitingSince: queued.waitingSince, cwd: queued.cwd, project: queued.project, command: queued.command, source: queued.source, threadID: queued.threadID, threadTitle: queued.threadTitle, deviceIDs: [id.lowercased()])
+        let status = LeaseStatus(
+            state: .leased,
+            owner: owner(threadTitle: "[AnimAtlas] Onboarding"),
+            waiters: [queued],
+            error: nil,
+            activity: SimulatorActivityReport(activities: [SimulatorActivity(process: ProcessReference(pid: 42, startMicroseconds: 1), tool: "simctl", kind: .unmanaged, deviceIDs: [other])]),
+            crashBlocks: [CrashLoopTrigger(deviceID: other, scopeID: "scope", processName: "App", signature: "sig", occurredAt: Date())],
+            devices: [
+                SimulatorUsage(id: id, name: "iPhone 17 Pro", runtime: "iOS 27.2", state: "Booted", reservation: .owned),
+                SimulatorUsage(id: other, name: "iPhone Air", runtime: "iOS 27.1", state: "Booted", reservation: .unreserved),
+            ]
+        )
+
+        let devices = MenuDisplayState(status: status, now: Date()).devices
+
+        XCTAssertEqual(devices, [
+            DeviceDisplayItem(id: id, name: "iPhone 17 Pro", detail: "iOS 27.2 · Booted", reservation: .owned, user: "[AnimAtlas] Onboarding · shuts down after", waiting: ["[Set] Release validation"], unmanaged: [], crashBlocked: false),
+            DeviceDisplayItem(id: other, name: "iPhone Air", detail: "iOS 27.1 · Booted", reservation: .unreserved, user: "No SimLease reservation", waiting: [], unmanaged: ["simctl · PID 42"], crashBlocked: true),
+        ])
+        XCTAssertNil(MenuDisplayState(status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil), now: Date()).devices)
+    }
+
     func testMissingTitleUsesEightCharacterThreadID() {
         let status = LeaseStatus(
             state: .leased,

@@ -65,7 +65,8 @@ public final class LeaseCoordinator: @unchecked Sendable {
         onWaitReport: @escaping @Sendable (LeaseStatus) -> Void = { _ in },
         cancellationSignal: @escaping @Sendable () -> Int32? = { nil },
         allowUnfinishedTask: Bool = false,
-        allowUnfinishedRepair: Bool = false
+        allowUnfinishedRepair: Bool = false,
+        deviceIDs: [String] = []
     ) throws -> LeaseHandle {
         let started = clock.monotonicNow()
         var nextReport = timing.reportInterval
@@ -79,7 +80,8 @@ public final class LeaseCoordinator: @unchecked Sendable {
             command: identity.command,
             source: identity.source,
             threadID: identity.threadID,
-            threadTitle: identity.threadTitle
+            threadTitle: identity.threadTitle,
+            deviceIDs: deviceIDs.isEmpty ? nil : deviceIDs
         )
 
         try store.writeWaiter(waiter)
