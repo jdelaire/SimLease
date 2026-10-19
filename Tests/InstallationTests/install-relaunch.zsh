@@ -21,6 +21,7 @@ mkdir -p "$source_app/Contents/MacOS"
 /bin/cp /bin/sleep "$source_app/Contents/MacOS/SimLeaseMenuBar"
 /usr/bin/install -m 0644 Resources/SimLease-Info.plist \
   "$source_app/Contents/Info.plist"
+/usr/bin/codesign --force --sign - "$source_app"
 
 {
   print -- '#!/bin/zsh'
@@ -51,7 +52,13 @@ env "${install_environment[@]}" scripts/install.sh >/dev/null
 if kill -0 "$old_pid" 2>/dev/null; then
   fail "old app process survived update"
 fi
+set +e
+wait "$old_pid"
+fixture_exit=$?
+set -e
 old_pid=""
+[[ "$fixture_exit" == 143 ]] \
+  || fail "fixture app did not exit from installer SIGTERM: $fixture_exit"
 
 grep -q "^bootout gui/$(id -u)/com.jdelaire.simlease$" "$launchctl_log" \
   || fail "loaded LaunchAgent was not booted out"
