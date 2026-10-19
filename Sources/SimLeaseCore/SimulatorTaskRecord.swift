@@ -37,6 +37,7 @@ public struct SimulatorTaskRecord: Codable, Equatable, Sendable {
     public var externalSessionID: String?
     public var externalWorkSettled: Bool?
     public var nativeClients: [ProcessReference]?
+    public var crashScopeID: String?
 
     public init(
         token: String, owner: ProcessReference, deviceIDs: [String],

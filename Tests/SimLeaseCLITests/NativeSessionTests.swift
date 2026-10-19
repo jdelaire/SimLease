@@ -4,6 +4,17 @@ import XCTest
 import SimLeaseCore
 
 final class NativeSessionTests: XCTestCase {
+    func testCrashBlockedNativeClientCanStillShutdownAndSettle() throws {
+        let fixture = try NativeFixture()
+        let (keeper, _, record) = try fixture.begin(clientPID: getpid())
+        try CrashLoopStore(paths: fixture.paths).blockInfrastructureFailure(deviceID: fixture.device)
+        XCTAssertEqual(try fixture.callShim(["simctl", "boot", fixture.device]), 74)
+        XCTAssertEqual(try fixture.callShim(["simctl", "list", "devices", "--json"]), 0)
+        XCTAssertEqual(try fixture.callShim(["simctl", "shutdown", fixture.device]), 0)
+        XCTAssertEqual(try fixture.call(["session", "finish", record.externalSessionID!, "--settled"]), 0)
+        XCTAssertEqual(try fixture.exit(keeper), 0)
+        XCTAssertNil(try SimulatorTaskStore(paths: fixture.paths).read())
+    }
     func testUnboundInventoryQueryDoesNotWaitOrShutdownInteractiveDevice() throws {
         let fixture = try NativeFixture()
         let (keeper, _, record) = try fixture.begin()

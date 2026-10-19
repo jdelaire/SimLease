@@ -15,6 +15,7 @@ enum CoverageDoctor {
         let coordinator = LeaseCoordinator(paths: configuration.paths, store: try MetadataStore(paths: configuration.paths))
         let activity = SimulatorActivityAudit().scan(lease: try coordinator.status(), task: journal)
         let clients = activity.nativeClients ?? []
+        let blocks = try CrashLoopStore(paths: configuration.paths).read().blocks.values.sorted { $0.deviceID < $1.deviceID }
         let binding = clients.flatMap { ["--client-pid", String($0.process.pid)] }
         let recipe = NativeRecipe(
             begin: ["simlease", "session", "begin", "--device", "UUID"] + binding + ["--title", "TITLE", "--project", "PROJECT"],
@@ -22,11 +23,12 @@ enum CoverageDoctor {
             client: "Wait for ready JSON, call device_open, then use its absolute agent-device launcher with every returned device/config/session flag. Bare PATH commands outside the owner still queue; do not nest another simlease run."
         )
         let processes = activity.activities.filter { $0.kind == .unmanaged }.map { ToolProcess(pid: $0.process.pid, executable: $0.tool) }
-        let report = Report(commands: commands, unmanagedProcesses: processes, activity: activity, nativeSessionRecipe: recipe, limitations: [
+        let report = Report(commands: commands, unmanagedProcesses: processes, activity: activity, crashBlocks: blocks, nativeSessionRecipe: recipe, limitations: [
             "Absolute executable paths require simlease run; GUI/MCP work requires an explicit native session.",
             "The process audit detects known running tool binaries; it cannot prove that every launch path is coordinated.",
             "Native sessions require explicit external settlement; client exit alone cannot prove daemon work has finished.",
             "Periodic snapshots miss short-lived commands and cannot prove that persistent daemons or capture helpers are idle.",
+            "Crash reports can arrive late; crash limits cannot guarantee immediate popup suppression. Healthy boot checks do not prove app crashes fixed.",
         ])
         if json {
             configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(report), as: UTF8.self) + "\n")
@@ -36,6 +38,9 @@ enum CoverageDoctor {
             }
             for process in processes {
                 configuration.standardOutput("Unmanaged PID \(process.pid): \(process.executable)\n")
+            }
+            for block in blocks {
+                configuration.standardOutput("Crash blocked: \(block.processName), device \(block.deviceID); inspect the cause, then simlease device repair --device \(block.deviceID) --acknowledge-crashes\n")
             }
             for client in clients {
                 configuration.standardOutput("Known GUI/MCP client: \(client.role.rawValue) PID \(client.process.pid), start \(client.process.startMicroseconds) [\(client.bound ? "bound" : "unbound")]\n")
@@ -65,6 +70,7 @@ enum CoverageDoctor {
         let commands: [Command]
         let unmanagedProcesses: [ToolProcess]
         let activity: SimulatorActivityReport
+        let crashBlocks: [CrashLoopTrigger]
         let nativeSessionRecipe: NativeRecipe
         let limitations: [String]
     }

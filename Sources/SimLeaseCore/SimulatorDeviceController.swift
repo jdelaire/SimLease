@@ -36,7 +36,7 @@ public struct SimulatorDeviceController: SimulatorDeviceControlling {
         throw SimulatorTaskError.commandTimedOut("shutdown \(id)")
     }
 
-    private func command(_ arguments: [String]) throws -> String {
+    func command(_ arguments: [String], timeout limit: TimeInterval? = nil) throws -> String {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -55,7 +55,7 @@ public struct SimulatorDeviceController: SimulatorDeviceControlling {
         process.standardError = errors
         try process.run()
         let reference = ProcessReference.capture(pid: process.processIdentifier)
-        let deadline = Date(timeIntervalSinceNow: timeout)
+        let deadline = Date(timeIntervalSinceNow: limit ?? timeout)
         while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.03) }
         if process.isRunning {
             if reference?.state == .matching { process.terminate() }
@@ -64,10 +64,17 @@ public struct SimulatorDeviceController: SimulatorDeviceControlling {
             if process.isRunning, reference?.state == .matching {
                 _ = kill(process.processIdentifier, SIGKILL)
             }
+            let finalDeadline = Date(timeIntervalSinceNow: 3)
+            while process.isRunning && Date() < finalDeadline { Thread.sleep(forTimeInterval: 0.03) }
+            guard !process.isRunning else { throw SimulatorTaskError.unverifiedProcess(process.processIdentifier) }
+            process.waitUntilExit()
             throw SimulatorTaskError.commandTimedOut(arguments.joined(separator: " "))
         }
         process.waitUntilExit()
-        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+        guard process.terminationReason == .exit else {
+            throw DeviceManagementError.unsettled("simctl terminated by signal \(process.terminationStatus)")
+        }
+        guard process.terminationStatus == 0 else {
             let message = String(decoding: try Data(contentsOf: errorURL), as: UTF8.self)
             throw SimulatorTaskError.commandFailed("simctl failed: \(message)")
         }

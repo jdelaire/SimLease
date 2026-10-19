@@ -33,6 +33,10 @@ public final class MenuViewModel: ObservableObject {
 
     public var copyDetailsText: String {
         var lines = [leaseDetailsText]
+        for block in state.crashBlocks {
+            lines.append("Crash blocked: \(block.processName) on \(block.deviceID)")
+            lines.append("Inspect crash cause, then simlease device repair --device \(block.deviceID) --acknowledge-crashes")
+        }
         if let activity = state.activity {
             for item in activity.activities {
                 lines.append("\(item.kind.rawValue): \(item.tool) PID \(item.process.pid)")

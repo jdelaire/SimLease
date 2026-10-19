@@ -5,16 +5,19 @@ public final class SimulatorTaskService: Sendable {
     private let devices: any SimulatorDeviceControlling
     private let timing: LeaseTiming
     private let report: @Sendable (String) -> Void
+    private let crashReportDirectory: URL
 
     public init(
         paths: LeasePaths, devices: any SimulatorDeviceControlling,
         timing: LeaseTiming = .production,
-        report: @escaping @Sendable (String) -> Void = { _ in }
+        report: @escaping @Sendable (String) -> Void = { _ in },
+        crashReportDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
     ) {
         self.paths = paths
         self.devices = devices
         self.timing = timing
         self.report = report
+        self.crashReportDirectory = crashReportDirectory
     }
 
     public func run(
@@ -46,6 +49,10 @@ public final class SimulatorTaskService: Sendable {
             throw SimulatorTaskError.unverifiedProcess(client.pid)
         }
         let ids = Array(Set(deviceIDs.map { $0.uppercased() })).sorted()
+        let crashes = CrashLoopStore(paths: paths)
+        let source = CrashReportSource(directory: crashReportDirectory)
+        _ = try crashes.ingest(source.scan(), now: Date())
+        if !CrashLoopStore.permitsCleanup([executable.path] + arguments) { try crashes.requireHealthy(ids) }
         let states = ids.isEmpty ? [:] : try devices.states()
         for id in ids where states[id] == nil { throw SimulatorTaskError.unknownDevice(id) }
         var record = SimulatorTaskRecord(
@@ -55,6 +62,8 @@ public final class SimulatorTaskService: Sendable {
         record.externalSessionID = externalSessionID
         record.externalWorkSettled = externalSessionID == nil ? nil : false
         record.nativeClients = nativeClients.isEmpty ? nil : nativeClients
+        let crashScopeID = UUID().uuidString
+        record.crashScopeID = crashScopeID
         let store = SimulatorTaskStore(paths: paths)
         try store.write(record)
         var childEnvironment = environment
@@ -62,6 +71,9 @@ public final class SimulatorTaskService: Sendable {
         childEnvironment["SIMLEASE_TOKEN"] = record.token
         var code: Int32 = 74
         var jobError: Error?
+        var stoppedForCrash = false
+        var lastScan: TimeInterval = 0
+        var monitoringErrorReported = false
         do {
             code = try TaskProcessRunner.run(
                 executable: executable, arguments: arguments, environment: childEnvironment,
@@ -73,12 +85,32 @@ public final class SimulatorTaskService: Sendable {
                     record.child = child
                     record.phase = .running
                     try store.write(record)
+                    try crashes.beginScope(id: crashScopeID, deviceIDs: record.ownedDeviceIDs, startedAt: Date())
                     try onStarted(record)
                 },
                 onExit: { _, code in
                     record.exitCode = code
                     record.phase = .cleaning
                     try store.write(record)
+                },
+                onPoll: {
+                    let uptime = ProcessInfo.processInfo.systemUptime
+                    guard uptime - lastScan >= 1 else { return }
+                    lastScan = uptime
+                    do {
+                        for trigger in try crashes.ingest(source.scan(), now: Date()) {
+                            report("SimLease: repeated \(trigger.processName) crashes blocked \(trigger.deviceID)\n")
+                            if trigger.scopeID == crashScopeID, externalSessionID == nil {
+                                stoppedForCrash = true
+                                signals.cancel()
+                            }
+                        }
+                    } catch {
+                        if !monitoringErrorReported {
+                            report("SimLease: crash inspection unavailable; \(error)\n")
+                            monitoringErrorReported = true
+                        }
+                    }
                 }
             )
         } catch let error as TaskProcessCleanupError {
@@ -87,6 +119,7 @@ public final class SimulatorTaskService: Sendable {
         } catch {
             jobError = error
         }
+        if stoppedForCrash { code = 70 }
         do {
             try finish(&record)
         } catch {
@@ -144,6 +177,7 @@ public final class SimulatorTaskService: Sendable {
                 }
             }
             if record.externalSessionID != nil { try NativeSettlementStore(paths: paths).remove(record) }
+            if let scopeID = record.crashScopeID { try CrashLoopStore(paths: paths).endScope(id: scopeID, endedAt: Date()) }
             try store.remove()
         } catch {
             record.phase = .quarantined

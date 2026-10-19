@@ -2,6 +2,18 @@ import XCTest
 @testable import SimLeaseCLI
 
 final class CommandParserTests: XCTestCase {
+    func testDisposableCreationRequiresExplicitOptInAndRecoveryRequiresUUID() throws {
+        let type = "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro"
+        let runtime = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
+        let create = ["simlease", "device", "create", "--name", "Disposable", "--type", type, "--runtime", runtime]
+        XCTAssertThrowsError(try CommandParser.parse(create))
+        XCTAssertEqual(try CommandParser.parse(create + ["--disposable"]), .deviceCreate(name: "Disposable", deviceType: type, runtime: runtime))
+        let id = "11111111-1111-4111-8111-111111111111"
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "repair", "--device", id, "--settled", "--acknowledge-crashes", "--json"]), .deviceRepair(id, settled: true, acknowledgeCrashes: true))
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "repair", "--device", "booted"]))
+        XCTAssertThrowsError(try CommandParser.parse(create + ["--disposable", "--disposable"]))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "recover", "--settled"]), .deviceRecover)
+    }
     func testNativeBindingsRequireExplicitValidPIDs() throws {
         let base = ["simlease", "session", "begin", "--device", "11111111-1111-4111-8111-111111111111", "--title", "UI", "--project", "App"]
         XCTAssertEqual(try CommandParser.parse(base + ["--client-pid", "123"]), .sessionBegin(title: "UI", project: "App", deviceIDs: ["11111111-1111-4111-8111-111111111111"], clientPIDs: [123]))

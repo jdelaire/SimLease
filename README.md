@@ -211,6 +211,84 @@ Name the current Codex thread so waiters can identify it:
 simlease name "[Project] Simulator validation"
 ```
 
+## Repeated crashes and device recovery
+
+Managed jobs inspect simulator app and test-runner crash reports. Two matching
+crashes from the same executable build within 120 seconds block new work on
+that device. Matching uses the crash event and process launch times, not the
+report file's modification time. History spans jobs and ignores duplicate
+incidents. SimLease stops only its current owned terminal child group when the
+triggering crash belongs to that scope, then runs normal owned-device cleanup.
+Borrowed and `--keep-running` devices are not automatically interrupted.
+
+Native sessions warn and reject new unsafe shimmed calls after a crash block.
+Queries, termination, shutdown and explicit settlement remain available. They
+never kill a shared daemon or attest settlement. Calls sent directly to an
+already-running native daemon cannot be intercepted by PATH; stop submitting
+requests when the session reports a crash block and settle all external work.
+Crash reports may arrive late, so this cannot guarantee immediate prevention
+of every crash dialog. SimLease does not disable macOS crash reporting.
+
+The menu, `status --json`, and `doctor` show crash blocks. Evidence is bounded
+to the latest 256 owned scopes and 512 attributed incidents. The reader polls
+at most once per second and reads at most 64 changed reports per scan. Missing
+or unreadable reports limit detection. Successful boot checks do not establish
+that an app or test-runner crash was fixed.
+
+Create a fresh device that SimLease may replace if its boot health later fails:
+
+```sh
+simlease device create --name "Disposable UI tests" \
+  --type com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro \
+  --runtime com.apple.CoreSimulator.SimRuntime.iOS-27-2 --disposable
+```
+
+Use the returned `deviceID` as the explicit target for later managed jobs.
+Existing devices are never silently enrolled as disposable.
+
+After work has finished and the device is Shutdown:
+
+```sh
+simlease device repair --device DEVICE-UUID
+```
+
+Repair owns the lane, checks boot completion, shuts down and retries boot once
+after an infrastructure failure. It refuses live, unavailable or paired
+targets. If both attempts fail, only an unchanged registered disposable device
+can be replaced. The replacement retains the runtime and device type and must
+boot successfully and be Shutdown before the original is deleted. Replacement
+starts with fresh data. JSON returns `state: "replaced"`, the new `deviceID`
+and `replacedDeviceID`. Update the next job's target explicitly; SimLease does
+not rewrite commands or T3 sessions. Persistent devices are never deleted.
+
+App crashes alone do not trigger replacement. A healthy repair preserves app
+crash blocks unless the caller explicitly allows another attempt after
+investigating the cause:
+
+```sh
+simlease device repair --device DEVICE-UUID --acknowledge-crashes
+```
+
+This retains incident history. It does not claim that the app crash is fixed.
+Device recovery cannot nest inside a managed job or bound native client.
+
+Interrupted or uncertain recovery operations retain a transaction and block
+new jobs, cleanup and ordinary `recover`. Confirm that the previous recovery
+commands and their background work have finished before resuming:
+
+```sh
+simlease device repair --device ORIGINAL-UUID --settled
+```
+
+To abandon a recovery while preserving its devices, use
+`simlease device recover --settled`. Every recorded existing device must be
+Shutdown. The command blocks those targets pending inspection and never deletes
+them. An unregistered orphan from an interrupted creation is also preserved.
+Never use `--settled` after uncertain cancellation. Recovery never deletes a
+device whose identity was not recorded and verified. Jobs already running at
+installation keep their earlier implementation; wait for those jobs to finish
+before using the new recovery commands.
+
 ## Xcode storage cleanup
 
 Review without deleting:

@@ -10,7 +10,8 @@ public enum TaskProcessRunner {
     public static func run(
         executable: URL, arguments: [String], environment: [String: String],
         signals: TaskSignals, onStart: (ProcessReference) throws -> Void,
-        onExit: (ProcessReference, Int32) throws -> Void = { _, _ in }
+        onExit: (ProcessReference, Int32) throws -> Void = { _, _ in },
+        onPoll: () -> Void = {}
     ) throws -> Int32 {
         var attributes: posix_spawnattr_t?
         var code = posix_spawnattr_init(&attributes)
@@ -80,6 +81,7 @@ public enum TaskProcessRunner {
                 observedExit = info.si_code == CLD_EXITED ? info.si_status : 128 + info.si_status
                 break
             }
+            onPoll()
             if let number = signals.current {
                 if forwardedAt == nil {
                     try signalGroup(reference, signal: number, retainedChild: true)

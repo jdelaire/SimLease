@@ -3,6 +3,14 @@ import XCTest
 @testable import SimLeaseMenuCore
 
 final class MenuDisplayStateTests: XCTestCase {
+    func testCrashBlockTakesPriorityOverIncompleteAuditWithoutLosingLeaseState() {
+        let block = CrashLoopTrigger(deviceID: "11111111-1111-4111-8111-111111111111", scopeID: "scope", processName: "App", signature: "build", occurredAt: Date())
+        let status = LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, activity: SimulatorActivityReport(uninspectedProcessCount: 2), crashBlocks: [block])
+        let display = MenuDisplayState(status: status, now: Date())
+        XCTAssertEqual(display.menuTitle, "Simulator · Crash blocked")
+        XCTAssertEqual(display.crashBlocks, [block])
+        XCTAssertEqual(display.kind, .free)
+    }
     func testLeasedStateUsesTitleAndWaiters() {
         let status = LeaseStatus(
             state: .leased,

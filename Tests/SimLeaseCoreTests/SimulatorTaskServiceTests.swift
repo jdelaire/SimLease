@@ -4,6 +4,50 @@ import XCTest
 @testable import SimLeaseCore
 
 final class SimulatorTaskServiceTests: XCTestCase {
+    func testCrashLimitStopsOwnedJobEvenWhenTerminationHandlerExitsZero() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let directory = fixture.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let service = SimulatorTaskService(paths: fixture.paths, devices: fixture.devices, crashReportDirectory: directory)
+        let started = Date()
+        let code = try service.run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "trap 'exit 0' TERM; printf Booted > \"$1\"; n=0; while [ \"$n\" -lt 100 ]; do /bin/sleep 0.05; n=$((n+1)); done", "job", fixture.devices.path(fixture.owned).path],
+            deviceIDs: [fixture.owned], keepRunning: false, environment: [:], identity: fixture.identity,
+            onStarted: { _ in
+                try writeCrashReports(directory: directory, device: fixture.owned)
+            }
+        )
+        XCTAssertNotEqual(code, 0)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 8)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+        XCTAssertNil(try fixture.store.read())
+        XCTAssertThrowsError(try CrashLoopStore(paths: fixture.paths).requireHealthy([fixture.owned]))
+    }
+
+    func testBlockedNativeScopeCanSettleWithoutKillingSharedClient() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let crashes = CrashLoopStore(paths: fixture.paths)
+        let settlements = NativeSettlementStore(paths: fixture.paths)
+        let code = try fixture.service.run(
+            executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: [], deviceIDs: [fixture.owned],
+            keepRunning: false, environment: [:], identity: fixture.identity, externalSessionID: UUID().uuidString,
+            onStarted: { record in
+                let now = Date()
+                _ = try crashes.ingest([
+                    SimulatorCrashReport(incidentID: "one", deviceID: fixture.owned, occurredAt: now, launchedAt: now, signature: "same", processName: "App"),
+                    SimulatorCrashReport(incidentID: "two", deviceID: fixture.owned, occurredAt: now, launchedAt: now, signature: "same", processName: "App"),
+                ], now: now)
+                try settlements.acknowledge(record)
+            }
+        )
+        XCTAssertEqual(code, 0)
+        XCTAssertNil(try fixture.store.read())
+        XCTAssertThrowsError(try crashes.requireHealthy([fixture.owned]))
+    }
+
     func testUnsettledNativeWorkCannotShutdownOrRecover() throws {
         let fixture = try TaskFixture()
         defer { fixture.remove() }
@@ -192,6 +236,24 @@ final class SimulatorTaskServiceTests: XCTestCase {
 
         XCTAssertThrowsError(try fixture.service.recover(identity: fixture.identity))
         XCTAssertEqual(try fixture.devices.state(fixture.owned), "Booted")
+    }
+}
+
+private func writeCrashReports(directory: URL, device: String) throws {
+    let date = DateFormatter()
+    date.locale = Locale(identifier: "en_US_POSIX")
+    date.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSSSS Z"
+    let now = date.string(from: Date())
+    for id in ["one", "two"] {
+        let body: [String: Any] = [
+            "incident": id, "procName": "App", "captureTime": now, "procLaunch": now,
+            "procPath": "/Users/USER/Library/Developer/CoreSimulator/Devices/\(device)/data/App.app/App",
+            "coalitionName": "com.apple.CoreSimulator.SimDevice.\(device)",
+            "exception": ["type": "EXC_BAD_ACCESS", "signal": "SIGSEGV"], "faultingThread": 0,
+            "threads": [["frames": [["symbol": "crash", "imageIndex": 0]]]],
+            "usedImages": [["name": "App", "uuid": "build"]],
+        ]
+        try JSONSerialization.data(withJSONObject: body).write(to: directory.appendingPathComponent(id + ".ips"))
     }
 }
 

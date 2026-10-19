@@ -5,6 +5,9 @@ enum ParsedCommand: Equatable {
     case update
     case run(deviceIDs: [String], keepRunning: Bool, command: [String])
     case recover
+    case deviceCreate(name: String, deviceType: String, runtime: String)
+    case deviceRepair(String, settled: Bool, acknowledgeCrashes: Bool)
+    case deviceRecover
     case sessionBegin(title: String, project: String, deviceIDs: [String], clientPIDs: [Int32] = [])
     case sessionFinish(String)
     case nativeWait(String)
@@ -34,6 +37,8 @@ enum CommandParser {
         }
 
         switch arguments[1] {
+        case "device":
+            return try parseDevice(Array(arguments.dropFirst(2)))
         case "session":
             guard arguments.indices.contains(2) else { throw CommandParserError.usage }
             if arguments[2] == "finish" {
@@ -216,6 +221,41 @@ enum CommandParser {
     private static func validPlanID(_ id: String) -> Bool {
         id.utf8.count == 6 && id.utf8.allSatisfy {
             (65...90).contains($0) || (48...57).contains($0)
+        }
+    }
+
+    private static func parseDevice(_ arguments: [String]) throws -> ParsedCommand {
+        guard let action = arguments.first else { throw CommandParserError.usage }
+        var values = [String: String]()
+        var flags = Set<String>()
+        var index = 1
+        while index < arguments.count {
+            let key = arguments[index]
+            if ["--disposable", "--settled", "--acknowledge-crashes", "--json"].contains(key) {
+                guard flags.insert(key).inserted else { throw CommandParserError.usage }
+                index += 1
+            } else {
+                guard ["--name", "--type", "--runtime", "--device"].contains(key), values[key] == nil,
+                      arguments.indices.contains(index + 1), !arguments[index + 1].isEmpty,
+                      !arguments[index + 1].hasPrefix("--") else { throw CommandParserError.usage }
+                values[key] = arguments[index + 1]
+                index += 2
+            }
+        }
+        switch action {
+        case "create":
+            guard values.count == 3, let name = values["--name"], let type = values["--type"], let runtime = values["--runtime"],
+                  type.hasPrefix("com.apple.CoreSimulator.SimDeviceType."), runtime.hasPrefix("com.apple.CoreSimulator.SimRuntime."),
+                  flags.contains("--disposable"), flags.isSubset(of: ["--disposable", "--json"]) else { throw CommandParserError.usage }
+            return .deviceCreate(name: name, deviceType: type, runtime: runtime)
+        case "repair":
+            guard values.count == 1, let value = values["--device"], let id = UUID(uuidString: value),
+                  flags.isSubset(of: ["--settled", "--acknowledge-crashes", "--json"]) else { throw CommandParserError.usage }
+            return .deviceRepair(id.uuidString, settled: flags.contains("--settled"), acknowledgeCrashes: flags.contains("--acknowledge-crashes"))
+        case "recover":
+            guard values.isEmpty, flags.contains("--settled"), flags.isSubset(of: ["--settled", "--json"]) else { throw CommandParserError.usage }
+            return .deviceRecover
+        default: throw CommandParserError.usage
         }
     }
 }

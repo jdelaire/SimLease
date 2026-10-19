@@ -32,6 +32,12 @@ public final class NativeClientAdmission {
             throw SimulatorTaskError.commandFailed("native session does not hold the lane")
         }
         try validate(invocation: invocation, deviceIDs: record.deviceIDs)
+        if !CrashLoopStore.permitsCleanup(invocation) {
+            guard !FileManager.default.fileExists(atPath: paths.deviceRecovery.path) else {
+                throw SimulatorTaskError.unfinishedTask("device recovery is unresolved")
+            }
+            try CrashLoopStore(paths: paths).requireHealthy(record.deviceIDs)
+        }
         return NativeClientAdmission(gate: gate)
     }
 

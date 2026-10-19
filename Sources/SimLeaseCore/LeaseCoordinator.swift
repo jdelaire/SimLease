@@ -64,7 +64,8 @@ public final class LeaseCoordinator: @unchecked Sendable {
         identity: LeaseIdentity,
         onWaitReport: @escaping @Sendable (LeaseStatus) -> Void = { _ in },
         cancellationSignal: @escaping @Sendable () -> Int32? = { nil },
-        allowUnfinishedTask: Bool = false
+        allowUnfinishedTask: Bool = false,
+        allowUnfinishedRepair: Bool = false
     ) throws -> LeaseHandle {
         let started = clock.monotonicNow()
         var nextReport = timing.reportInterval
@@ -85,7 +86,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
         defer { try? store.removeWaiter(id: waiter.id) }
 
         while true {
-            if let handle = try tryAcquire(identity: identity, allowUnfinishedTask: allowUnfinishedTask) {
+            if let handle = try tryAcquire(identity: identity, allowUnfinishedTask: allowUnfinishedTask, allowUnfinishedRepair: allowUnfinishedRepair) {
                 try store.removeWaiter(id: waiter.id)
                 return handle
             }
@@ -106,7 +107,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
         }
     }
 
-    public func tryAcquire(identity: LeaseIdentity, allowUnfinishedTask: Bool = false) throws -> LeaseHandle? {
+    public func tryAcquire(identity: LeaseIdentity, allowUnfinishedTask: Bool = false, allowUnfinishedRepair: Bool = false) throws -> LeaseHandle? {
         guard let descriptor = try HostLaneLock.acquire(paths: paths) else {
             return nil
         }
@@ -122,6 +123,9 @@ public final class LeaseCoordinator: @unchecked Sendable {
             threadTitle: identity.threadTitle
         )
         do {
+            if !allowUnfinishedRepair, FileManager.default.fileExists(atPath: paths.deviceRecovery.path) {
+                throw SimulatorTaskError.unfinishedTask("device recovery is unresolved; resume simlease device repair with --settled")
+            }
             if !allowUnfinishedTask, let record = try SimulatorTaskStore(paths: paths).read() {
                 throw SimulatorTaskError.unfinishedTask(record.failure ?? record.phase.rawValue)
             }
@@ -165,6 +169,9 @@ public final class LeaseCoordinator: @unchecked Sendable {
         }
 
         if isFree {
+            if FileManager.default.fileExists(atPath: paths.deviceRecovery.path) {
+                return LeaseStatus(state: .metadataError, owner: owner, waiters: waiters, error: "unfinished device recovery; resume simlease device repair with --settled")
+            }
             do {
                 if let record = try SimulatorTaskStore(paths: paths).read() {
                     return LeaseStatus(state: .metadataError, owner: owner, waiters: waiters, error: "unfinished task \(record.token): \(record.failure ?? record.phase.rawValue); run simlease recover")

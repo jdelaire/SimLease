@@ -46,6 +46,7 @@ public struct MenuDisplayState: Equatable, Sendable {
     public let waiters: [WaiterDisplayItem]
     public let error: String?
     public let activity: SimulatorActivityReport?
+    public let crashBlocks: [CrashLoopTrigger]
 
     public var waiterNames: [String] {
         waiters.map(\.name)
@@ -56,6 +57,7 @@ public struct MenuDisplayState: Equatable, Sendable {
         let activity = status.activity
         let title: String
         if status.state == .metadataError { title = base.menuTitle }
+        else if status.crashBlocks?.isEmpty == false { title = "Simulator · Crash blocked" }
         else if activity?.activities.contains(where: { $0.kind == .unmanaged }) == true { title = "Simulator · Unmanaged" }
         else if activity?.isIncomplete == true { title = "Simulator · Audit incomplete" }
         else if activity?.activities.isEmpty == false { title = "Simulator · Unverified" }
@@ -64,7 +66,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             kind: base.kind, menuTitle: title,
             symbolName: title != base.menuTitle ? "exclamationmark.triangle.fill" : base.symbolName,
             ownerName: base.ownerName, projectAndSource: base.projectAndSource,
-            command: base.command, elapsed: base.elapsed, waiters: base.waiters, error: base.error, activity: activity
+            command: base.command, elapsed: base.elapsed, waiters: base.waiters, error: base.error, activity: activity, crashBlocks: status.crashBlocks ?? []
         )
     }
 
@@ -112,6 +114,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             }
             error = nil
             activity = nil
+            crashBlocks = []
         }
     }
 
@@ -153,7 +156,8 @@ public struct MenuDisplayState: Equatable, Sendable {
         elapsed: String?,
         waiters: [WaiterDisplayItem],
         error: String?,
-        activity: SimulatorActivityReport? = nil
+        activity: SimulatorActivityReport? = nil,
+        crashBlocks: [CrashLoopTrigger] = []
     ) {
         self.kind = kind
         self.menuTitle = menuTitle
@@ -165,6 +169,7 @@ public struct MenuDisplayState: Equatable, Sendable {
         self.waiters = waiters
         self.error = error
         self.activity = activity
+        self.crashBlocks = crashBlocks
     }
 
     private static func elapsed(from start: Date, to end: Date) -> String {

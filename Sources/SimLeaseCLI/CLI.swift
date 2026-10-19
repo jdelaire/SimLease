@@ -10,6 +10,8 @@ public struct CLIConfiguration: Sendable {
     public let standardError: @Sendable (String) -> Void
     public let cleanupService: (any CleanupServicing)?
     public let updateRunner: (any UpdateRunning)?
+    public let deviceManager: (any SimulatorDeviceManaging)?
+    public let crashReportDirectory: URL?
 
     public init(
         paths: LeasePaths,
@@ -17,7 +19,9 @@ public struct CLIConfiguration: Sendable {
         standardOutput: @escaping @Sendable (String) -> Void,
         standardError: @escaping @Sendable (String) -> Void,
         cleanupService: (any CleanupServicing)? = nil,
-        updateRunner: (any UpdateRunning)? = nil
+        updateRunner: (any UpdateRunning)? = nil,
+        deviceManager: (any SimulatorDeviceManaging)? = nil,
+        crashReportDirectory: URL? = nil
     ) {
         self.paths = paths
         self.timing = timing
@@ -25,6 +29,8 @@ public struct CLIConfiguration: Sendable {
         self.standardError = standardError
         self.cleanupService = cleanupService
         self.updateRunner = updateRunner
+        self.deviceManager = deviceManager
+        self.crashReportDirectory = crashReportDirectory
     }
 
     public static let production = CLIConfiguration(
@@ -98,6 +104,20 @@ public enum SimLeaseCLI {
                 try taskService(environment: environment, configuration: configuration).recover(identity: identity)
                 configuration.standardOutput("SimLease: recovery complete\n")
                 return 0
+            case .deviceCreate(let name, let type, let runtime):
+                let service = try deviceService(arguments: arguments, environment: environment, configuration: configuration)
+                let result = try service.create(name: name, deviceType: type, runtime: runtime)
+                configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(result), as: UTF8.self) + "\n")
+                return 0
+            case .deviceRepair(let id, let settled, let acknowledge):
+                let service = try deviceService(arguments: arguments, environment: environment, configuration: configuration)
+                let result = try service.repair(deviceID: id, settled: settled, acknowledgeCrashes: acknowledge)
+                configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(result), as: UTF8.self) + "\n")
+                return 0
+            case .deviceRecover:
+                try deviceService(arguments: arguments, environment: environment, configuration: configuration).recoverCreation(settled: true)
+                configuration.standardOutput("{\"state\":\"recovered\",\"note\":\"Recorded devices were preserved; inspect crash blocks before reuse\"}\n")
+                return 0
             case .sessionBegin(let title, let project, let ids, let clientPIDs):
                 let id = UUID().uuidString
                 let clients = try NativeClientAdmission.capture(pids: clientPIDs)
@@ -166,7 +186,7 @@ public enum SimLeaseCLI {
             }
         } catch CommandParserError.usage {
             configuration.standardError(
-                "Usage: simlease <run|session|recover|doctor|status|name|hold|clean|update|--version>\n"
+                "Usage: simlease <run|session|device|recover|doctor|status|name|hold|clean|update|--version>\n"
             )
             return 64
         } catch UpdateRunnerError.missingUpdater {
@@ -384,11 +404,14 @@ public enum SimLeaseCLI {
             let report = SimulatorActivityAudit().scan(lease: status, task: try? SimulatorTaskStore(paths: configuration.paths).read())
             status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: report)
         }
+        let blocks = try CrashLoopStore(paths: configuration.paths).read().blocks.values.sorted { $0.deviceID < $1.deviceID }
+        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks)
         if json {
             let data = try JSONEncoder.simLease.encode(status)
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
         } else {
             configuration.standardOutput("\(status.state.rawValue)\n")
+            for block in blocks { configuration.standardOutput("Crash blocked: \(block.processName) on \(block.deviceID)\n") }
             if let activity = status.activity {
                 for item in activity.activities { configuration.standardOutput("\(item.kind.rawValue): \(item.tool) PID \(item.process.pid)\n") }
                 if activity.isIncomplete { configuration.standardOutput("Activity audit incomplete\n") }
@@ -444,8 +467,25 @@ public enum SimLeaseCLI {
         return SimulatorTaskService(
             paths: configuration.paths,
             devices: SimulatorDeviceController(environment: environment, xcrunURL: xcrun),
-            timing: configuration.timing, report: configuration.standardError
+            timing: configuration.timing, report: configuration.standardError,
+            crashReportDirectory: configuration.crashReportDirectory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
         )
+    }
+
+    private static func deviceService(arguments: [String], environment: [String: String], configuration: CLIConfiguration) throws -> DeviceRepairService {
+        if let record = try SimulatorTaskStore(paths: configuration.paths).read(),
+           record.owner.isAncestor(of: getpid()) || record.nativeClients?.contains(where: { $0.isAncestor(of: getpid()) }) == true {
+            throw SimulatorTaskError.commandFailed("device recovery cannot nest inside a managed job or native session; finish and settle it first")
+        }
+        let store = try MetadataStore(paths: configuration.paths)
+        let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: arguments, store: store)
+        let xcrun: URL
+        #if DEBUG || SIMLEASE_TESTING
+        xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+        #else
+        xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+        #endif
+        return DeviceRepairService(paths: configuration.paths, coordinator: try makeCoordinator(configuration: configuration), identity: identity, devices: configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun))
     }
 
     private static func runTask(
@@ -471,6 +511,10 @@ public enum SimLeaseCLI {
         let childEnvironment = ManagedToolEnvironment.make(executable: executable, arguments: arguments, environment: environment)
         if try SimulatorTaskStore(paths: configuration.paths).authorizesNestedCommand(environment: environment, pid: getpid()) {
             try SimulatorTaskStore(paths: configuration.paths).validateNestedDevices(ids)
+            if !CrashLoopStore.permitsCleanup([executable.path] + arguments) {
+                let declared = try SimulatorTaskStore(paths: configuration.paths).read()?.deviceIDs ?? []
+                try CrashLoopStore(paths: configuration.paths).requireHealthy(ids.isEmpty ? declared : ids)
+            }
             return try ChildProcessRunner.run(executable: executable, arguments: arguments, environment: childEnvironment).exitCode
         }
         let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: command, store: store)
@@ -505,7 +549,12 @@ public enum SimLeaseCLI {
         defer { withExtendedLifetime(native) {} }
         let taskDevices = nested ? (try journal.read()?.deviceIDs ?? []) : []
         let ids = SimulatorCommand.referencedDeviceIDs(in: invocation)
-        if nested { try journal.validateNestedDevices(SimulatorCommand.referencedDeviceIDs(in: invocation)) }
+        if nested {
+            try journal.validateNestedDevices(SimulatorCommand.referencedDeviceIDs(in: invocation))
+            if decision.requiresLease, !CrashLoopStore.permitsCleanup(invocation) {
+                try CrashLoopStore(paths: configuration.paths).requireHealthy(ids.isEmpty ? taskDevices : ids)
+            }
+        }
         let arguments = SimulatorCommand.argumentsForManagedTask(executable: executable.path, arguments: childArguments, hasDevices: !ids.isEmpty || !taskDevices.isEmpty)
         let childEnvironment = ManagedToolEnvironment.make(
             executable: executable, arguments: arguments, environment: environment,

@@ -8,6 +8,11 @@ struct LeasePopoverPresentation: Equatable {
     let description: String
 
     init(state: MenuDisplayState) {
+        if state.kind != .metadataError, !state.crashBlocks.isEmpty {
+            title = "Repeated simulator crashes"
+            description = "New work is blocked. Review the crash cause before allowing another attempt."
+            return
+        }
         if state.kind != .metadataError, let activity = state.activity {
             if activity.activities.contains(where: { $0.kind == .unmanaged }) {
                 title = "Unmanaged simulator work"
@@ -64,6 +69,11 @@ struct LeasePopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             statusContent
+            if let block = viewModel.state.crashBlocks.first {
+                Text("\(block.processName) · \(block.deviceID)")
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+            }
             if let activity = viewModel.state.activity, !activity.activities.isEmpty || activity.isIncomplete {
                 SimulatorActivityNotice(report: activity)
             }
@@ -234,6 +244,7 @@ struct LeasePopoverView: View {
 
     private var statusColor: Color {
         if viewModel.state.kind == .metadataError { return .red }
+        if !viewModel.state.crashBlocks.isEmpty { return .orange }
         if viewModel.state.activity?.activities.isEmpty == false || viewModel.state.activity?.isIncomplete == true {
             return .orange
         }

@@ -84,19 +84,22 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
     public let waiters: [LeaseWaiter]
     public let error: String?
     public let activity: SimulatorActivityReport?
+    public let crashBlocks: [CrashLoopTrigger]?
 
     public init(
         state: State,
         owner: LeaseOwner?,
         waiters: [LeaseWaiter],
         error: String?,
-        activity: SimulatorActivityReport? = nil
+        activity: SimulatorActivityReport? = nil,
+        crashBlocks: [CrashLoopTrigger]? = nil
     ) {
         self.state = state
         self.owner = owner
         self.waiters = waiters
         self.error = error
         self.activity = activity
+        self.crashBlocks = crashBlocks
     }
 }
 

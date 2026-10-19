@@ -4,6 +4,16 @@ import XCTest
 @testable import SimLeaseCore
 
 final class TaskProcessRunnerTests: XCTestCase {
+    func testPollingCanCancelOwnedChildGroup() throws {
+        let signals = TaskSignals()
+        var polls = 0
+        let code = try TaskProcessRunner.run(
+            executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"], environment: [:], signals: signals,
+            onStart: { _ in }, onPoll: { polls += 1; signals.cancel() }
+        )
+        XCTAssertEqual(code, 143)
+        XCTAssertGreaterThan(polls, 0)
+    }
     func testProcessEnumerationFailureCannotReportAnEmptyGroup() throws {
         XCTAssertThrowsError(try TaskProcessRunner.runningMembers(group: getpid()) { _, _ in
             errno = EACCES

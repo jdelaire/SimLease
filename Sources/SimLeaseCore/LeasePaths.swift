@@ -27,6 +27,8 @@ public struct LeasePaths: Equatable, Sendable {
         root.appendingPathComponent("task.json")
     }
 
+    public var deviceRecovery: URL { root.appendingPathComponent("device-recovery.json") }
+
     public var waiters: URL {
         root.appendingPathComponent("waiters", isDirectory: true)
     }
