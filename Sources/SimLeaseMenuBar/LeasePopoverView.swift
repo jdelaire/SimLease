@@ -102,6 +102,12 @@ struct LeasePopoverView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
                     .textSelection(.enabled)
+                if let lanes = viewModel.state.laneSummary {
+                    Text(lanes)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
             Spacer(minLength: 8)
             if let elapsed = viewModel.state.elapsed {
@@ -116,63 +122,76 @@ struct LeasePopoverView: View {
 
     private var nowRunning: some View {
         let state = viewModel.state
-        let devices = (state.devices ?? []).filter { [.owned, .borrowed].contains($0.reservation) }
+        let multiple = state.running.count > 1 || state.laneSummary != nil
         return VStack(alignment: .leading, spacing: 6) {
-            SectionTitle(text: "Now running")
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(state.ownerHeadline ?? state.ownerName ?? "Unknown job")
-                        .font(.body.weight(.semibold))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 8)
-                    if let subheadline = state.ownerSubheadline {
-                        Text(subheadline)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+            SectionTitle(text: state.running.count > 1 ? "Now running · \(state.running.count)" : "Now running")
+            ForEach(state.running) { job in
+                runningCard(job, devices: (state.devices ?? []).filter { [.owned, .borrowed].contains($0.reservation) && ($0.lane ?? 0) == job.lane }, showLane: multiple)
+            }
+        }
+    }
+
+    private func runningCard(_ job: RunningJobDisplay, devices: [DeviceDisplayItem], showLane: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(job.headline)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 8)
+                if showLane {
+                    Text(job.exclusive ? "All lanes" : "Lane \(job.lane + 1)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.blue.opacity(0.15), in: Capsule())
                 }
-                if let command = state.command {
-                    Text(command)
-                        .font(.caption.monospaced())
+                Text(job.elapsed)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Text(job.subheadline)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(job.command)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(job.command)
+                .textSelection(.enabled)
+            if let typical = job.typicalSeconds, typical > 0 {
+                VStack(alignment: .leading, spacing: 3) {
+                    ProgressView(value: min(job.elapsedSeconds / typical, 1))
+                        .tint(job.elapsedSeconds > typical ? .orange : .accentColor)
+                    Text(job.elapsedSeconds > typical
+                         ? "Longer than usual · typically ≈ \(Self.minutes(typical))"
+                         : "\(Self.minutes(job.elapsedSeconds)) of ≈ \(Self.minutes(typical)) typical")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(command)
-                        .textSelection(.enabled)
                 }
-                if let elapsed = state.ownerElapsedSeconds, let typical = state.ownerTypicalSeconds, typical > 0 {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ProgressView(value: min(elapsed / typical, 1))
-                            .tint(elapsed > typical ? .orange : .accentColor)
-                        Text(elapsed > typical
-                             ? "Longer than usual · typically ≈ \(Self.minutes(typical))"
-                             : "\(Self.minutes(elapsed)) of ≈ \(Self.minutes(typical)) typical")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if !devices.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(devices) { device in
-                            Label {
-                                Text("\(device.name) · \(device.runtime)")
-                                    + Text(device.reservation == .owned ? "  shuts down after" : "  stays running after")
-                                    .foregroundStyle(.secondary)
-                            } icon: {
-                                Image(systemName: "iphone")
-                                    .foregroundStyle(.blue)
-                            }
-                            .font(.caption)
-                            .lineLimit(1)
-                            .help(device.id)
+            }
+            if !devices.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(devices) { device in
+                        Label {
+                            Text("\(device.name) · \(device.runtime)")
+                                + Text(device.reservation == .owned ? "  shuts down after" : "  stays running after")
+                                .foregroundStyle(.secondary)
+                        } icon: {
+                            Image(systemName: "iphone")
+                                .foregroundStyle(.blue)
                         }
+                        .font(.caption)
+                        .lineLimit(1)
+                        .help(device.id)
                     }
                 }
             }
-            .card()
         }
+        .card()
     }
 
     private var queue: some View {
@@ -477,8 +496,8 @@ private struct SimulatorSection: View {
 
     private func roleLine(_ device: DeviceDisplayItem) -> String {
         switch device.reservation {
-        case .owned: "In the current job · shuts down after"
-        case .borrowed: "In the current job · stays running after"
+        case .owned: "\(device.lane.map { "Lane \($0 + 1) job" } ?? "In the current job") · shuts down after"
+        case .borrowed: "\(device.lane.map { "Lane \($0 + 1) job" } ?? "In the current job") · stays running after"
         case .warm: device.user
         case .unreserved: device.state == "Booted" ? "Booted outside SimLease" : "Shut down"
         }

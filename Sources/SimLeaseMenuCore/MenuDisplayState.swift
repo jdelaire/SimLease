@@ -57,8 +57,10 @@ public struct DeviceDisplayItem: Equatable, Sendable, Identifiable {
     public let runtime: String
     public let state: String
     public let runtimeStale: Bool
+    public let lane: Int?
 
-    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "", runtimeStale: Bool = false) {
+    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "", runtimeStale: Bool = false, lane: Int? = nil) {
+        self.lane = lane
         self.runtimeStale = runtimeStale
         self.runtime = runtime
         self.state = state
@@ -100,6 +102,30 @@ public struct MenuAlert: Equatable, Sendable, Identifiable {
     }
 }
 
+public struct RunningJobDisplay: Equatable, Sendable, Identifiable {
+    public let lane: Int
+    public let headline: String
+    public let subheadline: String
+    public let command: String
+    public let elapsed: String
+    public let elapsedSeconds: Double
+    public let typicalSeconds: Double?
+    public let exclusive: Bool
+
+    public var id: Int { lane }
+
+    public init(lane: Int, headline: String, subheadline: String, command: String, elapsed: String, elapsedSeconds: Double, typicalSeconds: Double?, exclusive: Bool) {
+        self.lane = lane
+        self.headline = headline
+        self.subheadline = subheadline
+        self.command = command
+        self.elapsed = elapsed
+        self.elapsedSeconds = elapsedSeconds
+        self.typicalSeconds = typicalSeconds
+        self.exclusive = exclusive
+    }
+}
+
 public struct MenuDisplayState: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case free
@@ -126,6 +152,8 @@ public struct MenuDisplayState: Equatable, Sendable {
     public let ownerSubheadline: String?
     public let ownerElapsedSeconds: Double?
     public let ownerTypicalSeconds: Double?
+    public let running: [RunningJobDisplay]
+    public let laneSummary: String?
 
     public var waiterNames: [String] {
         waiters.map(\.name)
@@ -178,8 +206,33 @@ public struct MenuDisplayState: Equatable, Sendable {
             nativeIdle: idle.map { "No native device commands for \(Self.minutes($0)). Finish the session if it is done." },
             alerts: status.state == .metadataError ? [] : Self.alerts(status: status, usage: usage, idle: idle),
             ownerHeadline: ownerLabels?.0, ownerSubheadline: ownerLabels?.1,
-            ownerElapsedSeconds: leased.map { max(0, now.timeIntervalSince($0.acquiredAt)) }, ownerTypicalSeconds: ownerTypical
+            ownerElapsedSeconds: leased.map { max(0, now.timeIntervalSince($0.acquiredAt)) }, ownerTypicalSeconds: ownerTypical,
+            running: base.kind == .leased ? Self.running(status: status, typical: typical, now: now) : [],
+            laneSummary: Self.laneSummary(status)
         )
+    }
+
+    private static func running(status: LeaseStatus, typical: [String: Double], now: Date) -> [RunningJobDisplay] {
+        let lanes = status.lanes ?? status.owner.map { [LaneStatus(lane: 0, owner: $0, deviceIDs: [], exclusive: false)] } ?? []
+        return lanes.map { lane in
+            let labels = Self.labels(title: lane.owner.threadTitle, threadID: lane.owner.threadID, source: lane.owner.source, project: lane.owner.project)
+            return RunningJobDisplay(
+                lane: lane.lane, headline: labels.0, subheadline: labels.1, command: lane.owner.command.joined(separator: " "),
+                elapsed: Self.elapsed(from: lane.owner.acquiredAt, to: now), elapsedSeconds: max(0, now.timeIntervalSince(lane.owner.acquiredAt)),
+                typicalSeconds: typical[lane.owner.project], exclusive: lane.exclusive
+            )
+        }
+    }
+
+    private static func laneSummary(_ status: LeaseStatus) -> String? {
+        guard let limit = status.laneLimit, limit > 1 else { return nil }
+        let used = (status.lanes ?? []).contains(where: \.exclusive) ? limit : (status.lanes ?? []).count
+        var parts = ["\(used) of \(limit) lanes in use"]
+        if let gate = status.gate {
+            parts.append(gate.open ? "headroom open" : "extra lanes closed: \(gate.reason ?? "low headroom")")
+            if gate.open, let free = gate.memoryFreePercent { parts.append("memory \(free)% free") }
+        }
+        return parts.joined(separator: " · ")
     }
 
     private static func labels(title: String?, threadID: String?, source: LeaseSource, project: String) -> (String, String) {
@@ -264,7 +317,7 @@ public struct MenuDisplayState: Equatable, Sendable {
                     .map { "\($0.tool) · PID \($0.process.pid)" },
                 crashBlocked: blocked.contains(device.id),
                 canShutDown: [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted,
-                runtime: device.runtime, state: device.state, runtimeStale: device.runtimeStale == true
+                runtime: device.runtime, state: device.state, runtimeStale: device.runtimeStale == true, lane: (status.laneLimit ?? 1) > 1 ? device.lane : nil
             )
         }
     }
@@ -322,6 +375,8 @@ public struct MenuDisplayState: Equatable, Sendable {
             ownerSubheadline = nil
             ownerElapsedSeconds = nil
             ownerTypicalSeconds = nil
+            running = []
+            laneSummary = nil
         }
     }
 
@@ -372,8 +427,12 @@ public struct MenuDisplayState: Equatable, Sendable {
         ownerHeadline: String? = nil,
         ownerSubheadline: String? = nil,
         ownerElapsedSeconds: Double? = nil,
-        ownerTypicalSeconds: Double? = nil
+        ownerTypicalSeconds: Double? = nil,
+        running: [RunningJobDisplay] = [],
+        laneSummary: String? = nil
     ) {
+        self.running = running
+        self.laneSummary = laneSummary
         self.typicalDuration = typicalDuration
         self.nativeIdle = nativeIdle
         self.alerts = alerts

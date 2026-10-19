@@ -153,6 +153,22 @@ final class MenuDisplayStateTests: XCTestCase {
         XCTAssertEqual(state.devices?.first?.runtimeStale, true)
     }
 
+    func testParallelLanesShowOneRunningCardEachAndLaneSummary() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let first = LeaseOwner(pid: 1, acquiredAt: now.addingTimeInterval(-300), cwd: "/tmp/ExplorerDex", project: "ExplorerDex", command: ["xcodebuild", "test"], source: .terminal, threadID: nil, threadTitle: nil)
+        let second = LeaseOwner(pid: 2, acquiredAt: now.addingTimeInterval(-60), cwd: "/tmp/Set", project: "Set", command: ["xcodebuild", "test"], source: .codex, threadID: nil, threadTitle: "Smoke")
+        let status = LeaseStatus(
+            state: .leased, owner: first, waiters: [], error: nil, typicalDurations: ["ExplorerDex": 600],
+            lanes: [LaneStatus(lane: 0, owner: first, deviceIDs: [], exclusive: false), LaneStatus(lane: 1, owner: second, deviceIDs: [], exclusive: false)],
+            laneLimit: 2, gate: LaneGateStatus(open: false, reason: "memory 38% free", memoryFreePercent: 38, cpuIdlePercent: 40)
+        )
+        let state = MenuDisplayState(status: status, now: now)
+        XCTAssertEqual(state.running.map(\.headline), ["ExplorerDex", "Smoke"])
+        XCTAssertEqual(state.running.map(\.lane), [0, 1])
+        XCTAssertEqual(state.running.first?.typicalSeconds, 600)
+        XCTAssertEqual(state.laneSummary, "2 of 2 lanes in use · extra lanes closed: memory 38% free")
+    }
+
     func testMissingTitleUsesEightCharacterThreadID() {
         let status = LeaseStatus(
             state: .leased,
