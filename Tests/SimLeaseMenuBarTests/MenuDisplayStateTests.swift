@@ -166,7 +166,7 @@ final class MenuDisplayStateTests: XCTestCase {
         XCTAssertEqual(state.running.map(\.headline), ["ExplorerDex", "Smoke"])
         XCTAssertEqual(state.running.map(\.lane), [0, 1])
         XCTAssertEqual(state.running.first?.typicalSeconds, 600)
-        XCTAssertEqual(state.laneSummary, "2 of 2 lanes in use · extra lanes closed: memory 38% free")
+        XCTAssertEqual(state.laneSummary, "2 of 2 lanes in use · extra lane closed, memory 38% free")
     }
 
     func testMissingTitleUsesEightCharacterThreadID() {

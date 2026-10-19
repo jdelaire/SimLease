@@ -229,7 +229,7 @@ public struct MenuDisplayState: Equatable, Sendable {
         let used = (status.lanes ?? []).contains(where: \.exclusive) ? limit : (status.lanes ?? []).count
         var parts = ["\(used) of \(limit) lanes in use"]
         if let gate = status.gate {
-            parts.append(gate.open ? "headroom open" : "extra lanes closed: \(gate.reason ?? "low headroom")")
+            parts.append(gate.open ? "headroom open" : "extra lane closed, \(gate.reason ?? "low headroom")")
             if gate.open, let free = gate.memoryFreePercent { parts.append("memory \(free)% free") }
         }
         return parts.joined(separator: " · ")

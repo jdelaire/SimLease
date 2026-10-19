@@ -106,7 +106,7 @@ struct LeasePopoverView: View {
                     Text(lanes)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 8)

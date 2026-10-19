@@ -152,13 +152,13 @@ public struct HeadroomGate: Sendable {
         } else if state.cpuIdle == nil {
             "measuring headroom"
         } else if let idle = state.cpuIdle, idle < minimumCPUIdle {
-            "CPU \(Int(idle * 100))% idle"
+            "CPU busy, \(Int(idle * 100))% idle"
         } else if let growth = state.compressorGrowth, growth > maximumCompressorGrowthPerMinute {
             "memory compression growing"
         } else if let growth = state.swapoutGrowth, growth > maximumSwapoutBytesPerMinute {
             "swapping"
         } else if sample.load >= 1.5 * Double(sample.cpus) {
-            "load \(String(format: "%.1f", sample.load))"
+            "load \(Int(sample.load.rounded())) on \(sample.cpus) cores"
         } else {
             nil
         }
