@@ -161,8 +161,6 @@ public struct HeadroomGate: Sendable {
             "memory compression growing"
         } else if let growth = state.swapoutGrowth, growth > maximumSwapoutBytesPerMinute {
             "swapping"
-        } else if sample.load >= 1.5 * Double(sample.cpus) {
-            "load \(Int(sample.load.rounded())) on \(sample.cpus) cores"
         } else {
             nil
         }

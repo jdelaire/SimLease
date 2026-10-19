@@ -71,9 +71,10 @@ The default is one lane. With more lanes, a job that declares device UUIDs
 takes per-device locks and a lock on its DerivedData, project or working
 directory, then the first free lane. Lanes after the first open only while
 the Mac has headroom: memory at least 45% free (closing below 40%), CPU at
-least 35% idle, modest compressor and swap growth, load below 1.5 times the
-core count, two minutes after the last shortfall and 90 seconds after the last
-admission. Running jobs are never stopped when headroom drops. Jobs without
+least 35% idle, and modest compressor and swap growth, two minutes after the
+last shortfall and 90 seconds after the last admission. Load average is shown
+but does not gate lanes, because on macOS it counts threads waiting on disk and
+stays high while the CPU is largely idle. Running jobs are never stopped when headroom drops. Jobs without
 declared UUIDs, simulator commands without a UUID target, and device
 shutdown, repair, recovery and cleanup take every lane. Native sessions and
 `hold` use the first lane. A queued exclusive job stops new single-lane

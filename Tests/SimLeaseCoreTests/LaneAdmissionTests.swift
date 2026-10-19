@@ -63,6 +63,10 @@ final class LaneAdmissionTests: XCTestCase {
         }
         XCTAssertEqual(HeadroomGate.evaluate(&state, sample: sample(60, idle: 100), now: start).reason, "measuring headroom")
         XCTAssertTrue(HeadroomGate.evaluate(&state, sample: sample(60, idle: 200), now: start.addingTimeInterval(10)).open)
+        var busyDisk = state
+        var heavy = sample(60, idle: 250)
+        heavy = HeadroomSample(memoryFreePercent: heavy.memoryFreePercent, compressorBytes: 0, swapoutBytes: 0, idleTicks: heavy.idleTicks, totalTicks: heavy.totalTicks, load: 400, cpus: 10)
+        XCTAssertTrue(HeadroomGate.evaluate(&busyDisk, sample: heavy, now: start.addingTimeInterval(12)).open)
         XCTAssertEqual(HeadroomGate.evaluate(&state, sample: sample(39, idle: 300), now: start.addingTimeInterval(20)).reason, "memory 39% free")
         XCTAssertFalse(HeadroomGate.evaluate(&state, sample: sample(60, idle: 400), now: start.addingTimeInterval(60)).open)
         XCTAssertTrue(HeadroomGate.evaluate(&state, sample: sample(60, idle: 500), now: start.addingTimeInterval(150)).open)

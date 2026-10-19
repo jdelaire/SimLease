@@ -53,7 +53,7 @@ struct HeadroomGauges: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                .help("1-minute load average. Extra lanes need load below 1.5 times the core count.")
+                .help("1-minute load average. Shown for context; it counts threads waiting on disk, so it does not gate extra lanes.")
             }
         }
     }
