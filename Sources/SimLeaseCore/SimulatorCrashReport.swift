@@ -72,6 +72,10 @@ public final class CrashReportSource {
     }
 
     public func scan() throws -> [SimulatorCrashReport] {
+        try autoreleasepool { try scanReports() }
+    }
+
+    private func scanReports() throws -> [SimulatorCrashReport] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
         var candidates = [(URL, String, Date)]()

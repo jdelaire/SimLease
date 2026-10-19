@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import SimLeaseCore
@@ -5,6 +6,43 @@ import XCTest
 final class CrashLoopTests: XCTestCase {
     let device = "11111111-1111-4111-8111-111111111111"
     let other = "22222222-2222-4222-8222-222222222222"
+
+    func testRepeatedUnchangedReportScansKeepResidentMemoryBounded() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let directory = fixture.paths.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = CrashReportSource(directory: directory)
+        try autoreleasepool {
+            for index in 0..<640 {
+                try Data("{}".utf8).write(to: directory.appendingPathComponent("report-\(index).ips"))
+            }
+            for _ in 0..<20 { _ = try source.scan() }
+        }
+        let baseline = try residentBytes()
+        var reports = 0
+        for _ in 0..<160 { reports += try source.scan().count }
+        let final = try residentBytes()
+        XCTAssertEqual(reports, 0)
+        XCTAssertLessThan(final > baseline ? final - baseline : 0, 32 * 1_024 * 1_024)
+    }
+
+    func testSourceDeliversAndDeduplicatesReportsAcrossPoolBoundaries() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let path = fixture.paths.root.appendingPathComponent("report.ips")
+        try report(incident: "one").write(to: path)
+        let source = CrashReportSource(directory: fixture.paths.root)
+        let first = try XCTUnwrap(source.scan().first)
+        XCTAssertTrue(try source.scan().isEmpty)
+        try report(incident: "second-incident").write(to: path)
+        let changed = try XCTUnwrap(source.scan().first)
+        XCTAssertEqual(first.incidentID, "one")
+        XCTAssertEqual(first.deviceID, device)
+        XCTAssertEqual(changed.incidentID, "second-incident")
+        XCTAssertEqual(first.signature, changed.signature)
+        XCTAssertTrue(try source.scan().isEmpty)
+    }
 
     func testReportUsesEventTimeAndStableBuildSignature() throws {
         let first = try XCTUnwrap(SimulatorCrashReport.parse(report(incident: "one")))
@@ -99,6 +137,15 @@ final class CrashLoopTests: XCTestCase {
         XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
         XCTAssertEqual(try fixture.store.read().incidents.count, 2)
         XCTAssertEqual(try fixture.store.ingest([event("late", at: 112, launch: 105)], now: Date(timeIntervalSince1970: 130)), [])
+    }
+
+    private func residentBytes() throws -> UInt64 {
+        var info = proc_taskinfo()
+        let size = MemoryLayout<proc_taskinfo>.size
+        guard proc_pidinfo(getpid(), PROC_PIDTASKINFO, 0, &info, Int32(size)) == size else {
+            throw NSError(domain: "memory inspection", code: Int(errno))
+        }
+        return info.pti_resident_size
     }
 
     private func event(_ id: String, at: TimeInterval, launch: TimeInterval, deviceID: String? = nil) -> SimulatorCrashReport {
