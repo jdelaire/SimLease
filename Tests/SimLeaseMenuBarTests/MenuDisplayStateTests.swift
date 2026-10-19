@@ -46,7 +46,9 @@ final class MenuDisplayStateTests: XCTestCase {
                     command: "xcrun simctl list",
                     threadID: "019fbb00-c552-7933",
                     cwd: "/tmp/Set",
-                    waited: "waiting 5 min"
+                    waited: "waiting 5 min",
+                    reason: "needs all lanes",
+                    project: "Set"
                 ),
             ]
         )
@@ -74,7 +76,7 @@ final class MenuDisplayStateTests: XCTestCase {
         let devices = MenuDisplayState(status: status, now: Date()).devices
 
         XCTAssertEqual(devices, [
-            DeviceDisplayItem(id: id, name: "iPhone 17 Pro", detail: "iOS 27.2 · Booted", reservation: .owned, user: "[AnimAtlas] Onboarding · shuts down after", waiting: ["[Set] Release validation"], unmanaged: [], crashBlocked: false, runtime: "iOS 27.2", state: "Booted"),
+            DeviceDisplayItem(id: id, name: "iPhone 17 Pro", detail: "iOS 27.2 · Booted", reservation: .owned, user: "[AnimAtlas] Onboarding · shuts down after", waiting: ["[Set] Release validation"], unmanaged: [], crashBlocked: false, runtime: "iOS 27.2", state: "Booted", ownerProject: "AnimAtlas"),
             DeviceDisplayItem(id: other, name: "iPhone Air", detail: "iOS 27.1 · Booted", reservation: .unreserved, user: "No SimLease reservation", waiting: [], unmanaged: ["simctl · PID 42"], crashBlocked: true, runtime: "iOS 27.1", state: "Booted"),
         ])
         XCTAssertNil(MenuDisplayState(status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil), now: Date()).devices)

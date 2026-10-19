@@ -107,6 +107,22 @@ iOS 27.2 runtime build 24B5089g under an SDK build 24B5109a crashed apps in
 print the same warning for declared devices on a stale runtime. Install the
 matching runtime with `xcodebuild -downloadPlatform iOS`.
 
+The menu bar shows one block per lane in the running project's color, a
+dashed block when headroom keeps an extra lane closed, a progress ring for a
+single lane, and a warning triangle when a simulator is crash-blocked. The
+popover shows headroom rings, lane bars that fill toward each project's
+typical duration, queued jobs with the reason they wait, and a grid of
+simulators. The dashboard window, opened from the popover footer, charts lane
+use, memory and CPU headroom, crashes per simulator and per-project timing.
+Its data comes from:
+
+```sh
+simlease history --json --hours 24
+```
+
+Finished jobs record their lane and queue wait, and `status` records one
+headroom sample per minute, keeping 24 hours.
+
 `status --json` also reports `typicalDurations`, the median lane hold time of
 the last 20 jobs per project once a project has 3 finished jobs, and
 `nativeIdleSince` for a native session, the later of its start and its last

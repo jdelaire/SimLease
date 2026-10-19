@@ -169,7 +169,12 @@ public final class SimulatorTaskService: Sendable {
             do { try warmPolicy?.reap(excluding: []) }
             catch { report("SimLease: warm simulator reaping failed: \(error)\n") }
         }
-        try? LaneHistoryStore(paths: paths).record(project: identity.project, startedAt: handle.owner.acquiredAt, endedAt: Date())
+        try? LaneHistoryStore(paths: paths).record(
+            project: identity.project, startedAt: handle.owner.acquiredAt, endedAt: Date(),
+            lane: handle.lanes.count == 1 ? handle.lanes[0] : nil,
+            waitSeconds: handle.queuedAt.map { handle.owner.acquiredAt.timeIntervalSince($0) },
+            exclusive: handle.lanes.count > 1 ? true : nil
+        )
         if let jobError { throw jobError }
         if code == 0, let number = cancellationAtCommit { return 128 + number }
         return code

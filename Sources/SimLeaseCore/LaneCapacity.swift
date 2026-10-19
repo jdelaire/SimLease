@@ -70,8 +70,12 @@ public struct LaneGateStatus: Codable, Equatable, Sendable {
     public let reason: String?
     public let memoryFreePercent: Int?
     public let cpuIdlePercent: Int?
+    public let load: Double?
+    public let cpus: Int?
 
-    public init(open: Bool, reason: String?, memoryFreePercent: Int?, cpuIdlePercent: Int?) {
+    public init(open: Bool, reason: String?, memoryFreePercent: Int?, cpuIdlePercent: Int?, load: Double? = nil, cpus: Int? = nil) {
+        self.load = load
+        self.cpus = cpus
         self.open = open
         self.reason = reason
         self.memoryFreePercent = memoryFreePercent
@@ -168,15 +172,15 @@ public struct HeadroomGate: Sendable {
                 state.lastBadAt = now
                 state.reason = reason
             }
-            return LaneGateStatus(open: false, reason: reason, memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent)
+            return LaneGateStatus(open: false, reason: reason, memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent, load: sample.load, cpus: sample.cpus)
         }
         guard recovered else {
-            return LaneGateStatus(open: false, reason: "recovering from \(state.reason ?? "low headroom")", memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent)
+            return LaneGateStatus(open: false, reason: "recovering from \(state.reason ?? "low headroom")", memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent, load: sample.load, cpus: sample.cpus)
         }
         if let admitted = state.lastAdmissionAt, now.timeIntervalSince(admitted) < admissionSpacing {
-            return LaneGateStatus(open: false, reason: "spacing admissions", memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent)
+            return LaneGateStatus(open: false, reason: "spacing admissions", memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent, load: sample.load, cpus: sample.cpus)
         }
         state.reason = nil
-        return LaneGateStatus(open: true, reason: nil, memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent)
+        return LaneGateStatus(open: true, reason: nil, memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent, load: sample.load, cpus: sample.cpus)
     }
 }

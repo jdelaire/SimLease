@@ -59,7 +59,7 @@ public struct SimulatorUsage: Codable, Equatable, Sendable, Identifiable {
         }
     }
 
-    static func runtimeName(_ identifier: String) -> String {
+    public static func runtimeName(_ identifier: String) -> String {
         let parts = (identifier.components(separatedBy: "SimRuntime.").last ?? identifier).split(separator: "-").map(String.init)
         guard let platform = parts.first else { return identifier }
         let version = parts.dropFirst().prefix { Int($0) != nil }

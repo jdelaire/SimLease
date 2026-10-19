@@ -27,6 +27,7 @@ public final class LeaseHandle: @unchecked Sendable {
     public let owner: LeaseOwner
     public let paths: LeasePaths
     public let lanes: [Int]
+    public internal(set) var queuedAt: Date?
     private let laneLocks: [(LeasePaths, Int32)]
     private let resourceLocks: [(URL, Int32)]
     private let stateLock = NSLock()
@@ -113,6 +114,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
         while true {
             if let handle = try tryAcquire(identity: identity, allowUnfinishedTask: allowUnfinishedTask, allowUnfinishedRepair: allowUnfinishedRepair, allowUnfinishedShutdown: allowUnfinishedShutdown, request: request, waiter: waiter) {
                 try store.removeWaiter(id: waiter.id)
+                handle.queuedAt = waitingSince
                 return handle
             }
 

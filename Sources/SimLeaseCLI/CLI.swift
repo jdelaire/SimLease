@@ -88,6 +88,26 @@ public enum SimLeaseCLI {
                     "simlease \(SimLeaseBuild.currentVersion)\n"
                 )
                 return 0
+            case .history(let hours):
+                let since = Date().addingTimeInterval(-Double(hours) * 3600)
+                let history = LaneHistoryStore(paths: configuration.paths)
+                let crashes = try CrashLoopStore(paths: configuration.paths).read()
+                let xcrun: URL
+                #if DEBUG || SIMLEASE_TESTING
+                xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+                #else
+                xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+                #endif
+                let manager = configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun)
+                let names = Dictionary(((try? manager.inventory()) ?? []).map { ($0.id, "\($0.name) · \(SimulatorUsage.runtimeName($0.runtime))") }, uniquingKeysWith: { first, _ in first })
+                let report = HistoryReport(
+                    since: since, laneLimit: LaneConfig.read(configuration.paths).maxLanes,
+                    jobs: history.jobs(since: since), samples: history.samples(since: since),
+                    crashes: crashes.incidents.filter { $0.occurredAt >= since }.map { HistoryReport.Crash(deviceID: $0.deviceID, processName: $0.processName, occurredAt: $0.occurredAt) },
+                    blockedDeviceIDs: crashes.blocks.keys.sorted(), deviceNames: names
+                )
+                configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(report), as: UTF8.self) + "\n")
+                return 0
             case .config(let maxLanes):
                 if let maxLanes { try LaneConfig.write(LaneConfig(maxLanes: maxLanes), paths: configuration.paths) }
                 let config = LaneConfig.read(configuration.paths)
@@ -215,7 +235,7 @@ public enum SimLeaseCLI {
             }
         } catch CommandParserError.usage {
             configuration.standardError(
-                "Usage: simlease <run|session|device|recover|doctor|status|config|name|hold|clean|update|--version>\n"
+                "Usage: simlease <run|session|device|recover|doctor|status|history|config|name|hold|clean|update|--version>\n"
             )
             return 64
         } catch UpdateRunnerError.missingUpdater {
@@ -455,7 +475,12 @@ public enum SimLeaseCLI {
             }
         }
         let laneLimit = LaneConfig.read(configuration.paths).maxLanes
-        let gateStatus = laneLimit > 1 && devices ? HeadroomGate(paths: configuration.paths).check() : nil
+        let gateStatus = HeadroomGate(paths: configuration.paths).check()
+        let busy = (status.lanes ?? []).contains(where: \.exclusive) ? laneLimit : (status.lanes ?? []).count
+        try? LaneHistoryStore(paths: configuration.paths).recordSample(HeadroomRecord(
+            at: Date(), memoryFreePercent: gateStatus.memoryFreePercent, cpuIdlePercent: gateStatus.cpuIdlePercent,
+            load: gateStatus.load, lanesBusy: busy, laneLimit: laneLimit, gateOpen: laneLimit > 1 ? gateStatus.open : nil
+        ))
         let history = LaneHistoryStore(paths: configuration.paths)
         let projects = Set(status.waiters.map(\.project) + (status.owner.map { [$0.project] } ?? []))
         let durations = history.typicalDurations(projects: projects)

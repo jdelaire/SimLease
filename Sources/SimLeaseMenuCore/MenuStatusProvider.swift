@@ -7,6 +7,7 @@ public protocol MenuStatusProviding: Sendable {
     func shutdown(deviceIDs: [String]) async throws -> [SimulatorShutdownResult]
     func reap() async throws
     func acknowledgeCrashes(deviceID: String) async throws
+    func history(hours: Int) async throws -> HistoryReport
 }
 
 public extension MenuStatusProviding {
@@ -14,6 +15,7 @@ public extension MenuStatusProviding {
     func shutdown(deviceIDs: [String]) async throws -> [SimulatorShutdownResult] { throw MenuStatusError.shutdownFailed("unsupported") }
     func reap() async throws {}
     func acknowledgeCrashes(deviceID: String) async throws {}
+    func history(hours: Int) async throws -> HistoryReport { throw MenuStatusError.invalidJSON }
 }
 
 public enum MenuStatusError: LocalizedError, Equatable {
@@ -78,6 +80,12 @@ public actor CLIStatusProvider: MenuStatusProviding {
 
     public func reap() async throws {
         _ = try await execute(["device", "reap"])
+    }
+
+    public func history(hours: Int) async throws -> HistoryReport {
+        let output = try await run(["history", "--json", "--hours", String(hours)])
+        guard let report = try? JSONDecoder.simLease.decode(HistoryReport.self, from: output) else { throw MenuStatusError.invalidJSON }
+        return report
     }
 
     public func acknowledgeCrashes(deviceID: String) async throws {

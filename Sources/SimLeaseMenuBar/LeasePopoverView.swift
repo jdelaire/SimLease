@@ -54,10 +54,10 @@ struct LeasePopoverView: View {
                     ForEach(viewModel.state.alerts) { alert in
                         AlertCard(alert: alert) { id in Task { await viewModel.acknowledgeCrashes(deviceID: id) } }
                     }
-                    if viewModel.state.kind == .leased {
-                        nowRunning
-                        if !viewModel.state.waiters.isEmpty { queue }
+                    if !viewModel.state.laneBars.isEmpty {
+                        lanes
                     }
+                    if !viewModel.state.waiters.isEmpty { queue }
                     if let devices = viewModel.state.devices {
                         SimulatorSection(
                             devices: devices,
@@ -78,7 +78,7 @@ struct LeasePopoverView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
         }
-        .frame(width: 360)
+        .frame(width: 380)
         .animation(.easeInOut(duration: 0.15), value: viewModel.state.kind)
         .onAppear { Task { await viewModel.setDevicesVisible(true) } }
         .onDisappear { Task { await viewModel.setDevicesVisible(false) } }
@@ -86,114 +86,68 @@ struct LeasePopoverView: View {
 
     private var header: some View {
         let presentation = LeasePopoverPresentation(state: viewModel.state)
-        return HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(statusColor.opacity(0.18))
-                Image(systemName: statusSymbol)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(statusColor)
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(presentation.title)
-                    .font(.headline)
-                Text(presentation.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                    .textSelection(.enabled)
-                if let lanes = viewModel.state.laneSummary {
-                    Text(lanes)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle().fill(statusColor.opacity(0.18))
+                    Image(systemName: statusSymbol)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(statusColor)
+                        .contentTransition(.symbolEffect(.replace))
                 }
-            }
-            Spacer(minLength: 8)
-            if let elapsed = viewModel.state.elapsed {
-                Text(elapsed)
-                    .font(.title3.monospacedDigit().weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .help("Time the current job has held the simulator")
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var nowRunning: some View {
-        let state = viewModel.state
-        let multiple = state.running.count > 1 || state.laneSummary != nil
-        return VStack(alignment: .leading, spacing: 6) {
-            SectionTitle(text: state.running.count > 1 ? "Now running · \(state.running.count)" : "Now running")
-            ForEach(state.running) { job in
-                runningCard(job, devices: (state.devices ?? []).filter { [.owned, .borrowed].contains($0.reservation) && ($0.lane ?? 0) == job.lane }, showLane: multiple)
-            }
-        }
-    }
-
-    private func runningCard(_ job: RunningJobDisplay, devices: [DeviceDisplayItem], showLane: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(job.headline)
-                    .font(.body.weight(.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 8)
-                if showLane {
-                    Text(job.exclusive ? "All lanes" : "Lane \(job.lane + 1)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.blue)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Color.blue.opacity(0.15), in: Capsule())
-                }
-                Text(job.elapsed)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            Text(job.subheadline)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(job.command)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(job.command)
-                .textSelection(.enabled)
-            if let typical = job.typicalSeconds, typical > 0 {
-                VStack(alignment: .leading, spacing: 3) {
-                    ProgressView(value: min(job.elapsedSeconds / typical, 1))
-                        .tint(job.elapsedSeconds > typical ? .orange : .accentColor)
-                    Text(job.elapsedSeconds > typical
-                         ? "Longer than usual · typically ≈ \(Self.minutes(typical))"
-                         : "\(Self.minutes(job.elapsedSeconds)) of ≈ \(Self.minutes(typical)) typical")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if !devices.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(devices) { device in
-                        Label {
-                            Text("\(device.name) · \(device.runtime)")
-                                + Text(device.reservation == .owned ? "  shuts down after" : "  stays running after")
-                                .foregroundStyle(.secondary)
-                        } icon: {
-                            Image(systemName: "iphone")
-                                .foregroundStyle(.blue)
-                        }
+                .frame(width: 28, height: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(presentation.title)
+                        .font(.headline)
+                    Text(presentation.description)
                         .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 8)
+                if let headroom = viewModel.state.headroom, headroom.laneLimit > 1 {
+                    gatePill(headroom)
+                }
+            }
+            if let headroom = viewModel.state.headroom {
+                HeadroomGauges(headroom: headroom)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func gatePill(_ headroom: HeadroomDisplay) -> some View {
+        let color = headroom.open ? ProjectColors.good : ProjectColors.warning
+        return Text(headroom.open ? "Lanes open" : "Extra lane closed")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15), in: Capsule())
+            .help(headroom.reason.map { "Extra lanes closed: \($0)" } ?? "Headroom allows extra lanes")
+    }
+
+    private var lanes: some View {
+        let state = viewModel.state
+        return VStack(alignment: .leading, spacing: 6) {
+            SectionTitle(text: state.laneBars.count > 1 ? "Lanes" : "Lane")
+            LaneBarsView(bars: state.laneBars)
+            ForEach(state.running) { job in
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 2).fill(ProjectColors.color(for: job.project)).frame(width: 8, height: 8)
+                    Text(job.subheadline)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(job.command)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.tertiary)
                         .lineLimit(1)
-                        .help(device.id)
-                    }
+                        .truncationMode(.middle)
+                        .help(job.command)
                 }
             }
         }
-        .card()
     }
 
     private var queue: some View {
@@ -203,49 +157,11 @@ struct LeasePopoverView: View {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(waiters.enumerated()), id: \.element.id) { index, waiter in
                     if index > 0 { Divider().padding(.leading, 28) }
-                    HStack(alignment: .top, spacing: 10) {
-                        Text("\(index + 1)")
-                            .font(.caption.monospacedDigit().weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 18, height: 18)
-                            .background(Circle().fill(Color.primary.opacity(0.08)))
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(waiter.headline)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Spacer(minLength: 8)
-                                Text(waiter.estimate ?? waiter.waited)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Text(([waiter.subheadline] + (waiter.estimate == nil ? [] : [waiter.waited])).joined(separator: " · "))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            if !waiter.targets.isEmpty {
-                                Label(waiter.targets.joined(separator: ", "), systemImage: "iphone")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 6)
-                    .help(waiterHelp(waiter))
-                    .accessibilityElement(children: .combine)
+                    QueueRow(index: index, waiter: waiter)
                 }
             }
             .card(vertical: 4)
         }
-    }
-
-    private func waiterHelp(_ waiter: WaiterDisplayItem) -> String {
-        var details = ["\(waiter.projectAndSource) · \(waiter.waited)", waiter.command]
-        if let threadID = waiter.threadID { details.append("Thread: \(threadID)") }
-        details.append("Path: \(waiter.cwd)")
-        return details.joined(separator: "\n")
     }
 
     private var footer: some View {
@@ -258,6 +174,9 @@ struct LeasePopoverView: View {
             .buttonStyle(.borderless)
             .accessibilityHint("Opens simulator storage cleanup review")
             Spacer()
+            FooterIcon(symbol: "chart.bar.xaxis", help: "Open Dashboard") {
+                presentCleanupWindow { openWindow(id: "dashboard") }
+            }
             FooterIcon(symbol: "doc.on.doc", help: "Copy details") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(viewModel.copyDetailsText, forType: .string)
@@ -274,9 +193,9 @@ struct LeasePopoverView: View {
 
     private var statusColor: Color {
         switch viewModel.state.kind {
-        case .free: .green
+        case .free: ProjectColors.good
         case .leased: .blue
-        case .metadataError: .red
+        case .metadataError: ProjectColors.critical
         }
     }
 
@@ -398,9 +317,14 @@ private struct SimulatorSection: View {
     let laneBusy: Bool
     let onShutDown: ([String]) -> Void
     @State private var confirming: [DeviceDisplayItem] = []
+    @State private var selectedID: String?
 
     private var unused: [DeviceDisplayItem] {
         devices.filter { $0.canShutDown && !shuttingDown.contains($0.id) }
+    }
+
+    private var selected: DeviceDisplayItem? {
+        devices.first { $0.id == selectedID }
     }
 
     var body: some View {
@@ -422,86 +346,70 @@ private struct SimulatorSection: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            VStack(alignment: .leading, spacing: 0) {
-                if devices.isEmpty {
-                    Text("No booted or reserved simulators")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 6)
+            if devices.isEmpty {
+                Text("No booted or reserved simulators")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .card()
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                    ForEach(devices) { device in
+                        PhoneTile(device: device, selected: device.id == selectedID)
+                            .onTapGesture { selectedID = selectedID == device.id ? nil : device.id }
+                    }
                 }
-                ForEach(Array(devices.enumerated()), id: \.element.id) { index, device in
-                    if index > 0 { Divider().padding(.leading, 18) }
-                    row(device)
-                }
+                if let device = selected { detail(device) }
             }
-            .card(vertical: 4)
         }
     }
 
-    private func row(_ device: DeviceDisplayItem) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(device.state == "Booted" ? Color.green : Color.secondary.opacity(0.4))
-                .frame(width: 8, height: 8)
-                .padding(.top, 5)
-                .help(device.state)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(device.name)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(device.runtime)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 6)
-                    chip(device)
-                    if shuttingDown.contains(device.id) {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else if device.canShutDown {
-                        Button {
-                            confirming = [device]
-                        } label: {
-                            Image(systemName: "power")
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(!confirming.isEmpty)
-                        .help("Shut down \(device.name)")
-                        .accessibilityLabel("Shut down \(device.name)")
+    private func detail(_ device: DeviceDisplayItem) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("\(device.name) · \(device.runtime)")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                if shuttingDown.contains(device.id) {
+                    ProgressView().controlSize(.mini)
+                } else if device.canShutDown {
+                    Button {
+                        confirming = [device]
+                    } label: {
+                        Label("Shut Down", systemImage: "power")
                     }
-                }
-                Text(roleLine(device))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if device.runtimeStale {
-                    Label("Runtime older than Xcode SDK", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                if device.crashBlocked {
-                    Label("Crash blocked", systemImage: "exclamationmark.octagon.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                ForEach(device.unmanaged, id: \.self) { process in
-                    Label("Outside lease · \(process)", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                if !device.waiting.isEmpty {
-                    Label("Queued for \(device.waiting.joined(separator: ", "))", systemImage: "clock")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    .controlSize(.small)
+                    .disabled(!confirming.isEmpty)
                 }
             }
+            Text(roleLine(device))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if device.runtimeStale {
+                Label("Runtime older than Xcode SDK", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if device.crashBlocked {
+                Label("Crash blocked", systemImage: "exclamationmark.octagon.fill")
+                    .font(.caption)
+                    .foregroundStyle(ProjectColors.critical)
+            }
+            ForEach(device.unmanaged, id: \.self) { process in
+                Label("Outside lease · \(process)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if !device.waiting.isEmpty {
+                Label("Queued for \(device.waiting.joined(separator: ", "))", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(device.id)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
+                .textSelection(.enabled)
         }
-        .padding(.vertical, 6)
-        .help("\(device.name) · \(device.runtime)\n\(device.id)\n\(device.user)")
-        .accessibilityElement(children: .combine)
+        .card()
     }
 
     private func roleLine(_ device: DeviceDisplayItem) -> String {
@@ -510,24 +418,6 @@ private struct SimulatorSection: View {
         case .borrowed: "\(device.lane.map { "Lane \($0 + 1) job" } ?? "In the current job") · stays running after"
         case .warm: device.user
         case .unreserved: device.state == "Booted" ? "Booted outside SimLease" : "Shut down"
-        }
-    }
-
-    @ViewBuilder
-    private func chip(_ device: DeviceDisplayItem) -> some View {
-        let style: (text: String, color: Color)? = switch device.reservation {
-        case .owned, .borrowed: ("In use", .blue)
-        case .warm: ("Warm", .teal)
-        case .unreserved: nil
-        }
-        if let style {
-            let color = style.color
-            Text(style.text)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(color)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 1)
-                .background(color.opacity(0.15), in: Capsule())
         }
     }
 

@@ -14,6 +14,9 @@ public struct WaiterDisplayItem: Equatable, Sendable, Identifiable {
     public let subheadline: String
     public let waited: String
     public let targets: [String]
+    public let reason: String?
+    public let progress: Double?
+    public let project: String?
 
     public init(
         id: String,
@@ -27,8 +30,14 @@ public struct WaiterDisplayItem: Equatable, Sendable, Identifiable {
         headline: String? = nil,
         subheadline: String? = nil,
         waited: String? = nil,
-        targets: [String] = []
+        targets: [String] = [],
+        reason: String? = nil,
+        progress: Double? = nil,
+        project: String? = nil
     ) {
+        self.reason = reason
+        self.progress = progress
+        self.project = project
         self.estimate = estimate
         self.headline = headline ?? name
         self.subheadline = subheadline ?? projectAndSource
@@ -58,9 +67,11 @@ public struct DeviceDisplayItem: Equatable, Sendable, Identifiable {
     public let state: String
     public let runtimeStale: Bool
     public let lane: Int?
+    public let ownerProject: String?
 
-    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "", runtimeStale: Bool = false, lane: Int? = nil) {
+    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "", runtimeStale: Bool = false, lane: Int? = nil, ownerProject: String? = nil) {
         self.lane = lane
+        self.ownerProject = ownerProject
         self.runtimeStale = runtimeStale
         self.runtime = runtime
         self.state = state
@@ -113,10 +124,12 @@ public struct RunningJobDisplay: Equatable, Sendable, Identifiable {
     public let elapsedSeconds: Double
     public let typicalSeconds: Double?
     public let exclusive: Bool
+    public let project: String
 
     public var id: Int { lane }
 
-    public init(lane: Int, headline: String, subheadline: String, command: String, elapsed: String, elapsedSeconds: Double, typicalSeconds: Double?, exclusive: Bool) {
+    public init(lane: Int, headline: String, subheadline: String, command: String, elapsed: String, elapsedSeconds: Double, typicalSeconds: Double?, exclusive: Bool, project: String = "") {
+        self.project = project
         self.lane = lane
         self.headline = headline
         self.subheadline = subheadline
@@ -156,6 +169,8 @@ public struct MenuDisplayState: Equatable, Sendable {
     public let ownerTypicalSeconds: Double?
     public let running: [RunningJobDisplay]
     public let laneSummary: String?
+    public let headroom: HeadroomDisplay?
+    public let laneBars: [LaneBarDisplay]
 
     public var waiterNames: [String] {
         waiters.map(\.name)
@@ -176,8 +191,10 @@ public struct MenuDisplayState: Equatable, Sendable {
         let ownerTypical = leased.flatMap { typical[$0.project] }
         var ahead = ownerTypical.map { max($0 - now.timeIntervalSince(leased!.acquiredAt), 60) }
         var estimates = [String: String]()
+        var estimateSeconds = [String: Double]()
         for waiter in status.waiters.sorted(by: { $0.waitingSince < $1.waitingSince }) {
             guard let wait = ahead else { break }
+            estimateSeconds[waiter.id] = wait
             estimates[waiter.id] = "starts in ≈ \(Self.minutes(wait))"
             ahead = typical[waiter.project].map { wait + $0 }
         }
@@ -190,10 +207,22 @@ public struct MenuDisplayState: Equatable, Sendable {
             let targets = (waiter?.deviceIDs ?? []).map { id in
                 usage[id.uppercased()].map { "\($0.name) · \($0.runtime)" } ?? String(id.prefix(8))
             }
+            let busy = Set((status.lanes ?? []).flatMap { $0.deviceIDs.map { $0.uppercased() } })
+            let blockedBy = (waiter?.deviceIDs ?? []).first { busy.contains($0.uppercased()) }
+            let reason: String? = if waiter?.exclusive == true || (waiter?.deviceIDs ?? []).isEmpty {
+                "needs all lanes"
+            } else if let blockedBy {
+                "waiting for \(usage[blockedBy.uppercased()]?.name ?? String(blockedBy.prefix(8)))"
+            } else {
+                "waiting for a lane"
+            }
+            let waited = waiter.map { now.timeIntervalSince($0.waitingSince) } ?? 0
+            let remaining = estimateSeconds[item.id]
             return WaiterDisplayItem(
                 id: item.id, name: item.name, projectAndSource: item.projectAndSource, elapsed: item.elapsed, command: item.command,
                 threadID: item.threadID, cwd: item.cwd, estimate: estimates[item.id], headline: labels?.0, subheadline: labels?.1,
-                waited: waiter.map { "waiting \(Self.minutes(now.timeIntervalSince($0.waitingSince)))" }, targets: targets
+                waited: waiter.map { "waiting \(Self.minutes(now.timeIntervalSince($0.waitingSince)))" }, targets: targets,
+                reason: reason, progress: remaining.map { waited / max(1, waited + $0) }, project: waiter?.project
             )
         }
         let idle = leased == nil ? nil : status.nativeIdleSince.map { now.timeIntervalSince($0) }.flatMap { $0 >= 600 ? $0 : nil }
@@ -210,8 +239,31 @@ public struct MenuDisplayState: Equatable, Sendable {
             ownerHeadline: ownerLabels?.0, ownerSubheadline: ownerLabels?.1,
             ownerElapsedSeconds: leased.map { max(0, now.timeIntervalSince($0.acquiredAt)) }, ownerTypicalSeconds: ownerTypical,
             running: base.kind == .leased ? Self.running(status: status, typical: typical, now: now) : [],
-            laneSummary: Self.laneSummary(status)
+            laneSummary: Self.laneSummary(status),
+            headroom: status.gate.map { HeadroomDisplay(memoryFreePercent: $0.memoryFreePercent, cpuIdlePercent: $0.cpuIdlePercent, load: $0.load, cpus: $0.cpus, open: $0.open, reason: $0.reason, laneLimit: status.laneLimit ?? 1) },
+            laneBars: Self.laneBars(status: status, typical: typical, now: now)
         )
+    }
+
+    private static func laneBars(status: LeaseStatus, typical: [String: Double], now: Date) -> [LaneBarDisplay] {
+        guard status.state != .metadataError else { return [] }
+        let limit = status.laneLimit ?? 1
+        let lanes = status.lanes ?? status.owner.map { [LaneStatus(lane: 0, owner: $0, deviceIDs: [], exclusive: false)] } ?? []
+        let exclusive = lanes.first(where: \.exclusive)
+        let count = limit > 1 ? LeasePaths.maximumLanes : 1
+        return (0..<count).map { index in
+            let job = exclusive ?? lanes.first { $0.lane == index }
+            if let job {
+                let elapsed = max(0, now.timeIntervalSince(job.owner.acquiredAt))
+                let expected = typical[job.owner.project]
+                let labels = Self.labels(title: job.owner.threadTitle, threadID: job.owner.threadID, source: job.owner.source, project: job.owner.project)
+                let detail = expected.map { elapsed > $0 ? "\(Self.minutes(elapsed)) ⚠︎" : "\(Self.minutes(elapsed)) / \(Self.minutes($0))" } ?? Self.minutes(elapsed)
+                return LaneBarDisplay(lane: index, kind: .running, title: labels.0, detail: detail, project: job.owner.project, fraction: expected.map { min(1, elapsed / max($0, 1)) } ?? 1, overrun: expected.map { elapsed > $0 } ?? false, exclusive: job.exclusive)
+            }
+            if index >= limit { return LaneBarDisplay(lane: index, kind: .off, title: "off · max lanes \(limit)", detail: "", project: nil, fraction: 0, overrun: false, exclusive: false) }
+            if index > 0, status.gate?.open == false { return LaneBarDisplay(lane: index, kind: .closed, title: "closed · \(status.gate?.reason ?? "low headroom")", detail: "", project: nil, fraction: 0, overrun: false, exclusive: false) }
+            return LaneBarDisplay(lane: index, kind: .free, title: "free", detail: "", project: nil, fraction: 0, overrun: false, exclusive: false)
+        }
     }
 
     private static func running(status: LeaseStatus, typical: [String: Double], now: Date) -> [RunningJobDisplay] {
@@ -221,7 +273,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             return RunningJobDisplay(
                 lane: lane.lane, headline: labels.0, subheadline: labels.1, command: lane.owner.command.joined(separator: " "),
                 elapsed: Self.elapsed(from: lane.owner.acquiredAt, to: now), elapsedSeconds: max(0, now.timeIntervalSince(lane.owner.acquiredAt)),
-                typicalSeconds: typical[lane.owner.project], exclusive: lane.exclusive
+                typicalSeconds: typical[lane.owner.project], exclusive: lane.exclusive, project: lane.owner.project
             )
         }
     }
@@ -320,7 +372,10 @@ public struct MenuDisplayState: Equatable, Sendable {
                     .map { "\($0.tool) · PID \($0.process.pid)" },
                 crashBlocked: blocked.contains(device.id),
                 canShutDown: [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted,
-                runtime: device.runtime, state: device.state, runtimeStale: device.runtimeStale == true, lane: (status.laneLimit ?? 1) > 1 ? device.lane : nil
+                runtime: device.runtime, state: device.state, runtimeStale: device.runtimeStale == true, lane: (status.laneLimit ?? 1) > 1 ? device.lane : nil,
+                ownerProject: [.owned, .borrowed].contains(device.reservation)
+                    ? ((status.lanes ?? []).first { $0.deviceIDs.contains { $0.uppercased() == device.id } }?.owner.project ?? status.owner?.project)
+                    : nil
             )
         }
     }
@@ -380,6 +435,8 @@ public struct MenuDisplayState: Equatable, Sendable {
             ownerTypicalSeconds = nil
             running = []
             laneSummary = nil
+            headroom = nil
+            laneBars = []
         }
     }
 
@@ -432,8 +489,12 @@ public struct MenuDisplayState: Equatable, Sendable {
         ownerElapsedSeconds: Double? = nil,
         ownerTypicalSeconds: Double? = nil,
         running: [RunningJobDisplay] = [],
-        laneSummary: String? = nil
+        laneSummary: String? = nil,
+        headroom: HeadroomDisplay? = nil,
+        laneBars: [LaneBarDisplay] = []
     ) {
+        self.headroom = headroom
+        self.laneBars = laneBars
         self.running = running
         self.laneSummary = laneSummary
         self.typicalDuration = typicalDuration

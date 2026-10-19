@@ -12,6 +12,7 @@ enum ParsedCommand: Equatable {
     case deviceReap
     case deviceAcknowledge(String)
     case config(maxLanes: Int?)
+    case history(hours: Int)
     case sessionBegin(title: String, project: String, deviceIDs: [String], clientPIDs: [Int32] = [])
     case sessionFinish(String)
     case nativeWait(String)
@@ -117,6 +118,17 @@ enum CommandParser {
                 throw CommandParserError.usage
             }
             return .version
+        case "history":
+            let flags = Array(arguments.dropFirst(2))
+            var hours = 24
+            var index = 0
+            while index < flags.count {
+                if flags[index] == "--json" { index += 1; continue }
+                guard flags[index] == "--hours", flags.indices.contains(index + 1), let value = Int(flags[index + 1]), (1...168).contains(value) else { throw CommandParserError.usage }
+                hours = value
+                index += 2
+            }
+            return .history(hours: hours)
         case "config":
             let flags = Array(arguments.dropFirst(2))
             if flags.isEmpty { return .config(maxLanes: nil) }

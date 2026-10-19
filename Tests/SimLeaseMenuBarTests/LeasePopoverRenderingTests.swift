@@ -55,7 +55,7 @@ final class LeasePopoverRenderingTests: XCTestCase {
             let output = outputDirectory.appending(path: "\(item.name).png")
             try data.write(to: output)
 
-            XCTAssertEqual(image.size.width, 360, accuracy: 1)
+            XCTAssertEqual(image.size.width, 380, accuracy: 1)
             XCTAssertGreaterThan(image.size.height, 80)
             XCTAssertLessThan(image.size.height, 600)
             print("popover-capture: \(output.path)")

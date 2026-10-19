@@ -7,13 +7,20 @@ struct SimLeaseMenuBarApp: App {
     @StateObject private var cleanupViewModel = CleanupViewModel(
         provider: Self.makeCleanupProvider()
     )
+    @StateObject private var dashboardViewModel = DashboardViewModel(provider: Self.makeProvider())
 
     var body: some Scene {
         MenuBarExtra {
             LeasePopoverView(viewModel: viewModel)
         } label: {
-            Label(viewModel.state.menuTitle, systemImage: viewModel.state.symbolName)
-                .task { await viewModel.monitor() }
+            let icon = MenuBarIconState(state: viewModel.state)
+            Label {
+                Text(icon.text)
+            } icon: {
+                Image(nsImage: MenuBarIcon.image(icon))
+            }
+            .labelStyle(.titleAndIcon)
+            .task { await viewModel.monitor() }
         }
         .menuBarExtraStyle(.window)
         .windowResizability(.contentSize)
@@ -22,6 +29,11 @@ struct SimLeaseMenuBarApp: App {
             CleanupReviewView(viewModel: cleanupViewModel)
         }
         .defaultSize(width: 560, height: 520)
+
+        Window("SimLease Dashboard", id: "dashboard") {
+            DashboardView(viewModel: dashboardViewModel)
+        }
+        .defaultSize(width: 900, height: 760)
     }
 
     private static func makeProvider() -> any MenuStatusProviding {
