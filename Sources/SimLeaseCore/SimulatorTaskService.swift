@@ -116,10 +116,10 @@ public final class SimulatorTaskService: Sendable {
                     do {
                         for trigger in try crashes.ingest(source.scan(), now: Date()) {
                             report("SimLease: repeated \(trigger.processName) crashes blocked \(trigger.deviceID)\n")
-                            if trigger.scopeID == crashScopeID, externalSessionID == nil {
-                                stoppedForCrash = true
-                                signals.cancel()
-                            }
+                        }
+                        if !stoppedForCrash, externalSessionID == nil, try crashes.read().blocks.values.contains(where: { $0.scopeID == crashScopeID }) {
+                            stoppedForCrash = true
+                            signals.cancel()
                         }
                     } catch {
                         if !monitoringErrorReported {

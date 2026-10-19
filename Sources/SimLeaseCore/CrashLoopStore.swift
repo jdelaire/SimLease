@@ -24,25 +24,33 @@ public struct CrashLoopState: Codable, Sendable {
 
 public struct CrashLoopStore: Sendable {
     private let url: URL
+    private let paths: LeasePaths
 
-    public init(paths: LeasePaths) { url = paths.root.appendingPathComponent("crash-history.json") }
+    public init(paths: LeasePaths) {
+        self.paths = paths
+        url = paths.root.appendingPathComponent("crash-history.json")
+    }
 
     public func read() throws -> CrashLoopState {
         try RecoveryFile.read(CrashLoopState.self, at: url) ?? CrashLoopState()
     }
 
     public func beginScope(id: String, deviceIDs: [String], startedAt: Date) throws {
-        var state = try read()
-        state.scopes.append(CrashScope(id: id, deviceIDs: deviceIDs, startedAt: startedAt))
-        state.scopes = Array(state.scopes.suffix(256))
-        try RecoveryFile.write(state, at: url)
+        try SharedStateLock.withLock(paths) {
+            var state = try read()
+            state.scopes.append(CrashScope(id: id, deviceIDs: deviceIDs, startedAt: startedAt))
+            state.scopes = Array(state.scopes.suffix(256))
+            try RecoveryFile.write(state, at: url)
+        }
     }
 
     public func endScope(id: String, endedAt: Date) throws {
-        var state = try read()
-        if let index = state.scopes.firstIndex(where: { $0.id == id }) {
-            state.scopes[index].endedAt = endedAt
-            try RecoveryFile.write(state, at: url)
+        try SharedStateLock.withLock(paths) {
+            var state = try read()
+            if let index = state.scopes.firstIndex(where: { $0.id == id }) {
+                state.scopes[index].endedAt = endedAt
+                try RecoveryFile.write(state, at: url)
+            }
         }
     }
 
@@ -66,22 +74,30 @@ public struct CrashLoopStore: Sendable {
     }
 
     public func acknowledge(deviceID: String, at date: Date) throws {
-        var state = try read()
-        state.blocks.removeValue(forKey: deviceID)
-        state.acknowledgments[deviceID] = date
-        try RecoveryFile.write(state, at: url)
+        try SharedStateLock.withLock(paths) {
+            var state = try read()
+            state.blocks.removeValue(forKey: deviceID)
+            state.acknowledgments[deviceID] = date
+            try RecoveryFile.write(state, at: url)
+        }
     }
 
     public func blockInfrastructureFailure(deviceID: String) throws {
-        var state = try read()
-        if state.blocks[deviceID] == nil {
-            state.blocks[deviceID] = CrashLoopTrigger(deviceID: deviceID, scopeID: "device-repair", processName: "Simulator boot", signature: "simulator-boot-health", occurredAt: Date())
-            try RecoveryFile.write(state, at: url)
+        try SharedStateLock.withLock(paths) {
+            var state = try read()
+            if state.blocks[deviceID] == nil {
+                state.blocks[deviceID] = CrashLoopTrigger(deviceID: deviceID, scopeID: "device-repair", processName: "Simulator boot", signature: "simulator-boot-health", occurredAt: Date())
+                try RecoveryFile.write(state, at: url)
+            }
         }
     }
 
     public func ingest(_ reports: [SimulatorCrashReport], now: Date) throws -> [CrashLoopTrigger] {
         guard !reports.isEmpty else { return [] }
+        return try SharedStateLock.withLock(paths) { try ingestLocked(reports, now: now) }
+    }
+
+    private func ingestLocked(_ reports: [SimulatorCrashReport], now: Date) throws -> [CrashLoopTrigger] {
         var state = try read()
         var seen = Set(state.incidents.map(\.incidentID))
         var added = [SimulatorCrashReport]()

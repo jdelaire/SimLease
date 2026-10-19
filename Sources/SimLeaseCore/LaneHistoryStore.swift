@@ -17,16 +17,20 @@ public struct LaneHistoryStore: Sendable {
 
     private let historyURL: URL
     private let activityURL: URL
+    private let paths: LeasePaths
 
     public init(paths: LeasePaths) {
+        self.paths = paths
         historyURL = paths.root.appendingPathComponent("job-history.json")
         activityURL = paths.root.appendingPathComponent("native-activity.json")
     }
 
     public func record(project: String, startedAt: Date, endedAt: Date) throws {
-        var entries = (try? RecoveryFile.read([Entry].self, at: historyURL)) ?? []
-        entries.append(Entry(project: project, seconds: max(0, endedAt.timeIntervalSince(startedAt)), endedAt: endedAt))
-        try RecoveryFile.write(Array(entries.suffix(Self.capacity)), at: historyURL)
+        try SharedStateLock.withLock(paths) {
+            var entries = (try? RecoveryFile.read([Entry].self, at: historyURL)) ?? []
+            entries.append(Entry(project: project, seconds: max(0, endedAt.timeIntervalSince(startedAt)), endedAt: endedAt))
+            try RecoveryFile.write(Array(entries.suffix(Self.capacity)), at: historyURL)
+        }
     }
 
     public func typicalDurations(projects: Set<String>) -> [String: Double] {

@@ -9,8 +9,12 @@ public struct WarmDeviceStore: Sendable {
     }
 
     private let url: URL
+    private let paths: LeasePaths
 
-    public init(paths: LeasePaths) { url = paths.root.appendingPathComponent("warm-devices.json") }
+    public init(paths: LeasePaths) {
+        self.paths = paths
+        url = paths.root.appendingPathComponent("warm-devices.json")
+    }
 
     public func read() throws -> [String: Date] {
         do { return try RecoveryFile.read(Registry.self, at: url)?.devices ?? [:] }
@@ -18,16 +22,21 @@ public struct WarmDeviceStore: Sendable {
     }
 
     public func add(_ ids: [String], since: Date) throws {
-        var devices = try read()
-        for id in ids { devices[id.uppercased()] = since }
-        try save(devices)
+        try SharedStateLock.withLock(paths) {
+            var devices = try read()
+            for id in ids { devices[id.uppercased()] = since }
+            try save(devices)
+        }
     }
 
     public func remove(_ ids: some Sequence<String>) throws {
-        var devices = try read()
-        let before = devices.count
-        for id in ids { devices.removeValue(forKey: id.uppercased()) }
-        if devices.count != before { try save(devices) }
+        let ids = Array(ids)
+        try SharedStateLock.withLock(paths) {
+            var devices = try read()
+            let before = devices.count
+            for id in ids { devices.removeValue(forKey: id.uppercased()) }
+            if devices.count != before { try save(devices) }
+        }
     }
 
     private func save(_ devices: [String: Date]) throws {

@@ -15,6 +15,7 @@ public final class MetadataStore: @unchecked Sendable {
     public init(paths: LeasePaths) throws {
         self.paths = paths
         try Self.createDirectory(paths.root)
+        try Self.createDirectory(paths.laneRoot)
         try Self.createDirectory(paths.waiters)
     }
 
@@ -74,9 +75,11 @@ public final class MetadataStore: @unchecked Sendable {
 
         lock.lock()
         defer { lock.unlock() }
-        var names = try readThreadNames()
-        names[id] = trimmed
-        try atomicWrite(JSONEncoder.simLease.encode(names), to: paths.threadNames)
+        try SharedStateLock.withLock(paths) {
+            var names = try readThreadNames()
+            names[id] = trimmed
+            try atomicWrite(JSONEncoder.simLease.encode(names), to: paths.threadNames)
+        }
     }
 
     public func threadName(id: String) throws -> String? {

@@ -202,6 +202,24 @@ final class SimulatorTaskServiceTests: XCTestCase {
         XCTAssertNotNil(LaneHistoryStore(paths: fixture.paths).typicalDurations(projects: ["Task"])["Task"])
     }
 
+    func testCrashLimitStopsJobWhenAnotherPollerIngestedTheReports() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let directory = fixture.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let service = SimulatorTaskService(paths: fixture.paths, devices: fixture.devices, crashReportDirectory: directory)
+        let code = try service.run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "trap 'exit 0' TERM; printf Booted > \"$1\"; n=0; while [ \"$n\" -lt 100 ]; do /bin/sleep 0.05; n=$((n+1)); done", "job", fixture.devices.path(fixture.owned).path],
+            deviceIDs: [fixture.owned], keepRunning: false, environment: [:], identity: fixture.identity,
+            onStarted: { _ in
+                try writeCrashReports(directory: directory, device: fixture.owned)
+                _ = try CrashLoopStore(paths: fixture.paths).ingest(CrashReportSource(directory: directory).scan(), now: Date())
+            }
+        )
+        XCTAssertEqual(code, 70)
+    }
+
     func testBlockedNativeScopeCanSettleWithoutKillingSharedClient() throws {
         let fixture = try TaskFixture()
         defer { fixture.remove() }
