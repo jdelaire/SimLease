@@ -9,7 +9,7 @@ struct CleanupReviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Xcode Storage Cleanup")
+            Text("Xcode Storage")
                 .font(.title.bold())
 
             content
@@ -57,7 +57,7 @@ struct CleanupReviewView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Found \(bytes(review.estimatedBytes)) eligible")
+                    Text("\(bytes(review.estimatedBytes)) can be reclaimed")
                         .font(.headline)
                     if let plan = review.plan {
                         Text(
@@ -77,6 +77,13 @@ struct CleanupReviewView: View {
             }
 
             if let plan = review.plan {
+                let breakdown = CleanupBreakdown(plan: plan, selected: viewModel.selectedTargetIDs)
+                VStack(alignment: .leading, spacing: 12) {
+                    DiskBar(available: plan.availableBytesBefore, reclaim: breakdown.selectedBytes)
+                    BreakdownBar(breakdown: breakdown)
+                }
+                .padding(12)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         cleanupSection(
@@ -154,8 +161,19 @@ struct CleanupReviewView: View {
         VStack(alignment: .leading, spacing: 12) {
             if let before = result.availableBytesBefore,
                let after = result.availableBytesAfter {
-                Text("Available space: \(bytes(before)) → \(bytes(after))")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Freed \(bytes(max(0, after - before)))")
+                        .font(.title2.weight(.semibold))
+                    DiskBar(available: before, reclaim: max(0, after - before), label: "Before \(bytes(before)) free · now \(bytes(after)) free")
+                    HStack(spacing: 8) {
+                        outcomeChip("Deleted", result.items.filter { $0.outcome == .deleted }.count, ProjectColors.good)
+                        outcomeChip("Trash", result.items.filter { $0.outcome == .movedToTrash }.count, .blue)
+                        outcomeChip("Skipped", result.items.filter { $0.outcome == .skipped }.count, .secondary)
+                        outcomeChip("Failed", result.items.filter { $0.outcome == .failed }.count, ProjectColors.critical)
+                    }
+                }
+                .padding(12)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
@@ -184,24 +202,7 @@ struct CleanupReviewView: View {
         systemImage: String,
         targets: [CleanupTarget]
     ) -> some View {
-        GroupBox {
-            if targets.isEmpty {
-                Text("None")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(targets.enumerated()), id: \.element.identifier) {
-                        index,
-                        target in
-                        selectableTargetRow(target)
-                        if index < targets.count - 1 {
-                            Divider()
-                        }
-                    }
-                }
-            }
-        } label: {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Label(
                     "\(title) · \(bytes(totalBytes(targets)))",
@@ -220,6 +221,25 @@ struct CleanupReviewView: View {
                 .buttonStyle(.link)
                 .disabled(targets.isEmpty)
             }
+            VStack(alignment: .leading, spacing: 0) {
+                if targets.isEmpty {
+                    Text("None")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                } else {
+                    ForEach(Array(targets.enumerated()), id: \.element.identifier) {
+                        index,
+                        target in
+                        selectableTargetRow(target)
+                        if index < targets.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -283,10 +303,20 @@ struct CleanupReviewView: View {
                 }
             )
         ) {
-            targetContent(target, detail: targetDetail(target))
+            TargetRow(target: target, largest: largestBytes, detail: targetDetail(target))
         }
         .toggleStyle(.checkbox)
         .padding(.vertical, 7)
+    }
+
+    private var largestBytes: Int64 {
+        guard case .review(let review) = viewModel.state, let plan = review.plan else {
+            if case .applying(let review) = viewModel.state, let plan = review.plan {
+                return CleanupBreakdown(plan: plan, selected: []).largestTargetBytes
+            }
+            return 0
+        }
+        return CleanupBreakdown(plan: plan, selected: []).largestTargetBytes
     }
 
     private func protectedSection(
@@ -358,13 +388,23 @@ struct CleanupReviewView: View {
         } else if !target.runtimeIdentifier.isEmpty {
             components.append(target.runtimeIdentifier)
         }
-        components.append(target.sizeBytes.map(bytes) ?? "Unknown size")
         if let date = target.lastUsedAt {
             components.append(
-                date.formatted(date: .abbreviated, time: .omitted)
+                "last used \(date.formatted(date: .abbreviated, time: .omitted))"
             )
         }
         return components.joined(separator: " · ")
+    }
+
+    private func outcomeChip(_ title: String, _ count: Int, _ color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text("\(title) \(count)").font(.caption.monospacedDigit())
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Color.primary.opacity(0.06), in: Capsule())
+        .opacity(count == 0 ? 0.5 : 1)
     }
 
     private func totalBytes(_ targets: [CleanupTarget]) -> Int64 {
@@ -389,5 +429,159 @@ struct CleanupReviewView: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: value)
+    }
+}
+
+private func formatBytes(_ value: Int64) -> String {
+    let formatter = ByteCountFormatter()
+    formatter.countStyle = .file
+    return formatter.string(fromByteCount: value)
+}
+
+struct DiskBar: View {
+    let available: Int64?
+    let reclaim: Int64
+    var label: String?
+
+    private var capacity: Int64? {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+        return (try? url.resourceValues(forKeys: [.volumeTotalCapacityKey]).volumeTotalCapacity).map(Int64.init)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let capacity, capacity > 0, let available {
+                let free = Double(available) / Double(capacity)
+                let gain = min(Double(reclaim) / Double(capacity), 1 - free)
+                GeometryReader { proxy in
+                    HStack(spacing: 2) {
+                        RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.45))
+                            .frame(width: max(4, proxy.size.width * (1 - free - gain)))
+                        if gain > 0 {
+                            RoundedRectangle(cornerRadius: 4).fill(ProjectColors.good)
+                                .frame(width: max(4, proxy.size.width * gain))
+                        }
+                        RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08))
+                    }
+                }
+                .frame(height: 14)
+                HStack(spacing: 14) {
+                    legend(Color.secondary.opacity(0.45), "Used")
+                    if reclaim > 0 { legend(ProjectColors.good, "Reclaimed \(formatBytes(reclaim))") }
+                    legend(Color.primary.opacity(0.15), "Free \(formatBytes(available))")
+                    Spacer()
+                    Text(label ?? "\(formatBytes(capacity)) disk")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Selected \(formatBytes(reclaim))").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func legend(_ color: Color, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 9, height: 9)
+            Text(text).font(.caption)
+        }
+    }
+}
+
+struct BreakdownBar: View {
+    let breakdown: CleanupBreakdown
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Reclaimable by kind · \(formatBytes(breakdown.selectedBytes)) of \(formatBytes(breakdown.totalBytes)) selected")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            GeometryReader { proxy in
+                HStack(spacing: 2) {
+                    ForEach(breakdown.segments) { segment in
+                        let width = proxy.size.width * CGFloat(segment.bytes) / CGFloat(max(1, breakdown.totalBytes))
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4).fill(ProjectColors.color(slot: segment.group.rawValue).opacity(0.3))
+                            RoundedRectangle(cornerRadius: 4).fill(ProjectColors.color(slot: segment.group.rawValue))
+                                .frame(width: max(0, width * CGFloat(segment.selectedBytes) / CGFloat(max(1, segment.bytes))))
+                        }
+                        .frame(width: max(3, width))
+                        .help("\(segment.group.title): \(formatBytes(segment.selectedBytes)) of \(formatBytes(segment.bytes)) selected")
+                    }
+                }
+            }
+            .frame(height: 18)
+            FlowLegend(segments: breakdown.segments)
+        }
+    }
+}
+
+private struct FlowLegend: View {
+    let segments: [CleanupBreakdown.Segment]
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(segments) { segment in
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 2).fill(ProjectColors.color(slot: segment.group.rawValue)).frame(width: 9, height: 9)
+                    Text("\(segment.group.title) \(formatBytes(segment.bytes))").font(.caption)
+                }
+            }
+        }
+    }
+}
+
+struct TargetRow: View {
+    let target: CleanupTarget
+    let largest: Int64
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .foregroundStyle(ProjectColors.color(slot: CleanupGroup(target.category).rawValue))
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(target.name).lineLimit(1).help(target.name)
+                    if let days = CleanupBreakdown.unusedDays(target, now: Date()), days >= 7 {
+                        tag("unused \(days) d", .secondary)
+                    }
+                    tag(target.action == .moveToTrash ? "Trash" : "Delete", target.action == .moveToTrash ? .orange : .secondary)
+                }
+                if !detail.isEmpty {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.primary.opacity(0.07))
+                        Capsule().fill(ProjectColors.color(slot: CleanupGroup(target.category).rawValue).opacity(0.8))
+                            .frame(width: proxy.size.width * CGFloat(target.sizeBytes ?? 0) / CGFloat(max(1, largest)))
+                    }
+                }
+                .frame(height: 4)
+            }
+            Text(target.sizeBytes.map(formatBytes) ?? "?")
+                .font(.callout.monospacedDigit())
+                .frame(minWidth: 64, alignment: .trailing)
+        }
+    }
+
+    private var symbol: String {
+        switch target.kind {
+        case .device: "iphone"
+        case .runtime: "cube"
+        case .filesystem: CleanupGroup(target.category) == .archives ? "archivebox" : "folder"
+        }
+    }
+
+    private func tag(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.12), in: Capsule())
     }
 }
