@@ -178,7 +178,7 @@ final class CLIScaffoldTests: XCTestCase {
             ),
             0
         )
-        XCTAssertEqual(fixture.output.value, "simlease 0.1.2\n")
+        XCTAssertEqual(fixture.output.value, "simlease 0.4.0\n")
     }
 
     func testUpdatePassesCurrentVersionAndReturnsUpdaterStatus() throws {
@@ -193,7 +193,7 @@ final class CLIScaffoldTests: XCTestCase {
             ),
             17
         )
-        XCTAssertEqual(runner.arguments, ["--current-version", "0.1.2"])
+        XCTAssertEqual(runner.arguments, ["--current-version", "0.4.0"])
     }
 
     func testDebugProductionConfigurationUsesCacheOverride() {
