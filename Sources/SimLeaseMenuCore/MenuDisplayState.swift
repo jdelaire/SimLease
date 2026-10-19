@@ -56,8 +56,10 @@ public struct DeviceDisplayItem: Equatable, Sendable, Identifiable {
     public let canShutDown: Bool
     public let runtime: String
     public let state: String
+    public let runtimeStale: Bool
 
-    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "") {
+    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "", runtimeStale: Bool = false) {
+        self.runtimeStale = runtimeStale
         self.runtime = runtime
         self.state = state
         self.canShutDown = canShutDown
@@ -218,6 +220,14 @@ public struct MenuDisplayState: Equatable, Sendable {
                 detail: activity.error ?? "\(activity.uninspectedProcessCount) processes could not be inspected."
             ))
         }
+        for runtime in status.staleRuntimes ?? [] {
+            let affected = usage.values.filter { $0.runtimeStale == true }.count
+            alerts.append(MenuAlert(
+                id: "runtime-\(runtime.identifier)", severity: .warning, title: "iOS \(runtime.version) runtime is older than Xcode",
+                detail: "Runtime \(runtime.build) predates the SDK \(runtime.sdkBuild)\(affected > 0 ? " used by \(affected) listed simulator\(affected == 1 ? "" : "s")" : ""). Apps built with this Xcode can crash calling missing system symbols, such as Date comparisons.",
+                copyLabel: "Copy install command", copyText: "xcodebuild -downloadPlatform iOS"
+            ))
+        }
         if let idle {
             alerts.append(MenuAlert(
                 id: "native-idle", severity: .warning, title: "Native session looks idle",
@@ -254,7 +264,7 @@ public struct MenuDisplayState: Equatable, Sendable {
                     .map { "\($0.tool) · PID \($0.process.pid)" },
                 crashBlocked: blocked.contains(device.id),
                 canShutDown: [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted,
-                runtime: device.runtime, state: device.state
+                runtime: device.runtime, state: device.state, runtimeStale: device.runtimeStale == true
             )
         }
     }

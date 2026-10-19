@@ -14,8 +14,10 @@ public struct SimulatorUsage: Codable, Equatable, Sendable, Identifiable {
     public let state: String
     public let reservation: Reservation
     public let warmSince: Date?
+    public let runtimeStale: Bool?
 
-    public init(id: String, name: String, runtime: String, state: String, reservation: Reservation, warmSince: Date? = nil) {
+    public init(id: String, name: String, runtime: String, state: String, reservation: Reservation, warmSince: Date? = nil, runtimeStale: Bool? = nil) {
+        self.runtimeStale = runtimeStale
         self.warmSince = warmSince
         self.id = id
         self.name = name
@@ -24,7 +26,7 @@ public struct SimulatorUsage: Codable, Equatable, Sendable, Identifiable {
         self.reservation = reservation
     }
 
-    public static func build(inventory: [ManagedSimulatorDevice], task: SimulatorTaskRecord?, relevantIDs: Set<String> = [], warm: [String: Date] = [:]) -> [SimulatorUsage] {
+    public static func build(inventory: [ManagedSimulatorDevice], task: SimulatorTaskRecord?, relevantIDs: Set<String> = [], warm: [String: Date] = [:], staleRuntimes: Set<String> = []) -> [SimulatorUsage] {
         let owned = Set((task?.ownedDeviceIDs ?? []).map { $0.uppercased() })
         let reserved = Set((task?.deviceIDs ?? []).map { $0.uppercased() })
         let relevant = Set(relevantIDs.map { $0.uppercased() })
@@ -33,7 +35,7 @@ public struct SimulatorUsage: Codable, Equatable, Sendable, Identifiable {
             let since = device.state == "Booted" ? warm[id] : nil
             let reservation: Reservation = owned.contains(id) ? .owned : reserved.contains(id) ? .borrowed : since != nil ? .warm : .unreserved
             guard reservation != .unreserved || device.state != "Shutdown" || relevant.contains(id) else { return nil }
-            return SimulatorUsage(id: id, name: device.name, runtime: runtimeName(device.runtime), state: device.state, reservation: reservation, warmSince: reservation == .warm ? since : nil)
+            return SimulatorUsage(id: id, name: device.name, runtime: runtimeName(device.runtime), state: device.state, reservation: reservation, warmSince: reservation == .warm ? since : nil, runtimeStale: staleRuntimes.contains(device.runtime) ? true : nil)
         }
         for id in reserved.union(owned) where devices[id] == nil {
             usage.append(SimulatorUsage(id: id, name: "Unknown simulator", runtime: "", state: "Missing", reservation: owned.contains(id) ? .owned : .borrowed))

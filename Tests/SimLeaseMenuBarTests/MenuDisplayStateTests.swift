@@ -141,6 +141,18 @@ final class MenuDisplayStateTests: XCTestCase {
         XCTAssertEqual(waiters.first?.targets, ["Set Smoke iPhone 17 Pro · iOS 27.0"])
     }
 
+    func testStaleRuntimeRaisesAlertAndMarksDevices() {
+        let id = "11111111-1111-4111-8111-111111111111"
+        let runtime = StaleRuntime(identifier: "com.apple.CoreSimulator.SimRuntime.iOS-27-2", version: "27.2", build: "24B5089g", sdkBuild: "24B5109a")
+        let status = LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, devices: [
+            SimulatorUsage(id: id, name: "iPhone 18 Pro", runtime: "iOS 27.2", state: "Booted", reservation: .unreserved, runtimeStale: true),
+        ], staleRuntimes: [runtime])
+        let state = MenuDisplayState(status: status, now: Date())
+        XCTAssertEqual(state.alerts.map(\.title), ["iOS 27.2 runtime is older than Xcode"])
+        XCTAssertEqual(state.alerts.first?.copyText, "xcodebuild -downloadPlatform iOS")
+        XCTAssertEqual(state.devices?.first?.runtimeStale, true)
+    }
+
     func testMissingTitleUsesEightCharacterThreadID() {
         let status = LeaseStatus(
             state: .leased,

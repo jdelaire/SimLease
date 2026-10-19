@@ -142,6 +142,7 @@ public enum SimLeaseCLI {
                 let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: project, command: arguments, source: .nativeTool, threadID: environment["CODEX_THREAD_ID"], threadTitle: title)
                 let executable = arguments[0].contains("/") ? URL(fileURLWithPath: arguments[0]).resolvingSymlinksInPath()
                     : try ExecutableResolver.resolve(name: "simlease", path: environment["PATH"] ?? "", excluding: URL(fileURLWithPath: "/dev/null"))
+                warnAboutStaleRuntimes(ids, environment: environment, configuration: configuration)
                 return try taskService(environment: environment, configuration: configuration).run(
                     executable: executable,
                     arguments: ["__native_wait", id], deviceIDs: ids, keepRunning: false,
@@ -427,6 +428,7 @@ public enum SimLeaseCLI {
         }
         let blocks = try CrashLoopStore(paths: configuration.paths).read().blocks.values.sorted { $0.deviceID < $1.deviceID }
         var usage: [SimulatorUsage]?
+        var stale: [StaleRuntime]?
         if devices {
             let xcrun: URL
             #if DEBUG || SIMLEASE_TESTING
@@ -436,8 +438,9 @@ public enum SimLeaseCLI {
             #endif
             let manager = configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun)
             let relevant = status.waiters.flatMap { $0.deviceIDs ?? [] } + (status.activity?.activities.flatMap(\.deviceIDs) ?? []) + blocks.map(\.deviceID)
+            stale = configuration.deviceManager == nil ? RuntimeCompatibility.cached(paths: configuration.paths, environment: environment, xcrunURL: xcrun) : []
             usage = (try? manager.inventory()).map {
-                SimulatorUsage.build(inventory: $0, task: status.state == .leased && task?.owner.pid == status.owner?.pid ? task : nil, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:])
+                SimulatorUsage.build(inventory: $0, task: status.state == .leased && task?.owner.pid == status.owner?.pid ? task : nil, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:], staleRuntimes: Set((stale ?? []).map(\.identifier)))
             }
         }
         let history = LaneHistoryStore(paths: configuration.paths)
@@ -447,13 +450,14 @@ public enum SimLeaseCLI {
         if status.state == .leased, let owner = status.owner, let task, task.owner.pid == owner.pid, task.phase == .running, let sessionID = task.externalSessionID {
             nativeIdleSince = max(owner.acquiredAt, history.lastNativeActivity(sessionID: sessionID) ?? owner.acquiredAt)
         }
-        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage, typicalDurations: durations.isEmpty ? nil : durations, nativeIdleSince: nativeIdleSince)
+        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage, typicalDurations: durations.isEmpty ? nil : durations, nativeIdleSince: nativeIdleSince, staleRuntimes: stale?.isEmpty == false ? stale : nil)
         if json {
             let data = try JSONEncoder.simLease.encode(status)
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
         } else {
             configuration.standardOutput("\(status.state.rawValue)\n")
             for device in usage ?? [] { configuration.standardOutput("\(device.reservation.rawValue): \(device.name) \(device.id) \(device.state)\n") }
+            for runtime in stale ?? [] { configuration.standardOutput("Stale runtime: iOS \(runtime.version) \(runtime.build) is older than the Xcode SDK \(runtime.sdkBuild)\n") }
             for block in blocks { configuration.standardOutput("Crash blocked: \(block.processName) on \(block.deviceID)\n") }
             if let activity = status.activity {
                 for item in activity.activities { configuration.standardOutput("\(item.kind.rawValue): \(item.tool) PID \(item.process.pid)\n") }
@@ -587,6 +591,7 @@ public enum SimLeaseCLI {
             return try ChildProcessRunner.run(executable: executable, arguments: arguments, environment: childEnvironment).exitCode
         }
         let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: command, store: store)
+        warnAboutStaleRuntimes(ids, environment: environment, configuration: configuration)
         return try taskService(environment: environment, configuration: configuration).run(
             executable: executable, arguments: arguments, deviceIDs: ids,
             keepRunning: keepRunning, keepWarm: keepWarm, environment: childEnvironment, identity: identity
@@ -640,6 +645,7 @@ public enum SimLeaseCLI {
             environment: environment, cwd: FileManager.default.currentDirectoryPath,
             command: invocation, store: store
         )
+        warnAboutStaleRuntimes(ids, environment: environment, configuration: configuration)
         return try taskService(environment: environment, configuration: configuration).run(
             executable: executable, arguments: arguments, deviceIDs: ids,
             keepRunning: false, environment: childEnvironment, identity: identity
@@ -665,6 +671,23 @@ public enum SimLeaseCLI {
             try controller.shutdown(id)
         }
         return false
+    }
+
+    private static func warnAboutStaleRuntimes(_ ids: [String], environment: [String: String], configuration: CLIConfiguration) {
+        guard !ids.isEmpty, configuration.deviceManager == nil else { return }
+        let xcrun: URL
+        #if DEBUG || SIMLEASE_TESTING
+        xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+        #else
+        xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+        #endif
+        let stale = RuntimeCompatibility.cached(paths: configuration.paths, environment: environment, xcrunURL: xcrun)
+        guard !stale.isEmpty, let inventory = try? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun).inventory() else { return }
+        let wanted = Set(ids.map { $0.uppercased() })
+        for device in inventory where wanted.contains(device.id) {
+            guard let runtime = stale.first(where: { $0.identifier == device.runtime }) else { continue }
+            configuration.standardError("SimLease: warning: \(device.name) \(device.id) runs iOS \(runtime.version) \(runtime.build), older than the Xcode SDK \(runtime.sdkBuild). Apps built with this Xcode can crash calling missing system symbols. Install the matching runtime with xcodebuild -downloadPlatform iOS.\n")
+        }
     }
 
     private static func makeCoordinator(

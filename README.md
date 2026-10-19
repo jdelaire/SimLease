@@ -76,6 +76,16 @@ reservation. The menu popover lists the same simulators with the lease owner,
 queued threads that declared the device, and unmanaged processes targeting it.
 The menu queries the simulator inventory only while the popover is open.
 
+With `--devices`, status also compares each installed iOS simulator runtime
+with the selected Xcode's simulator SDK. A runtime with the same iOS version
+but an older build than the SDK is reported in `staleRuntimes`, flagged on its
+devices, and shown as a menu alert, because apps built against the newer SDK
+can call system symbols the older runtime does not provide. On this Mac an
+iOS 27.2 runtime build 24B5089g under an SDK build 24B5109a crashed apps in
+`Date` comparisons by jumping to address 0. `simlease run` and `session begin`
+print the same warning for declared devices on a stale runtime. Install the
+matching runtime with `xcodebuild -downloadPlatform iOS`.
+
 `status --json` also reports `typicalDurations`, the median lane hold time of
 the last 20 jobs per project once a project has 3 finished jobs, and
 `nativeIdleSince` for a native session, the later of its start and its last

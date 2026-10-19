@@ -447,6 +447,11 @@ private struct SimulatorSection: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if device.runtimeStale {
+                    Label("Runtime older than Xcode SDK", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 if device.crashBlocked {
                     Label("Crash blocked", systemImage: "exclamationmark.octagon.fill")
                         .font(.caption)
