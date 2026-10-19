@@ -1,26 +1,62 @@
 # SimLease
 
-SimLease coordinates shared iOS Simulator access across agents and terminal
-sessions. Its command shims acquire one atomic lease before simulator work,
-while the menu-bar app shows the owner and every waiting thread.
+See which project is using each iOS Simulator, what is waiting, and how much
+CPU and memory headroom your Mac has. SimLease coordinates simulator work
+across coding agents and terminal sessions through managed execution lanes.
 
-Storage cleanup is separate and always explicit. SimLease reviews stale
-simulators, rebuildable Xcode caches, and guarded artifacts, then applies only
-the selected target IDs from a short-lived plan.
+<img src="docs/images/menu.png" alt="SimLease menu showing Atlas and Journal in separate lanes, a queued Reader job, and three simulator reservations" width="380">
+
+Screenshots are rendered from the app's SwiftUI views with sample projects and
+data. They do not show live jobs or personal files.
+
+[Install](#install) · [Quickstart](#quickstart) · [Inside the app](#inside-the-app) ·
+[Agent workflow](#agent-workflow) · [Update](#update) · [Uninstall](#uninstall)
+
+- **See ownership.** Project colors connect running jobs to their simulators.
+  The queue shows who is waiting and why.
+- **Limit concurrency.** Start with one lane, or allow up to three. Extra lanes
+  open only when the Mac has enough resource headroom.
+- **Clean up after jobs.** By default, devices booted for a job shut down when
+  it ends. Devices that were already booted are borrowed and stay running.
+- **Review crashes and storage.** Repeated app crashes block retries on owned
+  targets. Storage cleanup shows what can be reclaimed and requires an explicit
+  selection and confirmation.
 
 ## Requirements
 
-- Apple Silicon Mac
-- macOS 15 or later
-- Xcode command-line tools
+- An Apple Silicon Mac running macOS 15 or later.
+- Xcode, including an installed iOS Simulator runtime. Open Xcode once to finish
+  its setup before starting simulator work.
 
 ## Install
 
-```sh
-curl -fsSL \
-  https://raw.githubusercontent.com/jdelaire/SimLease/main/scripts/install-release.sh \
-  | zsh
-```
+1. Run this in Terminal:
+
+   ```sh
+   curl -fsSL \
+     https://raw.githubusercontent.com/jdelaire/SimLease/main/scripts/install-release.sh \
+     | zsh
+   ```
+
+   This installs the latest stable [GitHub release](https://github.com/jdelaire/SimLease/releases/latest),
+   including the menu-bar app, CLI, command shims, updater and login LaunchAgent.
+   The app starts automatically and launches again at login.
+
+2. Open a new login terminal and restart any coding agents or GUI tools that
+   were already running. They need to inherit the updated `PATH` so normal
+   `xcrun`, `xcodebuild`, `axe` and `agent-device` calls reach the shims.
+
+3. Verify the installation in the new terminal:
+
+   ```sh
+   simlease --version
+   command -v xcrun
+   simlease doctor
+   ```
+
+   `command -v xcrun` should point to
+   `~/.local/lib/simlease/shims/xcrun`, expanded to your home directory.
+   `doctor` reports shim coverage and known native device helpers.
 
 The installer downloads the latest stable GitHub release and verifies its
 SHA-256 checksum, arm64 architecture, Developer ID signature, and Gatekeeper
@@ -29,12 +65,102 @@ restores the previous version if it fails. During an update, it stops the
 running menu app and bootstraps a fresh LaunchAgent registration so the new
 signed binary is actually running. It never uses `sudo`.
 
-Restart terminal login shells and Codex after the first install so their PATH
-starts with:
+Click the SimLease icon in the macOS menu bar to open the popover. It is a
+menu-bar app, so it does not have a Dock icon. If you need to open it again:
 
-```text
-~/.local/lib/simlease/shims
+```sh
+open "$HOME/Applications/SimLease.app"
 ```
+
+### Installation troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| `simlease: command not found` | Open a new login terminal. You can also run `~/.local/lib/simlease/simlease doctor` directly to check the installed CLI. |
+| `xcrun` still resolves to `/usr/bin/xcrun` | Restart the terminal or agent. The installer adds `~/.local/lib/simlease/shims` at the front of `PATH` in `~/.zprofile`. |
+| The menu icon is missing | Open `~/Applications/SimLease.app` and check whether your menu-bar manager has hidden its icon. |
+| Device tools cannot find an iOS runtime | Finish Xcode setup and install the runtime you need from Xcode Settings. |
+
+## Quickstart
+
+List available devices and choose a dedicated simulator UUID for your project:
+
+```sh
+xcrun simctl list devices available
+```
+
+Replace `YOUR-DEVICE-UUID`, the project and the scheme below with your values.
+Run the complete job inside one reservation, and use that same UUID in the
+command it launches:
+
+```sh
+SIMULATOR_ID="YOUR-DEVICE-UUID"
+
+simlease run --device "$SIMULATOR_ID" -- \
+  xcodebuild test \
+  -project MyApp.xcodeproj \
+  -scheme MyApp \
+  -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+```
+
+SimLease waits for a lane, runs the command, and cleans up devices it owned
+before releasing the reservation. To run a script that builds, launches and
+captures an app, put the whole script inside `simlease run` and target the
+declared UUID throughout it.
+
+Inspect current reservations and waiting work:
+
+```sh
+simlease status --devices
+```
+
+For interactive work through Xcode or a T3/MCP Device panel, use a
+[native session](#shell-and-native-tool-coverage). Keep that session open across
+all device interactions and bind the dedicated helpers reported by `doctor`.
+A standalone shimmed `simctl boot` is a complete job, so a device it boots is
+shut down when that command ends.
+
+## Inside the app
+
+### Menu and simulator ownership
+
+The popover at the top of this page connects each running lane to its project
+and simulator. Click a phone card for its UUID, reservation owner and waiting
+work. A lane badge identifies the reservation; a flame marks a warm device;
+a warning marks a crash block. The header shows memory and CPU headroom.
+
+One lane is enabled by default. To allow a second independent job when resource
+headroom permits:
+
+```sh
+simlease config --max-lanes 2
+```
+
+Projects must declare their device UUIDs to use separate lanes. Jobs sharing a
+device or workspace still wait for one another. See the
+[agent workflow](#agent-workflow) for admission and cleanup rules.
+
+### Dashboard
+
+Click the chart icon in the popover footer to open the dashboard. It shows
+lane usage over time, queue waits, memory and CPU headroom, attributed crashes,
+and typical job durations by project. Choose a time range to inspect recent
+activity. Resource charts fill in as the menu app collects samples.
+
+<img src="docs/images/dashboard.png" alt="SimLease dashboard with job timelines, memory and CPU charts, simulator crash history and per-project timing" width="1000">
+
+### Storage cleanup
+
+Click **Storage Cleanup…** in the popover footer to review unused simulators,
+outdated runtimes and rebuildable Xcode caches. Select the items to remove,
+review the total, and type the displayed confirmation ID before applying.
+Guarded items such as archives start unchecked and move to Trash when selected.
+Cleanup never runs automatically.
+
+<img src="docs/images/storage-cleanup.png" alt="Xcode storage review showing selected simulator and cache sizes, a guarded archive section and a confirmation field" width="850">
+
+See [Xcode storage cleanup](#xcode-storage-cleanup) for eligibility rules and
+the CLI workflow.
 
 ## Agent workflow
 
@@ -45,8 +171,8 @@ simlease run --device DEVICE-UUID -- /path/to/verification-script
 ```
 
 The command can be an absolute executable, a PATH command, or a shell script.
-Repeat `--device` for a phone and watch pair. The existing single host-wide
-lane stays held until the command and its cleanup finish.
+Repeat `--device` for a phone and watch pair. The reservation stays held until
+the command and its cleanup finish.
 
 A device that was shut down when the scope started belongs to that scope.
 After success, failure, or cancellation, SimLease stops the owned child process
