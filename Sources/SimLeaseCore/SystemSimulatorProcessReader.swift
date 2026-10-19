@@ -15,7 +15,7 @@ struct SystemSimulatorProcessReader: SimulatorProcessReading {
         var references = [ProcessReference]()
         for pid in buffer.prefix(Int(bytes) / MemoryLayout<Int32>.size) where pid > 0 {
             if let reference = ProcessReference.capture(pid: pid) { references.append(reference) }
-            else if !hasExited(pid: pid) { inventory.uninspectedProcessCount += 1 }
+            else if !hasExited(pid: pid), !Self.isZombie(pid: pid) { inventory.uninspectedProcessCount += 1 }
         }
         return SimulatorProcessInventory(references: references, uninspectedProcessCount: inventory.uninspectedProcessCount)
     }
@@ -23,6 +23,14 @@ struct SystemSimulatorProcessReader: SimulatorProcessReading {
     func current(pid: Int32) -> ProcessReference? { ProcessReference.capture(pid: pid) }
 
     func hasExited(pid: Int32) -> Bool { kill(pid, 0) != 0 && errno == ESRCH }
+
+    static func isZombie(pid: Int32) -> Bool {
+        var query = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var process = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.size
+        let result = query.withUnsafeMutableBufferPointer { sysctl($0.baseAddress, UInt32($0.count), &process, &size, nil, 0) }
+        return result == 0 && size == MemoryLayout<kinfo_proc>.size && process.kp_proc.p_pid == pid && process.kp_proc.p_stat == SZOMB
+    }
 
     func details(for reference: ProcessReference) throws -> SimulatorProcessSnapshot {
         guard let info = ProcessReference.info(pid: reference.pid) else {
@@ -36,12 +44,18 @@ struct SystemSimulatorProcessReader: SimulatorProcessReading {
         }
         var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         let count = path.withUnsafeMutableBytes { proc_pidpath(reference.pid, $0.baseAddress, UInt32($0.count)) }
-        guard count > 0 else { throw ChildProcessError.systemCall("proc_pidpath", errno) }
-        let executable = String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let executable: String
+        if count > 0 {
+            executable = String(decoding: path.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        } else {
+            let failure = errno
+            guard failure == ENOENT else { throw ChildProcessError.systemCall("proc_pidpath", failure) }
+            executable = try Self.parseArguments(try procargs(pid: reference.pid)).executable
+        }
         let tool = URL(fileURLWithPath: executable).lastPathComponent
         return SimulatorProcessSnapshot(
             process: reference, parentPID: Int32(info.pbi_ppid), executable: executable,
-            arguments: Self.isCandidate(tool) ? try arguments(pid: reference.pid) : []
+            arguments: Self.isCandidate(tool) ? try Self.parseArguments(try procargs(pid: reference.pid)).arguments : []
         )
     }
 
@@ -53,7 +67,7 @@ struct SystemSimulatorProcessReader: SimulatorProcessReading {
         ["simctl", "xcrun", "xcodebuild", "axe", "agent-device"].contains(name) || isNode(name)
     }
 
-    private func arguments(pid: Int32) throws -> [String] {
+    private func procargs(pid: Int32) throws -> [UInt8] {
         var query = [CTL_KERN, KERN_PROCARGS2, pid]
         var buffer = [UInt8](repeating: 0, count: 262_144)
         var size = buffer.count
@@ -61,10 +75,18 @@ struct SystemSimulatorProcessReader: SimulatorProcessReading {
             buffer.withUnsafeMutableBytes { sysctl(query.baseAddress, UInt32(query.count), $0.baseAddress, &size, nil, 0) }
         }
         guard result == 0, size >= 4 else { throw ChildProcessError.systemCall("procargs", errno) }
+        return Array(buffer.prefix(size))
+    }
+
+    static func parseArguments(_ buffer: [UInt8]) throws -> (executable: String, arguments: [String]) {
+        let size = buffer.count
+        guard size >= 4 else { throw ChildProcessError.systemCall("procargs", EINVAL) }
         let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
         guard argc > 0, argc <= 4096 else { throw ChildProcessError.systemCall("procargs", EINVAL) }
         var index = 4
         while index < size && buffer[index] != 0 { index += 1 }
+        let executable = String(decoding: buffer[4..<index], as: UTF8.self)
+        guard !executable.isEmpty else { throw ChildProcessError.systemCall("procargs", EINVAL) }
         while index < size && buffer[index] == 0 { index += 1 }
         var arguments = [String]()
         for _ in 0..<argc {
@@ -74,6 +96,6 @@ struct SystemSimulatorProcessReader: SimulatorProcessReading {
             arguments.append(String(decoding: buffer[start..<index], as: UTF8.self))
             index += 1
         }
-        return arguments
+        return (executable, arguments)
     }
 }
