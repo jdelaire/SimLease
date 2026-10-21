@@ -136,14 +136,20 @@ struct LeasePopoverView: View {
             ForEach(state.running) { job in
                 HStack(spacing: 6) {
                     RoundedRectangle(cornerRadius: 2).fill(ProjectColors.color(for: job.project)).frame(width: 8, height: 8)
+                    Text(job.headline)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                        .help("\(job.headline) · \(job.subheadline)")
                     Text(job.subheadline)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize()
                     Text(job.command)
                         .font(.caption.monospaced())
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .layoutPriority(-1)
                         .help(job.command)
                 }
             }

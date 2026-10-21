@@ -35,8 +35,9 @@ public struct LeaseIdentity: Equatable, Sendable {
         store: MetadataStore,
         pid: Int32 = getpid()
     ) throws -> LeaseIdentity {
-        let threadID = environment["CODEX_THREAD_ID"]
-        let title = threadID.flatMap { try? store.threadName(id: $0) }
+        let (threadID, source) = thread(in: environment)
+        let title = environment["SIMLEASE_THREAD_TITLE"].flatMap { $0.isEmpty ? nil : $0 }
+            ?? threadID.flatMap { try? store.threadName(id: $0) }
         let normalizedPath = URL(fileURLWithPath: cwd).standardizedFileURL.path
         let project = URL(fileURLWithPath: normalizedPath).lastPathComponent
 
@@ -45,9 +46,15 @@ public struct LeaseIdentity: Equatable, Sendable {
             cwd: cwd,
             project: project,
             command: command,
-            source: threadID == nil ? .terminal : .codex,
+            source: source,
             threadID: threadID,
             threadTitle: title
         )
+    }
+
+    public static func thread(in environment: [String: String]) -> (id: String?, source: LeaseSource) {
+        if let id = environment["CODEX_THREAD_ID"], !id.isEmpty { return (id, .codex) }
+        if let id = environment["CLAUDE_CODE_SESSION_ID"], !id.isEmpty { return (id, .claude) }
+        return (nil, .terminal)
     }
 }

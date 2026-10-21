@@ -122,7 +122,8 @@ public enum SimLeaseCLI {
                     "--current-version",
                     SimLeaseBuild.currentVersion.description,
                 ])
-            case .run(let ids, let keepRunning, let keepWarm, let command):
+            case .run(let ids, let keepRunning, let keepWarm, let command, let title):
+                let environment = title.map { environment.merging(["SIMLEASE_THREAD_TITLE": $0]) { $1 } } ?? environment
                 return try runTask(command: command, deviceIDs: ids, keepRunning: keepRunning, keepWarm: keepWarm, environment: environment, configuration: configuration)
             case .recover:
                 let store = try MetadataStore(paths: configuration.paths)
@@ -169,7 +170,7 @@ public enum SimLeaseCLI {
             case .sessionBegin(let title, let project, let ids, let clientPIDs):
                 let id = UUID().uuidString
                 let clients = try NativeClientAdmission.capture(pids: clientPIDs)
-                let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: project, command: arguments, source: .nativeTool, threadID: environment["CODEX_THREAD_ID"], threadTitle: title)
+                let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: project, command: arguments, source: .nativeTool, threadID: LeaseIdentity.thread(in: environment).id, threadTitle: title)
                 let executable = arguments[0].contains("/") ? URL(fileURLWithPath: arguments[0]).resolvingSymlinksInPath()
                     : try ExecutableResolver.resolve(name: "simlease", path: environment["PATH"] ?? "", excluding: URL(fileURLWithPath: "/dev/null"))
                 warnAboutStaleRuntimes(ids, environment: environment, configuration: configuration)
@@ -510,7 +511,7 @@ public enum SimLeaseCLI {
         environment: [String: String],
         configuration: CLIConfiguration
     ) throws -> Int32 {
-        guard let threadID = environment["CODEX_THREAD_ID"] else {
+        guard let threadID = LeaseIdentity.thread(in: environment).id else {
             throw CommandParserError.usage
         }
         let store = try MetadataStore(paths: configuration.paths)
@@ -530,7 +531,7 @@ public enum SimLeaseCLI {
         let identity = LeaseIdentity(
             pid: getpid(), cwd: FileManager.default.currentDirectoryPath,
             project: project, command: arguments, source: .manualXcode,
-            threadID: environment["CODEX_THREAD_ID"], threadTitle: title
+            threadID: LeaseIdentity.thread(in: environment).id, threadTitle: title
         )
         configuration.standardOutput("SimLease: reserving for \(title) (\(project)); press Ctrl-C to release\n")
         return try taskService(environment: environment, configuration: configuration).run(
@@ -565,8 +566,8 @@ public enum SimLeaseCLI {
         #else
         xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
         #endif
-        let threadID = environment["CODEX_THREAD_ID"]
-        let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: "SimLease", command: arguments, source: threadID == nil ? .terminal : .codex, threadID: threadID, threadTitle: title)
+        let thread = LeaseIdentity.thread(in: environment)
+        let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: "SimLease", command: arguments, source: thread.source, threadID: thread.id, threadTitle: title)
         return SimulatorShutdownService(paths: configuration.paths, coordinator: try makeCoordinator(configuration: configuration), identity: identity, devices: configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun))
     }
 
@@ -785,6 +786,7 @@ public enum SimLeaseCLI {
     private static func sourceLabel(_ source: LeaseSource) -> String {
         switch source {
         case .codex: "Codex"
+        case .claude: "Claude"
         case .terminal: "Terminal"
         case .manualXcode: "Manual Xcode"
         case .nativeTool: "Native tool"

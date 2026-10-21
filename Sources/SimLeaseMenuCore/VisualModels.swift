@@ -32,6 +32,7 @@ public struct LaneBarDisplay: Equatable, Sendable, Identifiable {
     public let lane: Int
     public let kind: Kind
     public let title: String
+    public var subtitle: String = ""
     public let detail: String
     public let project: String?
     public let fraction: Double

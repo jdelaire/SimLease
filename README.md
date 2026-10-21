@@ -448,11 +448,25 @@ finishes. Native launchers must configure the same internal tool lookup.
 Daemon requests may outlive a canceled client; client exit cannot establish
 external settlement.
 
-Name the current Codex thread so waiters can identify it:
+Name the current Codex thread or Claude Code session so the menu bar and
+waiters can identify it:
 
 ```sh
 simlease name "[Project] Simulator validation"
 ```
+
+SimLease reads the thread from `CODEX_THREAD_ID`, then `CLAUDE_CODE_SESSION_ID`.
+To name a single job, or a job from a shell with neither variable, pass
+`--title` to `simlease run` or set `SIMLEASE_THREAD_TITLE`:
+
+```sh
+simlease run --title "Onboarding UI tests" --device DEVICE-UUID -- /path/to/job
+```
+
+The order is `--title`, then `SIMLEASE_THREAD_TITLE`, then the registered name.
+The menu bar shows the title on the lane bar, in the running row and on the
+leased simulator tile. A leading `[Project]` that matches the job's project is
+dropped there, because the color chip already shows the project.
 
 ## Repeated crashes and device recovery
 

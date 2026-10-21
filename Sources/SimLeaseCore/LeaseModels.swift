@@ -2,6 +2,7 @@ import Foundation
 
 public enum LeaseSource: String, Codable, Sendable {
     case codex
+    case claude
     case terminal
     case manualXcode
     case nativeTool

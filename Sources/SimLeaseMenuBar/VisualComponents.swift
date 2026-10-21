@@ -107,7 +107,7 @@ struct LaneBarsView: View {
 
     private func help(_ bar: LaneBarDisplay) -> String {
         switch bar.kind {
-        case .running: "\(bar.title) · \(bar.detail)\(bar.exclusive ? " · holds every lane" : "")"
+        case .running: ([bar.title, bar.subtitle, bar.detail].filter { !$0.isEmpty }.joined(separator: " · ")) + (bar.exclusive ? " · holds every lane" : "")
         case .free: "Free"
         case .closed: "Closed: headroom check"
         case .off: "Not enabled. Raise with simlease config --max-lanes 3"
@@ -189,14 +189,25 @@ struct PhoneTile: View {
                     .stroke(accent ?? Color.primary.opacity(0.3), lineWidth: 2)
                     .frame(width: 24, height: 40)
             }
-            Text(device.name)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-            Text(device.runtime)
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+            if let title = device.ownerTitle {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(device.name)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            } else {
+                Text(device.name)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                Text(device.runtime)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
@@ -205,7 +216,7 @@ struct PhoneTile: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(accent?.opacity(0.8) ?? .clear, lineWidth: 1))
         .overlay(alignment: .topTrailing) { badge.padding(4) }
         .contentShape(Rectangle())
-        .help("\(device.name) · \(device.runtime) · \(device.state)\n\(device.user)\n\(device.id)")
+        .help([device.ownerTitle, "\(device.name) · \(device.runtime) · \(device.state)", device.user, device.id].compactMap { $0 }.joined(separator: "\n"))
         .accessibilityElement(children: .combine)
     }
 

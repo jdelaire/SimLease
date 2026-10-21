@@ -68,8 +68,10 @@ public struct DeviceDisplayItem: Equatable, Sendable, Identifiable {
     public let runtimeStale: Bool
     public let lane: Int?
     public let ownerProject: String?
+    public let ownerTitle: String?
 
-    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "", runtimeStale: Bool = false, lane: Int? = nil, ownerProject: String? = nil) {
+    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "", runtimeStale: Bool = false, lane: Int? = nil, ownerProject: String? = nil, ownerTitle: String? = nil) {
+        self.ownerTitle = ownerTitle
         self.lane = lane
         self.ownerProject = ownerProject
         self.runtimeStale = runtimeStale
@@ -258,7 +260,7 @@ public struct MenuDisplayState: Equatable, Sendable {
                 let expected = typical[job.owner.project]
                 let labels = Self.labels(title: job.owner.threadTitle, threadID: job.owner.threadID, source: job.owner.source, project: job.owner.project)
                 let detail = expected.map { elapsed > $0 ? "\(Self.minutes(elapsed)) ⚠︎" : "\(Self.minutes(elapsed)) / \(Self.minutes($0))" } ?? Self.minutes(elapsed)
-                return LaneBarDisplay(lane: index, kind: .running, title: labels.0, detail: detail, project: job.owner.project, fraction: expected.map { min(1, elapsed / max($0, 1)) } ?? 1, overrun: expected.map { elapsed > $0 } ?? false, exclusive: job.exclusive)
+                return LaneBarDisplay(lane: index, kind: .running, title: labels.0, subtitle: labels.1, detail: detail, project: job.owner.project, fraction: expected.map { min(1, elapsed / max($0, 1)) } ?? 1, overrun: expected.map { elapsed > $0 } ?? false, exclusive: job.exclusive)
             }
             if index >= limit { return LaneBarDisplay(lane: index, kind: .off, title: "off · max lanes \(limit)", detail: "", project: nil, fraction: 0, overrun: false, exclusive: false) }
             if index > 0, status.gate?.open == false { return LaneBarDisplay(lane: index, kind: .closed, title: "closed · \(status.gate?.reason ?? "low headroom")", detail: "", project: nil, fraction: 0, overrun: false, exclusive: false) }
@@ -291,7 +293,7 @@ public struct MenuDisplayState: Equatable, Sendable {
 
     private static func labels(title: String?, threadID: String?, source: LeaseSource, project: String) -> (String, String) {
         if source == .manualXcode { return ("Manual Xcode", project) }
-        if let title, !title.isEmpty { return (title, "\(project) · \(sourceName(source))") }
+        if let title = displayTitle(title, project: project) { return (title, "\(project) · \(sourceName(source))") }
         if let threadID, !threadID.isEmpty { return (project, "\(sourceName(source)) · \(threadID.prefix(8))") }
         return (project, sourceName(source))
     }
@@ -353,6 +355,9 @@ public struct MenuDisplayState: Equatable, Sendable {
         let names = Dictionary(waiters.map { ($0.id, $0.headline) }, uniquingKeysWith: { first, _ in first })
         let blocked = Set((status.crashBlocks ?? []).map { $0.deviceID.uppercased() })
         return usage.map { device in
+            let owner = [.owned, .borrowed].contains(device.reservation)
+                ? ((status.lanes ?? []).first { $0.deviceIDs.contains { $0.uppercased() == device.id } }?.owner ?? status.owner)
+                : nil
             let waiting = status.waiters.filter { $0.deviceIDs?.contains { $0.uppercased() == device.id } == true }.compactMap { names[$0.id] }
             let targeted = (status.activity?.activities ?? []).contains { $0.deviceIDs.isEmpty || $0.deviceIDs.contains { $0.uppercased() == device.id } }
             let user = switch device.reservation {
@@ -373,9 +378,8 @@ public struct MenuDisplayState: Equatable, Sendable {
                 crashBlocked: blocked.contains(device.id),
                 canShutDown: [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted,
                 runtime: device.runtime, state: device.state, runtimeStale: device.runtimeStale == true, lane: (status.laneLimit ?? 1) > 1 ? device.lane : nil,
-                ownerProject: [.owned, .borrowed].contains(device.reservation)
-                    ? ((status.lanes ?? []).first { $0.deviceIDs.contains { $0.uppercased() == device.id } }?.owner.project ?? status.owner?.project)
-                    : nil
+                ownerProject: owner?.project,
+                ownerTitle: owner.flatMap { displayTitle($0.threadTitle, project: $0.project) }
             )
         }
     }
@@ -533,14 +537,23 @@ public struct MenuDisplayState: Equatable, Sendable {
         project: String
     ) -> String {
         if source == .manualXcode { return "Manual Xcode · \(project)" }
-        if let title, !title.isEmpty { return title }
+        if let title = displayTitle(title, project: project) { return title }
         if let threadID, !threadID.isEmpty { return String(threadID.prefix(8)) }
         return "\(sourceName(source)) · \(project)"
+    }
+
+    static func displayTitle(_ title: String?, project: String) -> String? {
+        guard let title = title?.trimmingCharacters(in: .whitespaces), !title.isEmpty else { return nil }
+        guard title.hasPrefix("["), let close = title.firstIndex(of: "]") else { return title }
+        let key = { (text: Substring) in text.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let rest = title[title.index(after: close)...].trimmingCharacters(in: .whitespaces)
+        return key(title[title.index(after: title.startIndex)..<close]) == key(Substring(project)) && !rest.isEmpty ? rest : title
     }
 
     private static func sourceName(_ source: LeaseSource) -> String {
         switch source {
         case .codex: "Codex"
+        case .claude: "Claude"
         case .terminal: "Terminal"
         case .manualXcode: "Xcode"
         case .nativeTool: "Native tool"

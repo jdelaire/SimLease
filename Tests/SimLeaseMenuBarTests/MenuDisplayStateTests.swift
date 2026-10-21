@@ -34,13 +34,13 @@ final class MenuDisplayStateTests: XCTestCase {
         )
 
         XCTAssertEqual(state.menuTitle, "Simulator · 06:42")
-        XCTAssertEqual(state.ownerName, "[AnimAtlas] Onboarding")
+        XCTAssertEqual(state.ownerName, "Onboarding")
         XCTAssertEqual(
             state.waiters,
             [
                 WaiterDisplayItem(
                     id: "waiter-1",
-                    name: "[Set] Release validation",
+                    name: "Release validation",
                     projectAndSource: "Set · Codex",
                     elapsed: "05:00",
                     command: "xcrun simctl list",
@@ -76,7 +76,7 @@ final class MenuDisplayStateTests: XCTestCase {
         let devices = MenuDisplayState(status: status, now: Date()).devices
 
         XCTAssertEqual(devices, [
-            DeviceDisplayItem(id: id, name: "iPhone 17 Pro", detail: "iOS 27.2 · Booted", reservation: .owned, user: "[AnimAtlas] Onboarding · shuts down after", waiting: ["[Set] Release validation"], unmanaged: [], crashBlocked: false, runtime: "iOS 27.2", state: "Booted", ownerProject: "AnimAtlas"),
+            DeviceDisplayItem(id: id, name: "iPhone 17 Pro", detail: "iOS 27.2 · Booted", reservation: .owned, user: "Onboarding · shuts down after", waiting: ["Release validation"], unmanaged: [], crashBlocked: false, runtime: "iOS 27.2", state: "Booted", ownerProject: "AnimAtlas", ownerTitle: "Onboarding"),
             DeviceDisplayItem(id: other, name: "iPhone Air", detail: "iOS 27.1 · Booted", reservation: .unreserved, user: "No SimLease reservation", waiting: [], unmanaged: ["simctl · PID 42"], crashBlocked: true, runtime: "iOS 27.1", state: "Booted"),
         ])
         XCTAssertNil(MenuDisplayState(status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil), now: Date()).devices)
@@ -169,6 +169,35 @@ final class MenuDisplayStateTests: XCTestCase {
         XCTAssertEqual(state.running.map(\.lane), [0, 1])
         XCTAssertEqual(state.running.first?.typicalSeconds, 600)
         XCTAssertEqual(state.laneSummary, "2 of 2 lanes in use · extra lane closed, memory 38% free")
+    }
+
+    func testMatchingProjectPrefixIsDroppedFromTitles() {
+        XCTAssertEqual(MenuDisplayState.displayTitle("[AnimAtlas] Validate onboarding", project: "AnimAtlas"), "Validate onboarding")
+        XCTAssertEqual(MenuDisplayState.displayTitle("[thai srs] Duo slide", project: "thai-srs"), "Duo slide")
+        XCTAssertEqual(MenuDisplayState.displayTitle("[Set] Release", project: "AnimAtlas"), "[Set] Release")
+        XCTAssertEqual(MenuDisplayState.displayTitle("[AnimAtlas]", project: "AnimAtlas"), "[AnimAtlas]")
+        XCTAssertNil(MenuDisplayState.displayTitle("  ", project: "AnimAtlas"))
+    }
+
+    func testLeasedTilesShowTheirLaneOwnerTitle() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let a = "5855AB2E-0078-4A4B-9149-780B23A0AA1C", b = "D61765E6-0EEC-4D07-83EA-4FB7DD535AB0"
+        let first = LeaseOwner(pid: 1, acquiredAt: now, cwd: "/tmp/SimLease", project: "SimLease", command: [], source: .claude, threadID: "6c1f", threadTitle: "Menu thread names")
+        let second = LeaseOwner(pid: 2, acquiredAt: now, cwd: "/tmp/Set", project: "Set", command: [], source: .terminal, threadID: nil, threadTitle: nil)
+        let status = LeaseStatus(
+            state: .leased, owner: first, waiters: [], error: nil,
+            devices: [
+                SimulatorUsage(id: a, name: "iPhone 17 Pro", runtime: "iOS 27.2", state: "Booted", reservation: .owned),
+                SimulatorUsage(id: b, name: "iPhone 17", runtime: "iOS 27.2", state: "Booted", reservation: .owned),
+                SimulatorUsage(id: "0BD66E05-B117-43A2-9483-4E2F2011751F", name: "iPhone Air", runtime: "iOS 27.1", state: "Booted", reservation: .unreserved),
+            ],
+            lanes: [LaneStatus(lane: 0, owner: first, deviceIDs: [a], exclusive: false), LaneStatus(lane: 1, owner: second, deviceIDs: [b], exclusive: false)],
+            laneLimit: 2
+        )
+        let state = MenuDisplayState(status: status, now: now)
+
+        XCTAssertEqual(state.devices?.map(\.ownerTitle), ["Menu thread names", nil, nil])
+        XCTAssertEqual(state.laneBars.first?.subtitle, "SimLease · Claude")
     }
 
     func testMissingTitleUsesEightCharacterThreadID() {

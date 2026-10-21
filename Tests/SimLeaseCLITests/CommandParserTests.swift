@@ -56,6 +56,10 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(try CommandParser.parse([
             "simlease", "run", "--device", id, "--keep-warm", "--", "/bin/true",
         ]), .run(deviceIDs: [id], keepRunning: false, keepWarm: true, command: ["/bin/true"]))
+        XCTAssertEqual(try CommandParser.parse([
+            "simlease", "run", "--title", "Menu thread names", "--device", id, "--", "/bin/true",
+        ]), .run(deviceIDs: [id], keepRunning: false, command: ["/bin/true"], title: "Menu thread names"))
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "run", "--title", "", "--", "/bin/true"]))
         XCTAssertEqual(try CommandParser.parse(["simlease", "recover"]), .recover)
         XCTAssertEqual(try CommandParser.parse([
             "simlease", "hold", "--title", "UI verification", "--project", "App", "--device", id,

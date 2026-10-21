@@ -48,6 +48,43 @@ final class LeaseIdentityTests: XCTestCase {
         XCTAssertNil(identity.threadID)
     }
 
+    func testClaudeSessionResolvesRegisteredTitle() throws {
+        let store = try MetadataStore(paths: temporaryPaths())
+        try store.registerThreadName(id: "6c1f0d2e", title: "Menu thread names")
+
+        let identity = try LeaseIdentity.resolve(
+            environment: ["CLAUDE_CODE_SESSION_ID": "6c1f0d2e"],
+            cwd: "/Users/me/Projects/SimLease",
+            command: ["xcodebuild", "test"],
+            store: store
+        )
+
+        XCTAssertEqual(identity.source, .claude)
+        XCTAssertEqual(identity.threadID, "6c1f0d2e")
+        XCTAssertEqual(identity.threadTitle, "Menu thread names")
+    }
+
+    func testCodexThreadWinsOverClaudeSession() {
+        let thread = LeaseIdentity.thread(in: ["CODEX_THREAD_ID": "019faaef", "CLAUDE_CODE_SESSION_ID": "6c1f0d2e"])
+
+        XCTAssertEqual(thread.id, "019faaef")
+        XCTAssertEqual(thread.source, .codex)
+    }
+
+    func testEnvironmentTitleOverridesRegisteredName() throws {
+        let store = try MetadataStore(paths: temporaryPaths())
+        try store.registerThreadName(id: "6c1f0d2e", title: "Registered")
+
+        let identity = try LeaseIdentity.resolve(
+            environment: ["CLAUDE_CODE_SESSION_ID": "6c1f0d2e", "SIMLEASE_THREAD_TITLE": "Explicit"],
+            cwd: "/tmp/SimLease",
+            command: [],
+            store: store
+        )
+
+        XCTAssertEqual(identity.threadTitle, "Explicit")
+    }
+
     private func temporaryPaths() -> LeasePaths {
         LeasePaths(
             root: FileManager.default.temporaryDirectory
