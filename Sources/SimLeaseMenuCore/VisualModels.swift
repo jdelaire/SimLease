@@ -26,6 +26,7 @@ public struct LaneBarDisplay: Equatable, Sendable, Identifiable {
         case running
         case free
         case closed
+        case blocked
         case off
     }
 
@@ -172,7 +173,7 @@ public struct MenuBarIconState: Equatable, Sendable {
             let lanes = state.laneBars.prefix(max(1, limit)).map { bar -> Lane in
                 switch bar.kind {
                 case .running: .busy(slot: ProjectPalette.slot(for: bar.project ?? ""))
-                case .closed: .closed
+                case .closed, .blocked: .closed
                 case .free, .off: .free
                 }
             }

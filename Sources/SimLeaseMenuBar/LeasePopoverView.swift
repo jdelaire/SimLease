@@ -16,8 +16,8 @@ struct LeasePopoverPresentation: Equatable {
             title = "Simulator busy"
             description = state.waiters.isEmpty ? "Nobody waiting" : "\(state.waiters.count) waiting"
         case .metadataError:
-            title = "Status unavailable"
-            description = state.error ?? ""
+            title = state.laneBars.isEmpty ? "Status unavailable" : "Lanes need attention"
+            description = state.laneBars.isEmpty ? state.error ?? "" : "\(state.running.count) running · \(state.waiters.count) waiting"
         }
     }
 }
@@ -367,6 +367,7 @@ private struct SimulatorSection: View {
                 if let device = selected { detail(device) }
             }
         }
+        .onChange(of: devices) { _, _ in confirming = [] }
     }
 
     private func detail(_ device: DeviceDisplayItem) -> some View {
@@ -451,6 +452,7 @@ private struct SimulatorSection: View {
                 Button("Shut Down") {
                     let ids = confirming.map(\.id)
                     confirming = []
+                    guard !ids.isEmpty, ids.allSatisfy({ id in unused.contains { $0.id == id } }) else { return }
                     onShutDown(ids)
                 }
                 .keyboardShortcut(.defaultAction)

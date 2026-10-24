@@ -203,7 +203,10 @@ public struct MenuDisplayState: Equatable, Sendable {
         let usage = Dictionary((status.devices ?? []).map { ($0.id.uppercased(), $0) }, uniquingKeysWith: { first, _ in first })
         let recorded = Dictionary(status.waiters.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let arrival = { (item: WaiterDisplayItem) in recorded[item.id]?.waitingSince ?? .distantFuture }
-        let waiters = base.waiters.sorted { arrival($0) < arrival($1) }.map { item -> WaiterDisplayItem in
+        let queued = status.waiters.map { waiter in
+            WaiterDisplayItem(id: waiter.id, name: Self.name(title: waiter.threadTitle, threadID: waiter.threadID, source: waiter.source, project: waiter.project), projectAndSource: "\(waiter.project) · \(Self.sourceName(waiter.source))", elapsed: Self.elapsed(from: waiter.waitingSince, to: now), command: waiter.command.joined(separator: " "), threadID: waiter.threadID, cwd: waiter.cwd)
+        }
+        let waiters = queued.sorted { arrival($0) < arrival($1) }.map { item -> WaiterDisplayItem in
             let waiter = recorded[item.id]
             let labels = waiter.map { Self.labels(title: $0.threadTitle, threadID: $0.threadID, source: $0.source, project: $0.project) }
             let targets = (waiter?.deviceIDs ?? []).map { id in
@@ -211,7 +214,9 @@ public struct MenuDisplayState: Equatable, Sendable {
             }
             let busy = Set((status.lanes ?? []).flatMap { $0.deviceIDs.map { $0.uppercased() } })
             let blockedBy = (waiter?.deviceIDs ?? []).first { busy.contains($0.uppercased()) }
-            let reason: String? = if waiter?.exclusive == true || (waiter?.deviceIDs ?? []).isEmpty {
+            let reason: String? = if status.state == .metadataError {
+                "lane metadata needs inspection"
+            } else if waiter?.exclusive == true || (waiter?.deviceIDs ?? []).isEmpty {
                 "needs all lanes"
             } else if let blockedBy {
                 "waiting for \(usage[blockedBy.uppercased()]?.name ?? String(blockedBy.prefix(8)))"
@@ -237,10 +242,10 @@ public struct MenuDisplayState: Equatable, Sendable {
             devices: status.devices.map { Self.devices($0, status: status, ownerName: base.ownerName, waiters: waiters, now: now) },
             typicalDuration: ownerTypical.map { "usually ≈ \(Self.minutes($0))" },
             nativeIdle: idle.map { "No native device commands for \(Self.minutes($0)). Finish the session if it is done." },
-            alerts: status.state == .metadataError ? [] : Self.alerts(status: status, usage: usage, idle: idle),
+            alerts: Self.laneAlerts(status) + Self.alerts(status: status, usage: usage, idle: idle),
             ownerHeadline: ownerLabels?.0, ownerSubheadline: ownerLabels?.1,
             ownerElapsedSeconds: leased.map { max(0, now.timeIntervalSince($0.acquiredAt)) }, ownerTypicalSeconds: ownerTypical,
-            running: base.kind == .leased ? Self.running(status: status, typical: typical, now: now) : [],
+            running: Self.running(status: status, typical: typical, now: now),
             laneSummary: Self.laneSummary(status),
             headroom: status.gate.map { HeadroomDisplay(memoryFreePercent: $0.memoryFreePercent, cpuIdlePercent: $0.cpuIdlePercent, load: $0.load, cpus: $0.cpus, open: $0.open, reason: $0.reason, laneLimit: status.laneLimit ?? 1) },
             laneBars: Self.laneBars(status: status, typical: typical, now: now)
@@ -248,12 +253,15 @@ public struct MenuDisplayState: Equatable, Sendable {
     }
 
     private static func laneBars(status: LeaseStatus, typical: [String: Double], now: Date) -> [LaneBarDisplay] {
-        guard status.state != .metadataError else { return [] }
+        guard status.state != .metadataError || status.laneErrors?.isEmpty == false else { return [] }
         let limit = status.laneLimit ?? 1
-        let lanes = status.lanes ?? status.owner.map { [LaneStatus(lane: 0, owner: $0, deviceIDs: [], exclusive: false)] } ?? []
+        let lanes = observedLanes(status)
         let exclusive = lanes.first(where: \.exclusive)
         let count = limit > 1 ? LeasePaths.maximumLanes : 1
         return (0..<count).map { index in
+            if let issue = status.laneErrors?.first(where: { $0.lane == index }) {
+                return LaneBarDisplay(lane: index, kind: .blocked, title: issue.phase == .quarantined ? "quarantined · cleanup unresolved" : "blocked · unresolved metadata", subtitle: issue.message, detail: "", project: issue.owner?.project, fraction: 0, overrun: false, exclusive: false)
+            }
             let job = exclusive ?? lanes.first { $0.lane == index }
             if let job {
                 let elapsed = max(0, now.timeIntervalSince(job.owner.acquiredAt))
@@ -263,13 +271,14 @@ public struct MenuDisplayState: Equatable, Sendable {
                 return LaneBarDisplay(lane: index, kind: .running, title: labels.0, subtitle: labels.1, detail: detail, project: job.owner.project, fraction: expected.map { min(1, elapsed / max($0, 1)) } ?? 1, overrun: expected.map { elapsed > $0 } ?? false, exclusive: job.exclusive)
             }
             if index >= limit { return LaneBarDisplay(lane: index, kind: .off, title: "off · max lanes \(limit)", detail: "", project: nil, fraction: 0, overrun: false, exclusive: false) }
+            if status.state == .metadataError { return LaneBarDisplay(lane: index, kind: .blocked, title: "availability unresolved", detail: "", project: nil, fraction: 0, overrun: false, exclusive: false) }
             if index > 0, status.gate?.open == false { return LaneBarDisplay(lane: index, kind: .closed, title: "closed · \(status.gate?.reason ?? "low headroom")", detail: "", project: nil, fraction: 0, overrun: false, exclusive: false) }
             return LaneBarDisplay(lane: index, kind: .free, title: "free", detail: "", project: nil, fraction: 0, overrun: false, exclusive: false)
         }
     }
 
     private static func running(status: LeaseStatus, typical: [String: Double], now: Date) -> [RunningJobDisplay] {
-        let lanes = status.lanes ?? status.owner.map { [LaneStatus(lane: 0, owner: $0, deviceIDs: [], exclusive: false)] } ?? []
+        let lanes = observedLanes(status)
         return lanes.map { lane in
             let labels = Self.labels(title: lane.owner.threadTitle, threadID: lane.owner.threadID, source: lane.owner.source, project: lane.owner.project)
             return RunningJobDisplay(
@@ -280,9 +289,23 @@ public struct MenuDisplayState: Equatable, Sendable {
         }
     }
 
+    private static func observedLanes(_ status: LeaseStatus) -> [LaneStatus] {
+        status.lanes ?? (status.state == .leased ? status.owner.map { [LaneStatus(lane: 0, owner: $0, deviceIDs: [], exclusive: false)] } : nil) ?? []
+    }
+
+    private static func laneAlerts(_ status: LeaseStatus) -> [MenuAlert] {
+        (status.laneErrors ?? []).map { issue in
+            MenuAlert(id: "lane-\(issue.lane)", severity: .critical, title: "Lane \(issue.lane + 1) \(issue.phase == .quarantined ? "quarantined" : "blocked")", detail: issue.message)
+        }
+    }
+
     private static func laneSummary(_ status: LeaseStatus) -> String? {
         guard let limit = status.laneLimit, limit > 1 else { return nil }
         let used = (status.lanes ?? []).contains(where: \.exclusive) ? limit : (status.lanes ?? []).count
+        if status.state == .metadataError {
+            guard let issues = status.laneErrors, !issues.isEmpty else { return nil }
+            return "\(used) running · \(issues.count) lanes need attention"
+        }
         var parts = ["\(used) of \(limit) lanes in use"]
         if let gate = status.gate {
             parts.append(gate.open ? "headroom open" : "extra lane closed, \(gate.reason ?? "low headroom")")
@@ -376,7 +399,7 @@ public struct MenuDisplayState: Equatable, Sendable {
                 unmanaged: (status.activity?.activities ?? []).filter { $0.kind == .unmanaged && $0.deviceIDs.contains { $0.uppercased() == device.id } }
                     .map { "\($0.tool) · PID \($0.process.pid)" },
                 crashBlocked: blocked.contains(device.id),
-                canShutDown: [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted,
+                canShutDown: status.state != .metadataError && [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted,
                 runtime: device.runtime, state: device.state, runtimeStale: device.runtimeStale == true, lane: (status.laneLimit ?? 1) > 1 ? device.lane : nil,
                 ownerProject: owner?.project,
                 ownerTitle: owner.flatMap { displayTitle($0.threadTitle, project: $0.project) }
@@ -409,23 +432,7 @@ public struct MenuDisplayState: Equatable, Sendable {
             projectAndSource = "\(owner.project) · \(Self.sourceName(owner.source))"
             command = owner.command.joined(separator: " ")
             self.elapsed = elapsed
-            waiters = status.waiters.map { waiter in
-                WaiterDisplayItem(
-                    id: waiter.id,
-                    name: Self.name(
-                        title: waiter.threadTitle,
-                        threadID: waiter.threadID,
-                        source: waiter.source,
-                        project: waiter.project
-                    ),
-                    projectAndSource:
-                        "\(waiter.project) · \(Self.sourceName(waiter.source))",
-                    elapsed: Self.elapsed(from: waiter.waitingSince, to: now),
-                    command: waiter.command.joined(separator: " "),
-                    threadID: waiter.threadID,
-                    cwd: waiter.cwd
-                )
-            }
+            waiters = []
             error = nil
             activity = nil
             crashBlocks = []

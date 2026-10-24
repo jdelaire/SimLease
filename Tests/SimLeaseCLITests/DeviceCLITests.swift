@@ -4,6 +4,24 @@ import SimLeaseCore
 @testable import SimLeaseCLI
 
 final class DeviceCLITests: XCTestCase {
+    func testAuditedStatusPreservesQuarantinedDeviceReservationAndLaneDiagnostics() throws {
+        let f = try DeviceCLIFixture()
+        defer { f.remove() }
+        let record = SimulatorTaskRecord(token: "unresolved", owner: try ProcessReference.current(), deviceIDs: [f.device], ownedDeviceIDs: [f.device], phase: .quarantined)
+        try SimulatorTaskStore(paths: f.paths).write(record)
+
+        XCTAssertEqual(f.call(["status", "--json", "--audit", "--devices"]), 0)
+        let status = try JSONDecoder.simLease.decode(LeaseStatus.self, from: Data(contentsOf: f.outputFile))
+
+        XCTAssertEqual(status.state, .metadataError)
+        XCTAssertEqual(status.lanes, [])
+        XCTAssertEqual(status.laneErrors?.map(\.lane), [0])
+        XCTAssertEqual(status.laneErrors?.first?.phase, .quarantined)
+        XCTAssertEqual(status.laneErrors?.first?.deviceIDs, [f.device])
+        XCTAssertEqual(status.devices?.first?.reservation, .owned)
+        XCTAssertEqual(try SimulatorTaskStore(paths: f.paths).read(), record)
+    }
+
     func testCreateRepairAndStatusUseManagedDeviceService() throws {
         let f = try DeviceCLIFixture()
         defer { f.remove() }

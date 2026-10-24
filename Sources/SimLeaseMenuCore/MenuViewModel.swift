@@ -113,7 +113,11 @@ public final class MenuViewModel: ObservableObject {
         case .free:
             return "Simulator available"
         case .metadataError:
-            return "Simulator metadata error\n\(state.error ?? "Unknown error")"
+            var lines = ["Simulator metadata error", state.error ?? "Unknown error"]
+            for job in state.running { lines.append("Lane \(job.lane + 1): \(job.headline) · \(job.elapsed)") }
+            lines.append("Waiting: \(state.waiters.count)")
+            for waiter in state.waiters { lines.append("- \(waiter.headline) · \(waiter.elapsed)") }
+            return lines.joined(separator: "\n")
         case .leased:
             var lines = [
                 "Owner: \(state.ownerName ?? "Unknown")",

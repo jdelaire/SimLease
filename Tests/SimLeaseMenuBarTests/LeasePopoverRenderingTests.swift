@@ -33,6 +33,7 @@ final class LeasePopoverRenderingTests: XCTestCase {
                     error: "Unable to read lease metadata"
                 )
             ),
+            ("mixed-lane-error", mixedLaneError),
         ]
 
         for item in states {
@@ -40,24 +41,25 @@ final class LeasePopoverRenderingTests: XCTestCase {
                 provider: RenderStatusProvider(status: item.status)
             )
             await model.setDevicesVisible(true)
-            let renderer = ImageRenderer(
-                content: LeasePopoverView(viewModel: model)
-                    .background(Color(nsColor: .windowBackgroundColor))
-            )
-            renderer.proposedSize = ProposedViewSize(width: 320, height: nil)
-            renderer.scale = 2
-
-            let image = try XCTUnwrap(renderer.nsImage)
-            let data = try XCTUnwrap(
-                NSBitmapImageRep(data: image.tiffRepresentation ?? Data())?
-                    .representation(using: .png, properties: [:])
-            )
+            let hosting = NSHostingView(rootView: LeasePopoverView(viewModel: model).background(Color(nsColor: .windowBackgroundColor)))
+            hosting.setFrameSize(hosting.fittingSize)
+            let window = NSWindow(contentRect: hosting.bounds, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = hosting
+            window.orderFront(nil)
+            defer { window.close() }
+            try await Task.sleep(for: .milliseconds(100))
+            hosting.layoutSubtreeIfNeeded()
+            hosting.displayIfNeeded()
+            let bitmap = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
             let output = outputDirectory.appending(path: "\(item.name).png")
             try data.write(to: output)
 
-            XCTAssertEqual(image.size.width, 380, accuracy: 1)
-            XCTAssertGreaterThan(image.size.height, 80)
-            XCTAssertLessThan(image.size.height, 600)
+            XCTAssertEqual(hosting.bounds.width, 380, accuracy: 1)
+            XCTAssertGreaterThan(hosting.bounds.height, 80)
+            XCTAssertLessThanOrEqual(hosting.bounds.height, 820)
             print("popover-capture: \(output.path)")
         }
     }
@@ -137,6 +139,18 @@ final class LeasePopoverRenderingTests: XCTestCase {
                 SimulatorUsage(id: "D61765E6-0EEC-4D07-83EA-4FB7DD535AB0", name: "iPhone 17", runtime: "iOS 27.2", state: "Booted", reservation: .borrowed),
                 SimulatorUsage(id: "0BD66E05-B117-43A2-9483-4E2F2011751F", name: "iPhone Air", runtime: "iOS 27.1", state: "Booted", reservation: .unreserved),
             ]
+        )
+    }
+
+    private var mixedLaneError: LeaseStatus {
+        let owner = LeaseOwner(pid: 1, acquiredAt: Date().addingTimeInterval(-300), cwd: "/Projects/ThaiSRS", project: "ThaiSRS", command: ["xcodebuild", "test"], source: .terminal, threadID: nil, threadTitle: "ThaiSRS tests")
+        return LeaseStatus(
+            state: .metadataError, owner: nil,
+            waiters: [LeaseWaiter(id: "queued", pid: 2, waitingSince: Date().addingTimeInterval(-120), cwd: "/Projects/ExplorerDex", project: "ExplorerDex", command: [], source: .codex, threadID: nil, threadTitle: "ExplorerDex screenshots")],
+            error: "native work is unresolved",
+            lanes: [LaneStatus(lane: 1, owner: owner, deviceIDs: [], exclusive: false)], laneLimit: 3,
+            gate: LaneGateStatus(open: false, reason: "CPU recovering", memoryFreePercent: 53, cpuIdlePercent: 50, load: 9, cpus: 10),
+            laneErrors: [LaneStatusError(lane: 0, message: "Native work is unresolved. Verify requests, runners and streams have finished before settling the session.", phase: .quarantined)]
         )
     }
 }

@@ -3,6 +3,62 @@ import XCTest
 @testable import SimLeaseMenuCore
 
 final class MenuDisplayStateTests: XCTestCase {
+    func testQuarantineDoesNotRequireExternalSettlementForTerminalOrSettledNativeCleanup() throws {
+        let paths = LeasePaths(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let coordinator = try LeaseCoordinator(paths: paths, store: MetadataStore(paths: paths))
+        for settledNative in [false, true] {
+            var record = SimulatorTaskRecord(token: "cleanup", owner: ProcessReference(pid: 1, startMicroseconds: 1), deviceIDs: [], ownedDeviceIDs: [], phase: .quarantined)
+            record.failure = "simulator shutdown failed"
+            if settledNative {
+                record.externalSessionID = "finished-native"
+                record.externalWorkSettled = true
+            }
+            try SimulatorTaskStore(paths: paths).write(record)
+
+            let state = MenuDisplayState(status: try coordinator.status(), now: Date())
+
+            XCTAssertEqual(state.laneBars.first?.kind, .blocked)
+            XCTAssertFalse(state.laneBars.first?.title.contains("settlement") ?? true)
+            XCTAssertTrue(state.alerts.first?.detail.contains("simulator shutdown failed") == true)
+        }
+    }
+
+    func testMetadataErrorPreservesHealthyWorkQueueAndWarningsWithoutOfferingShutdown() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let active = owner(acquiredAt: now.addingTimeInterval(-120), threadTitle: "Healthy work")
+        let id = "11111111-1111-4111-8111-111111111111"
+        let status = LeaseStatus(
+            state: .metadataError, owner: owner(threadTitle: "Unresolved work"), waiters: [waiter(title: "Queued work")], error: "native work is unresolved",
+            crashBlocks: [CrashLoopTrigger(deviceID: id, scopeID: "scope", processName: "App", signature: "sig", occurredAt: now)],
+            devices: [SimulatorUsage(id: id, name: "iPhone", runtime: "iOS 27.2", state: "Booted", reservation: .unreserved)],
+            typicalDurations: ["AnimAtlas": 600, "Set": 300],
+            lanes: [LaneStatus(lane: 1, owner: active, deviceIDs: [], exclusive: false)], laneLimit: 3,
+            laneErrors: [LaneStatusError(lane: 0, message: "native work is unresolved", phase: .quarantined), LaneStatusError(lane: 2, message: "owner metadata is unreadable")]
+        )
+
+        let state = MenuDisplayState(status: status, now: now)
+
+        XCTAssertEqual(state.kind, .metadataError)
+        XCTAssertEqual(state.running.map(\.lane), [1])
+        XCTAssertEqual(state.waiters.map(\.headline), ["Queued work"])
+        XCTAssertNil(state.waiters.first?.estimate)
+        XCTAssertEqual(state.laneBars.count, 3)
+        XCTAssertEqual(state.laneBars.first?.kind, .blocked)
+        XCTAssertEqual(state.laneBars.last?.kind, .blocked)
+        XCTAssertEqual(state.laneBars.first(where: { $0.lane == 1 })?.kind, .running)
+        XCTAssertFalse(state.laneBars.contains { $0.kind == .free })
+        XCTAssertEqual(state.alerts.filter { $0.severity == .critical }.count, 3)
+        XCTAssertEqual(state.devices?.first?.canShutDown, false)
+    }
+
+    func testLegacyMetadataErrorNeverTreatsItsOwnerAsRunningOrUnobservedLanesAsFree() {
+        let state = MenuDisplayState(status: LeaseStatus(state: .metadataError, owner: owner(threadTitle: "Unresolved"), waiters: [waiter(title: "Queued")], error: "unresolved"), now: Date())
+        XCTAssertTrue(state.running.isEmpty)
+        XCTAssertTrue(state.laneBars.isEmpty)
+        XCTAssertEqual(state.waiters.count, 1)
+    }
+
     func testCrashBlockTakesPriorityOverIncompleteAuditWithoutLosingLeaseState() {
         let block = CrashLoopTrigger(deviceID: "11111111-1111-4111-8111-111111111111", scopeID: "scope", processName: "App", signature: "build", occurredAt: Date())
         let status = LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, activity: SimulatorActivityReport(uninspectedProcessCount: 2), crashBlocks: [block])

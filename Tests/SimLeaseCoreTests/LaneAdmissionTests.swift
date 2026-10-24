@@ -55,6 +55,52 @@ final class LaneAdmissionTests: XCTestCase {
         XCTAssertEqual(handle.lanes, [1])
     }
 
+    func testQuarantinedLaneDoesNotHideAnotherRunningLaneOrReleaseItsReservation() throws {
+        let f = try LaneFixture(maxLanes: 2, gateOpen: true)
+        defer { f.remove() }
+        let first = try XCTUnwrap(f.coordinator.tryAcquire(identity: f.identity, request: LaneRequest(deviceIDs: [a], exclusive: false)))
+        try f.clearAdmissionSpacing()
+        let other = LeaseIdentity(pid: getppid(), cwd: "/other", project: "Other", command: [], source: .terminal, threadID: nil, threadTitle: nil)
+        let second = try XCTUnwrap(f.coordinator.tryAcquire(identity: other, request: LaneRequest(deviceIDs: [b], exclusive: false)))
+        defer { second.release() }
+        try SimulatorTaskStore(paths: f.paths.lane(1)).write(SimulatorTaskRecord(token: "running", owner: ProcessReference(pid: getppid(), startMicroseconds: 1), deviceIDs: [b], ownedDeviceIDs: [], phase: .running))
+        let record = SimulatorTaskRecord(token: "unresolved", owner: ProcessReference(pid: getpid(), startMicroseconds: 1), deviceIDs: [a], ownedDeviceIDs: [], phase: .quarantined)
+        try SimulatorTaskStore(paths: f.paths).write(record)
+        first.release()
+
+        let status = try f.coordinator.status()
+
+        XCTAssertEqual(status.state, .metadataError)
+        XCTAssertEqual(status.lanes?.map(\.lane), [1])
+        XCTAssertEqual(status.lanes?.first?.deviceIDs, [b])
+        XCTAssertEqual(status.laneErrors?.map(\.lane), [0])
+        XCTAssertEqual(status.laneErrors?.first?.phase, .quarantined)
+        XCTAssertEqual(status.laneErrors?.first?.deviceIDs, [a])
+        XCTAssertThrowsError(try f.coordinator.tryAcquire(identity: f.identity, request: LaneRequest(deviceIDs: [a], exclusive: false)))
+        XCTAssertEqual(try SimulatorTaskStore(paths: f.paths).read(), record)
+        XCTAssertEqual(try f.coordinator.status().lanes?.map(\.lane), [1])
+    }
+
+    func testUnreadableLaterLaneDoesNotHideEarlierOwnerOrAnotherLaneError() throws {
+        let f = try LaneFixture(maxLanes: 2, gateOpen: true)
+        defer { f.remove() }
+        let handle = try XCTUnwrap(f.coordinator.tryAcquire(identity: f.identity, request: LaneRequest(deviceIDs: [a], exclusive: false)))
+        defer { handle.release() }
+        let otherPaths = f.paths.lane(1)
+        _ = try MetadataStore(paths: otherPaths)
+        try Data("invalid".utf8).write(to: otherPaths.owner)
+        try SimulatorTaskStore(paths: f.paths.lane(2)).write(SimulatorTaskRecord(token: "unresolved", owner: ProcessReference(pid: 999_999, startMicroseconds: 1), deviceIDs: [b], ownedDeviceIDs: [], phase: .quarantined))
+
+        let status = try f.coordinator.status()
+
+        XCTAssertEqual(status.state, .metadataError)
+        XCTAssertNil(status.owner)
+        XCTAssertEqual(status.lanes?.map(\.lane), [0])
+        XCTAssertEqual(status.laneErrors?.map(\.lane), [1, 2])
+        XCTAssertNil(status.laneErrors?.first?.owner)
+        XCTAssertNil(status.laneErrors?.first?.phase)
+    }
+
     func testOneBusyCompileWindowDoesNotCloseTheLane() {
         var state = HeadroomGate.State()
         let start = Date(timeIntervalSince1970: 5_000)

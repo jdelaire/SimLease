@@ -259,13 +259,16 @@ public final class LeaseCoordinator: @unchecked Sendable {
         }
         var lanes = [LaneStatus]()
         var firstOwner: LeaseOwner?
+        var laneErrors = [LaneStatusError]()
+        var firstFailure: LaneMetadataError?
         for lane in paths.allLanes {
             let result: Result<LaneStatus?, LaneMetadataError> = try HostLaneLock.probe(paths: lane) { isFree in
                 laneStatus(lane, isFree: isFree)
             }
             switch result {
             case .failure(let failure):
-                return LeaseStatus(state: .metadataError, owner: failure.owner, waiters: waiters, error: failure.message)
+                firstFailure = firstFailure ?? failure
+                laneErrors.append(LaneStatusError(lane: lane.lane, message: failure.message, owner: failure.owner, deviceIDs: failure.record?.deviceIDs, phase: failure.record?.phase))
             case .success(let status):
                 guard let status else { continue }
                 firstOwner = firstOwner ?? status.owner
@@ -276,6 +279,9 @@ public final class LeaseCoordinator: @unchecked Sendable {
                     lanes.append(status)
                 }
             }
+        }
+        if let firstFailure {
+            return LeaseStatus(state: .metadataError, owner: firstFailure.owner, waiters: waiters, error: firstFailure.message, lanes: lanes, laneErrors: laneErrors)
         }
         guard let firstOwner else {
             if FileManager.default.fileExists(atPath: paths.deviceRecovery.path) {
@@ -292,6 +298,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
     private struct LaneMetadataError: Error {
         let message: String
         let owner: LeaseOwner?
+        var record: SimulatorTaskRecord? = nil
     }
 
     private func laneStatus(_ lane: LeasePaths, isFree: Bool) -> Result<LaneStatus?, LaneMetadataError> {
@@ -310,7 +317,7 @@ public final class LeaseCoordinator: @unchecked Sendable {
         }
         if isFree {
             if let record {
-                return .failure(LaneMetadataError(message: "unfinished task \(record.token)\(label): \(record.failure ?? record.phase.rawValue); run simlease recover", owner: owner))
+                return .failure(LaneMetadataError(message: "unfinished task \(record.token)\(label): \(record.failure ?? record.phase.rawValue); run simlease recover", owner: owner, record: record))
             }
             if owner != nil {
                 return .failure(LaneMetadataError(message: "owner metadata exists while lease is free\(label)", owner: owner))

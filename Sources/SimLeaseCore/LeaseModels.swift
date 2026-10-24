@@ -96,6 +96,22 @@ public struct LaneStatus: Codable, Equatable, Sendable {
     }
 }
 
+public struct LaneStatusError: Codable, Equatable, Sendable {
+    public let lane: Int
+    public let message: String
+    public let owner: LeaseOwner?
+    public let deviceIDs: [String]?
+    public let phase: SimulatorTaskRecord.Phase?
+
+    public init(lane: Int, message: String, owner: LeaseOwner? = nil, deviceIDs: [String]? = nil, phase: SimulatorTaskRecord.Phase? = nil) {
+        self.lane = lane
+        self.message = message
+        self.owner = owner
+        self.deviceIDs = deviceIDs
+        self.phase = phase
+    }
+}
+
 public struct LeaseStatus: Codable, Equatable, Sendable {
     public enum State: String, Codable, Sendable {
         case free
@@ -114,6 +130,7 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
     public let nativeIdleSince: Date?
     public let staleRuntimes: [StaleRuntime]?
     public let lanes: [LaneStatus]?
+    public let laneErrors: [LaneStatusError]?
     public let laneLimit: Int?
     public let gate: LaneGateStatus?
 
@@ -130,8 +147,10 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
         staleRuntimes: [StaleRuntime]? = nil,
         lanes: [LaneStatus]? = nil,
         laneLimit: Int? = nil,
-        gate: LaneGateStatus? = nil
+        gate: LaneGateStatus? = nil,
+        laneErrors: [LaneStatusError]? = nil
     ) {
+        self.laneErrors = laneErrors
         self.staleRuntimes = staleRuntimes
         self.lanes = lanes
         self.laneLimit = laneLimit

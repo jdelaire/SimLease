@@ -453,10 +453,11 @@ public enum SimLeaseCLI {
         let coordinator = try makeCoordinator(configuration: configuration)
         var status = try coordinator.status()
         let heldLanes = Set((status.lanes ?? []).map(\.owner).map(\.pid))
-        let tasks = SimulatorTaskStore.records(base: configuration.paths).filter { heldLanes.contains($0.1.owner.pid) }.map { ($0.0.lane, $0.1) }
+        let unresolvedLanes = Set((status.laneErrors ?? []).map(\.lane))
+        let tasks = SimulatorTaskStore.records(base: configuration.paths).filter { heldLanes.contains($0.1.owner.pid) || unresolvedLanes.contains($0.0.lane) }.map { ($0.0.lane, $0.1) }
         if audit {
             let report = SimulatorActivityAudit().scan(status: status, base: configuration.paths)
-            status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: report, lanes: status.lanes)
+            status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: report, lanes: status.lanes, laneErrors: status.laneErrors)
         }
         let blocks = try CrashLoopStore(paths: configuration.paths).read().blocks.values.sorted { $0.deviceID < $1.deviceID }
         var usage: [SimulatorUsage]?
@@ -489,7 +490,7 @@ public enum SimLeaseCLI {
         if status.state == .leased, let owner = status.owner, let task = tasks.first(where: { $0.0 == 0 })?.1, task.owner.pid == owner.pid, task.phase == .running, let sessionID = task.externalSessionID {
             nativeIdleSince = max(owner.acquiredAt, history.lastNativeActivity(sessionID: sessionID) ?? owner.acquiredAt)
         }
-        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage, typicalDurations: durations.isEmpty ? nil : durations, nativeIdleSince: nativeIdleSince, staleRuntimes: stale?.isEmpty == false ? stale : nil, lanes: status.lanes, laneLimit: laneLimit, gate: gateStatus)
+        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage, typicalDurations: durations.isEmpty ? nil : durations, nativeIdleSince: nativeIdleSince, staleRuntimes: stale?.isEmpty == false ? stale : nil, lanes: status.lanes, laneLimit: laneLimit, gate: gateStatus, laneErrors: status.laneErrors)
         if json {
             let data = try JSONEncoder.simLease.encode(status)
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")

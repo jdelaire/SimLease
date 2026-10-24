@@ -110,6 +110,7 @@ struct LaneBarsView: View {
         case .running: ([bar.title, bar.subtitle, bar.detail].filter { !$0.isEmpty }.joined(separator: " · ")) + (bar.exclusive ? " · holds every lane" : "")
         case .free: "Free"
         case .closed: "Closed: headroom check"
+        case .blocked: [bar.title, bar.subtitle].filter { !$0.isEmpty }.joined(separator: " · ")
         case .off: "Not enabled. Raise with simlease config --max-lanes 3"
         }
     }
@@ -122,7 +123,7 @@ struct LaneBar: View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.primary.opacity(0.07))
+                    .fill(bar.kind == .blocked ? Color.red.opacity(0.15) : Color.primary.opacity(0.07))
                 if bar.kind == .off || bar.kind == .closed {
                     HatchPattern()
                         .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -144,7 +145,7 @@ struct LaneBar: View {
                     }
                 }
                 .padding(.horizontal, 10)
-                .foregroundStyle(bar.kind == .running ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                .foregroundStyle(bar.kind == .running ? AnyShapeStyle(.white) : bar.kind == .blocked ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
             }
         }
         .frame(height: 30)
@@ -259,10 +260,13 @@ struct QueueRow: View {
                     if let project = waiter.project {
                         RoundedRectangle(cornerRadius: 2).fill(ProjectColors.color(for: project)).frame(width: 8, height: 8)
                     }
-                    Text(waiter.headline).lineLimit(1)
-                    if let reason = waiter.reason {
-                        Text("· \(reason)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
+                    Text(waiter.headline).fixedSize(horizontal: false, vertical: true)
+                }
+                if let reason = waiter.reason {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 GeometryReader { proxy in
                     ZStack(alignment: .leading) {
@@ -275,6 +279,7 @@ struct QueueRow: View {
             Text(waiter.estimate.map { $0.replacingOccurrences(of: "starts in ", with: "") } ?? waiter.waited)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
+                .fixedSize()
         }
         .padding(.vertical, 4)
         .help("\(waiter.subheadline) · \(waiter.waited)\n\(waiter.command)")
