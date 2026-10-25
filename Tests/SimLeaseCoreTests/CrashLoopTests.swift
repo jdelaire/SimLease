@@ -89,6 +89,137 @@ final class CrashLoopTests: XCTestCase {
         }
     }
 
+    func testClassificationsSurviveRepeatedLegacyHistoryRewritesWithoutNewEvents() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let report = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+            "procName": "intelligencetasksd", "procPath": "/Volumes/VOLUME/*/IntelligenceTasksEngine.framework/Support/intelligencetasksd",
+            "bundleInfo": ["CFBundleIdentifier": "com.apple.intelligencetasksd"],
+        ])))
+        _ = try fixture.store.ingest([report], now: report.occurredAt.addingTimeInterval(1))
+        let history = fixture.paths.root.appendingPathComponent("crash-history.json")
+        for _ in 0..<3 {
+            var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: history)) as? [String: Any])
+            legacy["incidents"] = (legacy["incidents"] as? [[String: Any]])?.map { $0.filter { $0.key != "kind" && $0.key != "isCriticalSystemService" } }
+            try JSONSerialization.data(withJSONObject: legacy).write(to: history)
+            XCTAssertEqual(try fixture.store.read().incidents.first?.kind, .backgroundService)
+            XCTAssertTrue(try fixture.store.read().blocks.isEmpty)
+        }
+    }
+
+    func testAcknowledgedCriticalClassificationSurvivesLegacyWriterWithoutReblocking() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let report = criticalEvent("system", at: 110, launch: 100)
+        var classified = report
+        classified.kind = .criticalInfrastructure
+        _ = try fixture.store.ingest([classified], now: Date(timeIntervalSince1970: 120))
+        try fixture.store.acknowledge(deviceID: device, at: Date(timeIntervalSince1970: 125))
+        let history = fixture.paths.root.appendingPathComponent("crash-history.json")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: history)) as? [String: Any])
+        legacy["incidents"] = (legacy["incidents"] as? [[String: Any]])?.map { $0.filter { $0.key != "kind" && $0.key != "isCriticalSystemService" } }
+        try JSONSerialization.data(withJSONObject: legacy).write(to: history)
+        XCTAssertEqual(try fixture.store.read().incidents.first?.kind, .criticalInfrastructure)
+        XCTAssertEqual(try fixture.store.read().acknowledgments[device], Date(timeIntervalSince1970: 125))
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+    }
+
+    func testConsumedReportMigrationClassifiesRetainedEvidenceWithoutReplayingEvictedIncidents() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let directory = fixture.paths.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try runtimeReport()
+        let parsed = try XCTUnwrap(SimulatorCrashReport.parse(data))
+        var retained = parsed
+        retained.kind = nil
+        retained.isCriticalSystemService = nil
+        var state = CrashLoopState()
+        state.incidents = [retained]
+        state.acknowledgments[device] = parsed.occurredAt.addingTimeInterval(1)
+        let history = fixture.paths.root.appendingPathComponent("crash-history.json")
+        try RecoveryFile.write(state, at: history)
+        var fingerprints = [String: String]()
+        for (name, contents) in [("retained.ips", data), ("evicted.ips", try runtimeReport(changes: ["incident": "evicted"]))] {
+            let file = directory.appendingPathComponent(name)
+            try contents.write(to: file)
+            let attributes = try file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            fingerprints[name] = "\(attributes.fileSize!):\(attributes.contentModificationDate!.timeIntervalSince1970)"
+        }
+        let progress: [String: Any] = ["directory": directory.standardizedFileURL.path, "fingerprints": fingerprints]
+        try JSONSerialization.data(withJSONObject: progress).write(to: fixture.paths.root.appendingPathComponent("crash-report-progress-v2.json"))
+        let before = try Data(contentsOf: history)
+        let source = CrashReportSource(directory: directory, paths: fixture.paths)
+        XCTAssertTrue(try source.inspect(store: fixture.store).isEmpty)
+        XCTAssertEqual(try Data(contentsOf: history), before)
+        XCTAssertEqual(try fixture.store.read().incidents.map(\.incidentID), [parsed.incidentID])
+        XCTAssertEqual(try fixture.store.read().incidents.first?.kind, .criticalInfrastructure)
+        XCTAssertEqual(try fixture.store.read().acknowledgments, state.acknowledgments)
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        XCTAssertTrue(try fixture.store.reasons().isEmpty)
+        let metadata = fixture.paths.root.appendingPathComponent("crash-classifications.json")
+        let modified = try FileManager.default.attributesOfItem(atPath: metadata.path)[.modificationDate] as? Date
+        _ = try source.inspect(store: fixture.store)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: metadata.path)[.modificationDate] as? Date, modified)
+        XCTAssertEqual(try Data(contentsOf: history), before)
+    }
+
+    func testClassificationMigrationCannotInventProofForMissingRawEvidence() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        var state = CrashLoopState()
+        state.incidents = [event("no-raw-report", at: 100, launch: 95)]
+        try RecoveryFile.write(state, at: fixture.paths.root.appendingPathComponent("crash-history.json"))
+        try fixture.store.classifyRetained([criticalEvent("other-incident", at: 100, launch: 95)], now: Date(timeIntervalSince1970: 120))
+        XCTAssertNil(try fixture.store.read().incidents.first?.kind)
+        XCTAssertTrue(try fixture.store.reasons().isEmpty)
+    }
+
+    func testClassificationProofRepairsPolicyAfterInterruptedMetadataOnlyUpdate() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let report = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+            "procName": "intelligencetasksd", "procPath": "/Volumes/VOLUME/*/IntelligenceTasksEngine.framework/Support/intelligencetasksd",
+            "bundleInfo": ["CFBundleIdentifier": "com.apple.intelligencetasksd"],
+        ])))
+        var legacy = report
+        legacy.kind = nil
+        let second = SimulatorCrashReport(incidentID: "second", deviceID: device, occurredAt: report.occurredAt, launchedAt: report.launchedAt, signature: report.signature, processName: report.processName)
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: report.launchedAt.addingTimeInterval(-1))
+        _ = try fixture.store.ingest([legacy, second], now: report.occurredAt.addingTimeInterval(1))
+        try RecoveryFile.write([report.incidentID: report], at: fixture.paths.root.appendingPathComponent("crash-classifications.json"))
+        try fixture.store.beginScope(id: "next", deviceIDs: [], startedAt: report.occurredAt.addingTimeInterval(1))
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        _ = try fixture.store.ingest([report], now: report.occurredAt.addingTimeInterval(2))
+        XCTAssertEqual(try CrashReasonStore(paths: fixture.paths).read().reasons.values.first?.kind, .backgroundService)
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+    }
+
+    func testFailedHistoryEvictionPreservesClassificationProofUntilRetryCommits() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let reports = (0..<512).map { index in
+            SimulatorCrashReport(incidentID: "old-\(index)", deviceID: device, occurredAt: Date(timeIntervalSince1970: Double(index + 100)), launchedAt: Date(timeIntervalSince1970: 90), signature: "background", processName: "Background", kind: .backgroundService)
+        }
+        _ = try fixture.store.ingest(reports, now: Date(timeIntervalSince1970: 1000))
+        let history = fixture.paths.root.appendingPathComponent("crash-history.json")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: history)) as? [String: Any])
+        legacy["incidents"] = (legacy["incidents"] as? [[String: Any]])?.map { $0.filter { $0.key != "kind" } }
+        try JSONSerialization.data(withJSONObject: legacy).write(to: history)
+        let next = SimulatorCrashReport(incidentID: "new", deviceID: device, occurredAt: Date(timeIntervalSince1970: 700), launchedAt: Date(timeIntervalSince1970: 690), signature: "background", processName: "Background", kind: .backgroundService)
+        let failing = CrashLoopStore(paths: fixture.paths, commitHistory: { _ in throw DeviceManagementError.failed("history commit failed") })
+        XCTAssertThrowsError(try failing.ingest([next], now: Date(timeIntervalSince1970: 1000)))
+        XCTAssertEqual(try fixture.store.read().incidents.count, 512)
+        XCTAssertEqual(try fixture.store.read().incidents.first?.incidentID, "old-0")
+        XCTAssertTrue(try fixture.store.read().incidents.allSatisfy { $0.kind == .backgroundService })
+        _ = try fixture.store.ingest([next], now: Date(timeIntervalSince1970: 1000))
+        let proof = try XCTUnwrap(RecoveryFile.read([String: SimulatorCrashReport].self, at: fixture.paths.root.appendingPathComponent("crash-classifications.json")))
+        XCTAssertEqual(proof.count, 512)
+        XCTAssertNil(proof["old-0"])
+        XCTAssertNotNil(proof["new"])
+    }
+
     func testLegacyBackgroundClassificationEnrichmentRemovesBlockAndCancellationWithoutDuplicates() throws {
         let fixture = try CrashFixture()
         defer { fixture.remove() }

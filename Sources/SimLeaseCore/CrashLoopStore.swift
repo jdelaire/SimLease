@@ -25,11 +25,16 @@ public struct CrashLoopState: Codable, Sendable {
 public struct CrashLoopStore: Sendable {
     private let url: URL
     private let paths: LeasePaths
+    private let commitHistory: @Sendable (CrashLoopState) throws -> Void
     private var cancellationURL: URL { paths.root.appendingPathComponent("crash-cancellations.json") }
 
-    public init(paths: LeasePaths) {
+    public init(paths: LeasePaths) { self.init(paths: paths, commitHistory: nil) }
+
+    init(paths: LeasePaths, commitHistory: (@Sendable (CrashLoopState) throws -> Void)?) {
         self.paths = paths
-        url = paths.root.appendingPathComponent("crash-history.json")
+        let historyURL = paths.root.appendingPathComponent("crash-history.json")
+        url = historyURL
+        self.commitHistory = commitHistory ?? { try RecoveryFile.write($0, at: historyURL) }
     }
 
     public func read() throws -> CrashLoopState {
@@ -39,7 +44,16 @@ public struct CrashLoopStore: Sendable {
         return state
     }
 
-    private func rawState() throws -> CrashLoopState { try RecoveryFile.read(CrashLoopState.self, at: url) ?? CrashLoopState() }
+    private func rawState() throws -> CrashLoopState {
+        var state = try RecoveryFile.read(CrashLoopState.self, at: url) ?? CrashLoopState()
+        state.incidents = try CrashClassificationStore(paths: paths).overlay(state.incidents)
+        return state
+    }
+
+    func classifyRetained(_ reports: [SimulatorCrashReport], now: Date) throws {
+        guard !reports.isEmpty else { return }
+        try SharedStateLock.withLock(paths) { _ = try ingestLocked(reports, now: now, classificationOnly: true) }
+    }
 
     public func reasons() throws -> [SimulatorCrashReason] {
         let store = CrashReasonStore(paths: paths)
@@ -93,11 +107,12 @@ public struct CrashLoopStore: Sendable {
             let state = try read()
             let receipts = try RecoveryFile.read([String: [String: CrashLoopTrigger]].self, at: cancellationURL)?[scopeID] ?? [:]
             let policy = try CrashReasonStore(paths: paths).read()
-            return receipts.values.contains {
-                let key = CrashReasonStore.key(deviceID: $0.deviceID, signature: $0.signature)
-                return policy.reasons[key]?.kind != .backgroundService
-                    && $0.occurredAt > (state.acknowledgments[$0.deviceID] ?? .distantPast)
-                    && $0.occurredAt > (policy.resolvedThrough[key] ?? .distantPast)
+            return receipts.values.contains { receipt in
+                let key = CrashReasonStore.key(deviceID: receipt.deviceID, signature: receipt.signature)
+                let report = state.incidents.last { $0.deviceID == receipt.deviceID && $0.signature == receipt.signature && $0.occurredAt == receipt.occurredAt && $0.kind != nil }
+                return (report?.kind ?? policy.reasons[key]?.kind) != .backgroundService
+                    && receipt.occurredAt > (state.acknowledgments[receipt.deviceID] ?? .distantPast)
+                    && receipt.occurredAt > (policy.resolvedThrough[key] ?? .distantPast)
             }
         }
     }
@@ -138,13 +153,14 @@ public struct CrashLoopStore: Sendable {
         return try SharedStateLock.withLock(paths) { try ingestLocked(reports, now: now) }
     }
 
-    private func ingestLocked(_ reports: [SimulatorCrashReport], now: Date) throws -> [CrashLoopTrigger] {
+    private func ingestLocked(_ reports: [SimulatorCrashReport], now: Date, classificationOnly: Bool = false) throws -> [CrashLoopTrigger] {
         var state = try read()
         let reasonStore = CrashReasonStore(paths: paths)
-        var policy = reasonStore.merged(state, policy: try reasonStore.read())
+        let savedPolicy = try reasonStore.read()
+        var policy = reasonStore.merged(state, policy: savedPolicy)
+        let committedIDs = Set(state.incidents.map(\.incidentID))
         var seen = Set(state.incidents.map(\.incidentID))
         var added = [SimulatorCrashReport]()
-        var enriched = false
         func scope(for report: SimulatorCrashReport) -> CrashScope? {
             state.scopes.last {
                 $0.deviceIDs.contains(report.deviceID) && report.launchedAt >= $0.startedAt
@@ -152,19 +168,22 @@ public struct CrashLoopStore: Sendable {
             }
         }
         for report in reports.sorted(by: { $0.occurredAt < $1.occurredAt }) {
-            guard report.occurredAt <= now else { continue }
-            if let index = state.incidents.firstIndex(where: { $0.incidentID == report.incidentID && $0.deviceID == report.deviceID && $0.signature == report.signature && $0.occurredAt == report.occurredAt && $0.launchedAt == report.launchedAt && $0.processName == report.processName }), report.kind != nil, state.incidents[index].kind != report.kind {
+            guard classificationOnly || report.occurredAt <= now else { continue }
+            if let index = state.incidents.firstIndex(where: { CrashClassificationStore.matches($0, report) }), report.kind != nil {
                 state.incidents[index] = report
                 let key = CrashReasonStore.key(deviceID: report.deviceID, signature: report.signature)
                 if let prior = policy.reasons[key] { policy.reasons[key] = SimulatorCrashReason(trigger: prior.trigger, kind: report.kind!) }
-                enriched = true
             }
-            guard report.isCriticalSystemService == true || report.kind == .backgroundService || scope(for: report) != nil,
+            guard !classificationOnly, report.isCriticalSystemService == true || report.kind == .backgroundService || scope(for: report) != nil,
                   seen.insert(report.incidentID).inserted else { continue }
             state.incidents.append(report)
             added.append(report)
         }
-        guard !added.isEmpty || enriched else { return [] }
+        try CrashClassificationStore(paths: paths).persist(state.incidents.filter { committedIDs.contains($0.incidentID) })
+        guard !added.isEmpty else {
+            if policy != savedPolicy { try reasonStore.write(policy) }
+            return []
+        }
         var receipts = try RecoveryFile.read([String: [String: CrashLoopTrigger]].self, at: cancellationURL) ?? [:]
         var receiptsChanged = false
         var triggers = [CrashLoopTrigger]()
@@ -219,7 +238,8 @@ public struct CrashLoopStore: Sendable {
         }
         try reasonStore.write(policy)
         state.blocks = reasonStore.blocks(state, policy: policy)
-        try RecoveryFile.write(state, at: url)
+        try commitHistory(state)
+        try CrashClassificationStore(paths: paths).persist(state.incidents)
         return triggers
     }
 }

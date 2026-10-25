@@ -115,6 +115,9 @@ public final class CrashReportSource {
     private var retries: [String: Retry] = [:]
     private var retryUpdates: [String: Retry] = [:]
     private var eventTimes: [String: Date] = [:]
+    private var classificationFingerprints: [String: String] = [:]
+    private var classified: [String: String] = [:]
+    private var classificationReports = [SimulatorCrashReport]()
 
     public init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports"), paths: LeasePaths? = nil) {
         self.directory = directory
@@ -128,8 +131,11 @@ public final class CrashReportSource {
             let checkpoint = try RecoveryFile.read(Checkpoint.self, at: checkpointURL(paths))
             fingerprints = checkpoint?.directory == directory.standardizedFileURL.path ? checkpoint!.fingerprints : [:]
             retries = checkpoint?.directory == directory.standardizedFileURL.path ? checkpoint!.retries ?? [:] : [:]
+            let migration = try RecoveryFile.read(Checkpoint.self, at: migrationURL(paths))
+            classificationFingerprints = migration?.directory == directory.standardizedFileURL.path ? migration!.fingerprints : [:]
         }
         let previous = fingerprints
+        let previousClassifications = classificationFingerprints
         do {
             let reports = try scan(now: now ?? Date())
             let observedAt = now ?? Date()
@@ -140,6 +146,7 @@ public final class CrashReportSource {
                 }
             }
             let triggers = try store.ingest(reports, now: observedAt)
+            try store.classifyRetained(classificationReports, now: observedAt)
             if let paths {
                 try SharedStateLock.withLock(paths) {
                     let url = checkpointURL(paths)
@@ -152,12 +159,19 @@ public final class CrashReportSource {
                     deferred = deferred.filter { present.contains($0.key) && scanned[$0.key] == nil }
                     let checkpoint = Checkpoint(directory: directory.standardizedFileURL.path, fingerprints: merged, retries: deferred.isEmpty ? nil : deferred)
                     if checkpoint != previous { try RecoveryFile.write(checkpoint, at: url) }
+                    let migration = try RecoveryFile.read(Checkpoint.self, at: migrationURL(paths))
+                    var migrated = migration?.directory == directory.standardizedFileURL.path ? migration!.fingerprints : [:]
+                    migrated.merge(classified) { _, latest in latest }
+                    migrated = migrated.filter { present.contains($0.key) }
+                    let progress = Checkpoint(directory: directory.standardizedFileURL.path, fingerprints: migrated, retries: nil)
+                    if progress != migration { try RecoveryFile.write(progress, at: migrationURL(paths)) }
                 }
             }
             evidenceComplete = evidenceComplete && retryUpdates.isEmpty && !retries.contains { present.contains($0.key) && scanned[$0.key] == nil }
             return triggers
         } catch {
             fingerprints = previous
+            classificationFingerprints = previousClassifications
             throw error
         }
     }
@@ -171,24 +185,31 @@ public final class CrashReportSource {
         scanned.removeAll(keepingCapacity: true)
         retryUpdates.removeAll(keepingCapacity: true)
         eventTimes.removeAll(keepingCapacity: true)
+        classified.removeAll(keepingCapacity: true)
+        classificationReports.removeAll(keepingCapacity: true)
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
-        var candidates = [(URL, String, Date, Int, Bool)]()
+        var candidates = [(URL, String, Date, Int, Bool, Bool)]()
         var uncovered = false
         for url in urls where url.pathExtension == "ips" {
             let info = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
             guard info.isRegularFile == true, info.isSymbolicLink != true else { continue }
             guard let size = info.fileSize, size <= 5_000_000, let date = info.contentModificationDate else { uncovered = true; continue }
             let fingerprint = "\(size):\(date.timeIntervalSince1970)"
-            if let retry = retries[url.lastPathComponent], retry.fingerprint == fingerprint, retry.after > now { continue }
-            if fingerprints[url.lastPathComponent] != fingerprint {
-                candidates.append((url, fingerprint, date, size, retries[url.lastPathComponent]?.fingerprint == fingerprint))
+            let pending = fingerprints[url.lastPathComponent] != fingerprint
+            if pending, let retry = retries[url.lastPathComponent], retry.fingerprint == fingerprint, retry.after > now { continue }
+            if pending || classificationFingerprints[url.lastPathComponent] != fingerprint {
+                candidates.append((url, fingerprint, date, size, pending && retries[url.lastPathComponent]?.fingerprint == fingerprint, !pending))
             }
         }
         var reports = [SimulatorCrashReport]()
         var bytes = 0
-        let ordered = candidates.sorted { $0.4 == $1.4 ? $0.2 > $1.2 : !$0.4 }
-        for (url, fingerprint, _, size, _) in ordered.prefix(64) {
+        let ordered = candidates.sorted {
+            if $0.5 != $1.5 { return !$0.5 }
+            return $0.4 == $1.4 ? $0.2 > $1.2 : !$0.4
+        }
+        var processed = 0
+        for (url, fingerprint, _, size, _, migrationOnly) in ordered.prefix(64) {
             guard bytes < 16_000_000, bytes + size <= 16_000_000 else { break }
             let data: Data
             do {
@@ -197,7 +218,20 @@ public final class CrashReportSource {
                 data = try file.read(upToCount: min(5_000_001, 16_000_000 - bytes)) ?? Data()
                 bytes += data.count
             } catch {
-                retryUpdates[url.lastPathComponent] = Retry(fingerprint: fingerprint, after: now.addingTimeInterval(30))
+                if migrationOnly {
+                    classificationFingerprints[url.lastPathComponent] = fingerprint
+                    classified[url.lastPathComponent] = fingerprint
+                    processed += 1
+                } else {
+                    retryUpdates[url.lastPathComponent] = Retry(fingerprint: fingerprint, after: now.addingTimeInterval(30))
+                }
+                continue
+            }
+            if migrationOnly {
+                if data.count == size, let report = SimulatorCrashReport.parse(data) { classificationReports.append(report) }
+                classificationFingerprints[url.lastPathComponent] = fingerprint
+                classified[url.lastPathComponent] = fingerprint
+                processed += 1
                 continue
             }
             guard data.count == size else {
@@ -213,8 +247,11 @@ public final class CrashReportSource {
             }
             fingerprints[url.lastPathComponent] = fingerprint
             scanned[url.lastPathComponent] = fingerprint
+            classificationFingerprints[url.lastPathComponent] = fingerprint
+            classified[url.lastPathComponent] = fingerprint
+            processed += 1
         }
-        evidenceComplete = !uncovered && candidates.count == scanned.count && retryUpdates.isEmpty
+        evidenceComplete = !uncovered && candidates.count == processed && retryUpdates.isEmpty
         present = Set(urls.map(\.lastPathComponent))
         fingerprints = fingerprints.filter { present.contains($0.key) }
         retries.merge(retryUpdates) { _, latest in latest }
@@ -222,6 +259,7 @@ public final class CrashReportSource {
     }
 
     private func checkpointURL(_ paths: LeasePaths) -> URL { paths.root.appendingPathComponent("crash-report-progress-v2.json") }
+    private func migrationURL(_ paths: LeasePaths) -> URL { paths.root.appendingPathComponent("crash-classification-progress.json") }
 
     private struct Checkpoint: Codable, Equatable {
         let directory: String

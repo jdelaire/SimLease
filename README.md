@@ -512,6 +512,11 @@ Known runtime AppIntentsLiveEntityService and intelligencetasksd failures remain
 grouped diagnostics; they do not block or cancel app jobs. Classification requires
 exact Apple identity and executable suffix. Other unknown failures stay conservative.
 Legacy reports are reread in bounded batches to enrich classifications.
+Classification proof lives in a separate bounded file that older CLI writers
+cannot strip. Previously consumed reports use a classification-only migration:
+only retained immutable incident identities are enriched, without replaying
+removed incidents, changing acknowledgments or generating cancellations.
+Missing raw evidence remains unclassified.
 
 Native sessions warn and reject new unsafe shimmed calls after a crash block.
 Queries, termination, shutdown and explicit settlement remain available. They
