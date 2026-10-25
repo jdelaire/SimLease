@@ -230,19 +230,46 @@ public struct DeviceRepairService: Sendable {
         try removeTransaction()
     }
 
-    private func checkBoot(_ id: String, transaction: inout DeviceRepairTransaction) throws -> Bool {
+    func restartHoldingLease(device: ManagedSimulatorDevice, handle: LeaseHandle, verify: @escaping () throws -> Void, beforeCleanup: @escaping () throws -> Void) throws -> Bool {
+        guard handle.paths.root.path == paths.root.path, handle.lanes.count == LeasePaths.maximumLanes,
+              handle.owner.pid == identity.pid, !FileManager.default.fileExists(atPath: paths.deviceRecovery.path),
+              device.matches(try find(device.id)) else {
+            throw DeviceManagementError.failed("automatic recovery requires an exclusive lease and unchanged device")
+        }
+        try requireShutdownUnpaired(find(device.id))
+        var transaction = DeviceRepairTransaction(id: UUID().uuidString, owner: try ProcessReference.current(), original: device, name: device.name, deviceType: device.deviceType, runtime: device.runtime)
+        transaction.originalBootAttempts = 1
+        try save(transaction)
+        let healthy = try checkBoot(device.id, transaction: &transaction, verify: verify, beforeCleanup: beforeCleanup)
+        try removeTransaction()
+        return healthy
+    }
+
+    private func checkBoot(_ id: String, transaction: inout DeviceRepairTransaction, verify: (() throws -> Void)? = nil, beforeCleanup: (() throws -> Void)? = nil) throws -> Bool {
         var healthy = true
+        var bootCompleted = false
         do {
-            try perform(&transaction, "boot health check") { try devices.bootAndWait(id) }
+            try perform(&transaction, "boot health check") {
+                try devices.bootAndWait(id)
+                bootCompleted = true
+                try verify?()
+            }
             if transaction.original?.id == id {
                 transaction.originalBootHealthy = true
                 try save(transaction)
             }
         } catch DeviceManagementError.failed {
             healthy = false
-            if transaction.original?.id == id {
+            if transaction.original?.id == id && !bootCompleted {
                 transaction.originalBootFailures += 1
                 try save(transaction)
+            }
+        }
+        try beforeCleanup?()
+        if verify != nil, let original = transaction.original {
+            let current = try find(id)
+            guard original.matches(current), current.available, ["Booted", "Shutdown"].contains(current.state), try !devices.pairedDeviceIDs().contains(id) else {
+                throw DeviceManagementError.unsettled("device configuration or pairing changed before automatic cleanup")
             }
         }
         try perform(&transaction, "shutdown after health check") { try devices.shutdown(id) }

@@ -3,6 +3,30 @@ import XCTest
 @testable import SimLeaseMenuCore
 
 final class MenuDisplayStateTests: XCTestCase {
+    func testAutomaticInfrastructureProgressReplacesManualCardsWithoutHidingAppFailures() {
+        let now = Date()
+        let critical = CrashLoopTrigger(deviceID: "device", scopeID: "unowned-system-service", processName: "PosterBoard", signature: "poster", occurredAt: now)
+        let health = SimulatorHealthStatus(recoveries: [AutomaticRecoveryRecord(deviceID: "device", state: .verifying, detail: "Checking 120 booted seconds.")], backgroundIncidentCount: 40, infrastructureBlocks: [critical])
+        let status = LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, crashBlocks: [critical], simulatorHealth: health)
+        let display = MenuDisplayState(status: status, now: now)
+        XCTAssertFalse(display.alerts.contains { $0.acknowledgeDeviceID != nil })
+        XCTAssertEqual(display.alerts.filter { $0.id == "background-diagnostics" }.count, 1)
+        XCTAssertTrue(display.alerts.contains { $0.title == "Verifying simulator recovery" })
+        XCTAssertEqual(MenuBarIconState(state: display).text, "Auto repair")
+        let app = CrashLoopTrigger(deviceID: "device", scopeID: "job", processName: "App", signature: "app", occurredAt: now)
+        let mixed = MenuDisplayState(status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, crashBlocks: [app], simulatorHealth: health), now: now)
+        XCTAssertTrue(mixed.alerts.contains { $0.acknowledgeDeviceID == "device" })
+        XCTAssertEqual(MenuBarIconState(state: mixed).text, "Crash blocked")
+    }
+
+    func testDeletedInfrastructureDeviceShowsHistoryWithoutUnblockAction() {
+        let block = CrashLoopTrigger(deviceID: "gone", scopeID: "unowned-system-service", processName: "PosterBoard", signature: "poster", occurredAt: Date())
+        let health = SimulatorHealthStatus(recoveries: [AutomaticRecoveryRecord(deviceID: "gone", state: .history, detail: "Removed device.")], infrastructureBlocks: [block])
+        let display = MenuDisplayState(status: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, crashBlocks: [block], simulatorHealth: health), now: Date())
+        XCTAssertFalse(display.alerts.contains { $0.acknowledgeDeviceID != nil })
+        XCTAssertTrue(display.alerts.contains { $0.id == "removed-device-history" })
+    }
+
     func testQuarantineDoesNotRequireExternalSettlementForTerminalOrSettledNativeCleanup() throws {
         let paths = LeasePaths(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: paths.root) }

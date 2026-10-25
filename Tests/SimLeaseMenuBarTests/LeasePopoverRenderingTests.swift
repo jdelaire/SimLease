@@ -34,6 +34,8 @@ final class LeasePopoverRenderingTests: XCTestCase {
                 )
             ),
             ("mixed-lane-error", mixedLaneError),
+            ("automatic-recovery-before", recoveryStatus(automatic: false)),
+            ("automatic-recovery-after", recoveryStatus(automatic: true)),
         ]
 
         for item in states {
@@ -62,6 +64,15 @@ final class LeasePopoverRenderingTests: XCTestCase {
             XCTAssertLessThanOrEqual(hosting.bounds.height, 820)
             print("popover-capture: \(output.path)")
         }
+    }
+
+    private func recoveryStatus(automatic: Bool) -> LeaseStatus {
+        let block = CrashLoopTrigger(deviceID: "63B33A57-80CC-4854-81D1-911B3C68E1D5", scopeID: "unowned-system-service", processName: "PosterBoard", signature: "poster", occurredAt: Date())
+        let health = automatic ? SimulatorHealthStatus(recoveries: [
+            AutomaticRecoveryRecord(deviceID: block.deviceID, state: .history, detail: "Device removed."),
+            AutomaticRecoveryRecord(deviceID: "device", state: .verifying, detail: "Checking stable services and new crash reports for 120 booted seconds. App data preserved.")
+        ], backgroundIncidentCount: 47, infrastructureBlocks: [block]) : nil
+        return LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, crashBlocks: [block], simulatorHealth: health)
     }
 
     func testWaiterRowsIncreasePopoverHeight() async throws {

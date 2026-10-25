@@ -7,6 +7,144 @@ final class CrashLoopTests: XCTestCase {
     let device = "11111111-1111-4111-8111-111111111111"
     let other = "22222222-2222-4222-8222-222222222222"
 
+    func testAppleBackgroundServiceCrashesNeverBlockOrCancelAppWork() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let first = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+            "procName": "intelligencetasksd", "procPath": "/Volumes/VOLUME/*/IntelligenceTasksEngine.framework/Support/intelligencetasksd",
+            "bundleInfo": ["CFBundleIdentifier": "com.apple.intelligencetasksd"],
+        ])))
+        let secondData = try runtimeReport(changes: [
+            "incident": "second", "procName": "intelligencetasksd", "procPath": "/Volumes/VOLUME/*/IntelligenceTasksEngine.framework/Support/intelligencetasksd",
+            "bundleInfo": ["CFBundleIdentifier": "com.apple.intelligencetasksd"],
+        ])
+        let second = try XCTUnwrap(SimulatorCrashReport.parse(secondData))
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: first.launchedAt.addingTimeInterval(-1))
+        XCTAssertTrue(try fixture.store.ingest([first, second], now: first.occurredAt.addingTimeInterval(1)).isEmpty)
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+        XCTAssertEqual(try fixture.store.read().incidents.count, 2)
+    }
+
+    func testEvidenceCompletenessRequiresDrainedReadableReportDirectory() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let directory = fixture.paths.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for index in 0..<65 { try Data(#"{"procName":"Host","procPath":"/usr/bin/host"}"#.utf8).write(to: directory.appendingPathComponent("\(index).ips")) }
+        let source = CrashReportSource(directory: directory, paths: fixture.paths)
+        _ = try source.inspect(store: fixture.store)
+        XCTAssertFalse(source.evidenceComplete)
+        _ = try source.inspect(store: fixture.store)
+        XCTAssertTrue(source.evidenceComplete)
+        let oversized = directory.appendingPathComponent("large.ips")
+        FileManager.default.createFile(atPath: oversized.path, contents: nil)
+        let file = try FileHandle(forWritingTo: oversized)
+        try file.truncate(atOffset: 5_000_001)
+        try file.close()
+        _ = try source.inspect(store: fixture.store)
+        XCTAssertFalse(source.evidenceComplete)
+        let missing = CrashReportSource(directory: directory.appendingPathComponent("missing"), paths: fixture.paths)
+        _ = try missing.inspect(store: fixture.store)
+        XCTAssertFalse(missing.evidenceComplete)
+    }
+
+    func testMalformedReportsRemainPendingUntilReadableSimulatorEvidenceArrives() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let directory = fixture.paths.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("partial.ips")
+        try Data("truncated simulator report".utf8).write(to: file)
+        let source = CrashReportSource(directory: directory, paths: fixture.paths)
+        _ = try source.inspect(store: fixture.store)
+        XCTAssertFalse(source.evidenceComplete)
+        try runtimeReport().write(to: file)
+        _ = try source.inspect(store: fixture.store)
+        XCTAssertTrue(source.evidenceComplete)
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+    }
+
+    func testDelayedCriticalEventCannotRegressFailureGeneration() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        _ = try fixture.store.ingest([criticalEvent("new", at: 1000, launch: 950)], now: Date(timeIntervalSince1970: 1100))
+        _ = try fixture.store.ingest([criticalEvent("late", at: 500, launch: 450)], now: Date(timeIntervalSince1970: 1100))
+        XCTAssertEqual(try fixture.store.reasons().first?.trigger.occurredAt, Date(timeIntervalSince1970: 1000))
+        XCTAssertEqual(try fixture.store.read().blocks[device]?.occurredAt, Date(timeIntervalSince1970: 1000))
+    }
+
+    func testInfrastructureResolutionPreservesOwnedAppCancellationInEitherOrder() throws {
+        for appFirst in [true, false] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: Date(timeIntervalSince1970: 90))
+            let app = [event("app-one", at: 100, launch: 95), event("app-two", at: 101, launch: 95)]
+            let system = [criticalEvent("system", at: 111, launch: 110)]
+            for reports in appFirst ? [app, system] : [system, app] { _ = try fixture.store.ingest(reports, now: Date(timeIntervalSince1970: 120)) }
+            let reason = try XCTUnwrap(fixture.store.reasons().first { $0.kind == .criticalInfrastructure })
+            XCTAssertTrue(try fixture.store.resolveInfrastructure(reason))
+            XCTAssertTrue(try fixture.store.shouldCancel(scopeID: "scope"))
+            XCTAssertEqual(try fixture.store.read().blocks[device]?.processName, "App")
+        }
+    }
+
+    func testLegacyBackgroundClassificationEnrichmentRemovesBlockAndCancellationWithoutDuplicates() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let report = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+            "procName": "intelligencetasksd", "procPath": "/Volumes/VOLUME/*/IntelligenceTasksEngine.framework/Support/intelligencetasksd",
+            "bundleInfo": ["CFBundleIdentifier": "com.apple.intelligencetasksd"],
+        ])))
+        var old = report
+        old.kind = nil
+        var second = old
+        second = SimulatorCrashReport(incidentID: "second", deviceID: report.deviceID, occurredAt: report.occurredAt, launchedAt: report.launchedAt, signature: report.signature, processName: report.processName)
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: report.launchedAt.addingTimeInterval(-1))
+        _ = try fixture.store.ingest([old, second], now: report.occurredAt.addingTimeInterval(1))
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+        XCTAssertTrue(try fixture.store.shouldCancel(scopeID: "scope"))
+        _ = try fixture.store.ingest([report], now: report.occurredAt.addingTimeInterval(1))
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+        XCTAssertEqual(try fixture.store.read().incidents.count, 2)
+    }
+
+    func testCriticalInfrastructureCannotOverwriteApplicationFailure() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: Date(timeIntervalSince1970: 90))
+        _ = try fixture.store.ingest([event("app-one", at: 100, launch: 95), event("app-two", at: 101, launch: 95)], now: Date(timeIntervalSince1970: 110))
+        _ = try fixture.store.ingest([criticalEvent("system", at: 111, launch: 110)], now: Date(timeIntervalSince1970: 120))
+        XCTAssertEqual(try fixture.store.read().blocks[device]?.processName, "App")
+    }
+
+    func testVerifiedInfrastructureResolutionPreservesApplicationFailureAndAcknowledgments() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: Date(timeIntervalSince1970: 90))
+        _ = try fixture.store.ingest([criticalEvent("system", at: 100, launch: 95)], now: Date(timeIntervalSince1970: 110))
+        let expected = try XCTUnwrap(fixture.store.reasons().first)
+        _ = try fixture.store.ingest([event("app-one", at: 111, launch: 110), event("app-two", at: 112, launch: 110)], now: Date(timeIntervalSince1970: 120))
+        XCTAssertTrue(try fixture.store.resolveInfrastructure(expected))
+        XCTAssertEqual(try fixture.store.reasons().map(\.kind), [.application])
+        XCTAssertEqual(try fixture.store.read().blocks[device]?.processName, "App")
+        XCTAssertTrue(try fixture.store.read().acknowledgments.isEmpty)
+    }
+
+    func testInfrastructureResolutionCannotEraseNewerFailureOrSuppressDelayedEvents() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        _ = try fixture.store.ingest([criticalEvent("one", at: 100, launch: 95)], now: Date(timeIntervalSince1970: 110))
+        let original = try XCTUnwrap(fixture.store.reasons().first)
+        _ = try fixture.store.ingest([criticalEvent("two", at: 111, launch: 110)], now: Date(timeIntervalSince1970: 120))
+        XCTAssertFalse(try fixture.store.resolveInfrastructure(original))
+        let current = try XCTUnwrap(fixture.store.reasons().first)
+        XCTAssertTrue(try fixture.store.resolveInfrastructure(current))
+        _ = try fixture.store.ingest([criticalEvent("late", at: 115, launch: 110)], now: Date(timeIntervalSince1970: 130))
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+    }
+
     func testCriticalCrashWithoutOwnedScopeQuarantinesDeviceWithoutCancellation() throws {
         let fixture = try CrashFixture()
         defer { fixture.remove() }
@@ -75,7 +213,7 @@ final class CrashLoopTests: XCTestCase {
         let source = CrashReportSource(directory: directory, paths: fixture.paths)
         let now = Date(timeIntervalSince1970: 1_792_920_700)
         XCTAssertThrowsError(try source.inspect(store: fixture.store, now: now))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.paths.root.appendingPathComponent("crash-report-progress.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.paths.root.appendingPathComponent("crash-report-progress-v2.json").path))
         try FileManager.default.removeItem(at: history)
         _ = try source.inspect(store: fixture.store, now: now)
         XCTAssertThrowsError(try fixture.store.requireHealthy([device]))

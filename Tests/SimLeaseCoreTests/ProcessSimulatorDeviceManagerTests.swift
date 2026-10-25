@@ -3,6 +3,14 @@ import XCTest
 @testable import SimLeaseCore
 
 final class ProcessSimulatorDeviceManagerTests: XCTestCase {
+    func testServiceProbeRequiresPositivePIDAndExactServiceLabel() {
+        let pids = ProcessSimulatorDeviceManager.parseServicePIDs("PID Status Label\n12 0 com.apple.SpringBoard\n- 0 com.apple.PosterBoard\n-7 0 bad\n15 bad invalid\n99 0 com.apple.SpringBoard.extra")
+        XCTAssertEqual(pids["com.apple.SpringBoard"], 12)
+        XCTAssertNil(pids["com.apple.PosterBoard"])
+        XCTAssertNil(pids["bad"])
+        XCTAssertNil(pids["invalid"])
+    }
+
     func testMalformedPairInventoryCannotProveDeviceUnpaired() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

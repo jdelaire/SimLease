@@ -38,6 +38,8 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(try CommandParser.parse(["simlease", "device", "shutdown", "--device", a.lowercased(), "--device", b]), .deviceShutdown([a, b]))
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "shutdown", "--device", a, "--device", a.lowercased()]))
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "shutdown"]))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "maintain"]), .deviceMaintain)
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "device", "maintain", "--device", a]))
         XCTAssertEqual(try CommandParser.parse(["simlease", "device", "reap"]), .deviceReap)
         XCTAssertEqual(try CommandParser.parse(["simlease", "history", "--json"]), .history(hours: 24))
         XCTAssertEqual(try CommandParser.parse(["simlease", "history", "--hours", "6", "--json"]), .history(hours: 6))

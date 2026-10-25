@@ -4,6 +4,23 @@ import XCTest
 @testable import SimLeaseCore
 
 final class DeviceRepairTests: XCTestCase {
+    func testServiceFailureCannotCountTowardDisposableBootReplacement() throws {
+        let f = try RepairFixture()
+        defer { f.remove() }
+        let id = try f.service.create(name: "Test", deviceType: "type", runtime: "runtime").deviceID
+        let device = try XCTUnwrap(f.manager.devices[id])
+        let handle = try XCTUnwrap(f.coordinator.tryAcquire(identity: f.identity))
+        f.manager.failShutdownOnce = true
+        XCTAssertThrowsError(try f.service.restartHoldingLease(device: device, handle: handle, verify: {
+            throw DeviceManagementError.failed("service crashed after successful boot")
+        }, beforeCleanup: {}))
+        handle.release()
+        f.manager.failingBoots.insert(id)
+        XCTAssertThrowsError(try f.service.repair(deviceID: id, settled: true))
+        XCTAssertEqual(f.manager.devices.count, 1)
+        XCTAssertNotNil(f.manager.devices[id])
+    }
+
     func testHealthyPersistentDeviceRetainsIdentityAndCrashBlock() throws {
         let f = try RepairFixture()
         defer { f.remove() }

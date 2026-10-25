@@ -13,9 +13,8 @@ public struct ProcessSimulatorDeviceManager: SimulatorDeviceManaging {
         let json = try controller.command(["simctl", "list", "devices", "--json"])
         let inventory = try JSONDecoder().decode(Inventory.self, from: Data(json.utf8))
         return inventory.devices.flatMap { runtime, devices in
-            devices.compactMap { device in
-                guard let type = device.deviceTypeIdentifier, let path = device.dataPath else { return nil }
-                return ManagedSimulatorDevice(id: device.udid.uppercased(), name: device.name, deviceType: type, runtime: runtime, dataPath: path, state: device.state, available: device.isAvailable)
+            devices.map { device in
+                ManagedSimulatorDevice(id: device.udid.uppercased(), name: device.name, deviceType: device.deviceTypeIdentifier ?? "", runtime: runtime, dataPath: device.dataPath ?? "", state: device.state, available: device.isAvailable && device.deviceTypeIdentifier != nil && device.dataPath != nil)
             }
         }
     }
@@ -61,6 +60,20 @@ public struct ProcessSimulatorDeviceManager: SimulatorDeviceManaging {
     }
 
     public func delete(_ id: String) throws { _ = try run(["simctl", "delete", id]) }
+
+    public func servicePIDs(_ id: String) throws -> [String: Int32] {
+        Self.parseServicePIDs(try run(["simctl", "spawn", id, "launchctl", "list"]))
+    }
+
+    static func parseServicePIDs(_ listing: String) -> [String: Int32] {
+        var result: [String: Int32] = [:]
+        for line in listing.split(separator: "\n") {
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count == 3, let pid = Int32(fields[0]), pid > 0, Int32(fields[1]) != nil else { continue }
+            result[String(fields[2])] = pid
+        }
+        return result
+    }
 
     public func terminateApps(_ id: String) throws {
         let bundles = Self.runningApplications(try run(["simctl", "spawn", id, "launchctl", "list"]))

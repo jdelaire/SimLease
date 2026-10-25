@@ -5,6 +5,24 @@ import Darwin
 @testable import SimLeaseCLI
 
 final class CLIScaffoldTests: XCTestCase {
+    func testStandaloneShimAttemptsAutomaticRecoveryBeforeRejectingBlockedDevice() throws {
+        let fixture = try CLIFixture()
+        let id = "11111111-1111-4111-8111-111111111111"
+        let tools = try fixture.makeToolDirectory(name: "xcrun", script: "exit 0")
+        let reports = fixture.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        try CrashLoopStore(paths: fixture.paths).blockInfrastructureFailure(deviceID: id)
+        let output = fixture.output
+        let errors = fixture.errors
+        let configuration = CLIConfiguration(paths: fixture.paths, timing: fixture.configuration.timing,
+            standardOutput: { output.append($0) }, standardError: { errors.append($0) },
+            deviceManager: UnavailableRecoveryInventory(), crashReportDirectory: reports)
+        let result = SimLeaseCLI.run(arguments: [fixture.shimDirectory.appendingPathComponent("xcrun").path, "simctl", "boot", id],
+            environment: ["PATH": "\(fixture.shimDirectory.path):\(tools.path):/usr/bin:/bin"], configuration: configuration)
+        XCTAssertEqual(result, 74)
+        XCTAssertTrue(errors.value.contains("maintenance inventory unavailable"), errors.value)
+    }
+
     func testNestedAbsoluteSimulatorCommandsHandleClaimedWarmDevice() throws {
         let fixture = try CLIFixture()
         let id = "11111111-1111-4111-8111-111111111111"
@@ -536,4 +554,13 @@ private final class LockedText: @unchecked Sendable {
     func append(_ value: String) {
         lock.withLock { text += value }
     }
+}
+
+private struct UnavailableRecoveryInventory: SimulatorDeviceManaging {
+    func inventory() throws -> [ManagedSimulatorDevice] { throw DeviceManagementError.failed("maintenance inventory unavailable") }
+    func pairedDeviceIDs() throws -> Set<String> { [] }
+    func create(name: String, deviceType: String, runtime: String) throws -> String { XCTFail("must not mutate devices"); return "" }
+    func bootAndWait(_ id: String) throws { XCTFail("must not boot without inventory") }
+    func shutdown(_ id: String) throws { XCTFail("must not shut down without inventory") }
+    func delete(_ id: String) throws { XCTFail("must not delete devices") }
 }

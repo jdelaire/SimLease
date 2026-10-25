@@ -9,6 +9,7 @@ enum ParsedCommand: Equatable {
     case deviceRepair(String, settled: Bool, acknowledgeCrashes: Bool)
     case deviceRecover
     case deviceShutdown([String])
+    case deviceMaintain
     case deviceReap
     case deviceAcknowledge(String)
     case config(maxLanes: Int?)
@@ -260,6 +261,10 @@ enum CommandParser {
 
     private static func parseDevice(_ arguments: [String]) throws -> ParsedCommand {
         guard let action = arguments.first else { throw CommandParserError.usage }
+        if action == "maintain" {
+            guard arguments.count == 1 else { throw CommandParserError.usage }
+            return .deviceMaintain
+        }
         if action == "reap" {
             guard arguments.count == 1 else { throw CommandParserError.usage }
             return .deviceReap

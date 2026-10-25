@@ -164,6 +164,12 @@ public enum SimLeaseCLI {
                 if blocked { try crashes.acknowledge(deviceID: id, at: Date()) }
                 configuration.standardOutput("{\"deviceID\":\"\(id)\",\"acknowledged\":\(blocked)}\n")
                 return 0
+            case .deviceMaintain:
+                guard !insideManagedWork(configuration) else { throw SimulatorTaskError.commandFailed("automatic recovery cannot nest inside managed work") }
+                let health = try automaticService(environment: environment, configuration: configuration).maintain()
+                _ = try shutdownService(title: "Reap warm simulators", arguments: arguments, environment: environment, configuration: configuration).reap()
+                configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(health), as: UTF8.self) + "\n")
+                return 0
             case .deviceReap:
                 if insideManagedWork(configuration) {
                     throw SimulatorTaskError.commandFailed("simulator reaping cannot nest inside a managed job or native session")
@@ -468,6 +474,7 @@ public enum SimLeaseCLI {
         let blocks = try CrashLoopStore(paths: configuration.paths).read().blocks.values.sorted { $0.deviceID < $1.deviceID }
         var usage: [SimulatorUsage]?
         var stale: [StaleRuntime]?
+        var healthInventory: [ManagedSimulatorDevice]?
         if devices {
             let xcrun: URL
             #if DEBUG || SIMLEASE_TESTING
@@ -478,7 +485,8 @@ public enum SimLeaseCLI {
             let manager = configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun)
             let relevant = status.waiters.flatMap { $0.deviceIDs ?? [] } + (status.activity?.activities.flatMap(\.deviceIDs) ?? []) + blocks.map(\.deviceID)
             stale = configuration.deviceManager == nil ? RuntimeCompatibility.cached(paths: configuration.paths, environment: environment, xcrunURL: xcrun) : []
-            usage = (try? manager.inventory()).map {
+            healthInventory = try? manager.inventory()
+            usage = healthInventory.map {
                 SimulatorUsage.build(inventory: $0, tasks: tasks, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:], staleRuntimes: Set((stale ?? []).map(\.identifier)))
             }
         }
@@ -496,7 +504,9 @@ public enum SimLeaseCLI {
         if status.state == .leased, let owner = status.owner, let task = tasks.first(where: { $0.0 == 0 })?.1, task.owner.pid == owner.pid, task.phase == .running, let sessionID = task.externalSessionID {
             nativeIdleSince = max(owner.acquiredAt, history.lastNativeActivity(sessionID: sessionID) ?? owner.acquiredAt)
         }
-        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks, devices: usage, typicalDurations: durations.isEmpty ? nil : durations, nativeIdleSince: nativeIdleSince, staleRuntimes: stale?.isEmpty == false ? stale : nil, lanes: status.lanes, laneLimit: laneLimit, gate: gateStatus, laneErrors: status.laneErrors)
+        let health = try automaticService(environment: environment, configuration: configuration).status(inventory: healthInventory)
+        let historical = Set(health.recoveries.filter { $0.state == .history }.map(\.deviceID))
+        status = LeaseStatus(state: status.state, owner: status.owner, waiters: status.waiters, error: status.error, activity: status.activity, crashBlocks: blocks.filter { !historical.contains($0.deviceID) }, devices: usage, typicalDurations: durations.isEmpty ? nil : durations, nativeIdleSince: nativeIdleSince, staleRuntimes: stale?.isEmpty == false ? stale : nil, lanes: status.lanes, laneLimit: laneLimit, gate: gateStatus, laneErrors: status.laneErrors, simulatorHealth: health)
         if json {
             let data = try JSONEncoder.simLease.encode(status)
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
@@ -589,6 +599,32 @@ public enum SimLeaseCLI {
         return ProcessWarmDevicePolicy(paths: configuration.paths, manager: manager, shutdownService: try shutdownService(title: "Reap warm simulators", arguments: [], environment: environment, configuration: configuration))
     }
 
+    static func automaticService(environment: [String: String], configuration: CLIConfiguration) throws -> AutomaticRecoveryService {
+        let coordinator = try makeCoordinator(configuration: configuration)
+        let identity = LeaseIdentity(pid: getpid(), cwd: FileManager.default.currentDirectoryPath, project: "SimLease", command: ["device", "maintain"], source: .terminal, threadID: nil, threadTitle: "Automatic simulator recovery")
+        let xcrun: URL
+        #if DEBUG || SIMLEASE_TESTING
+        xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+        #else
+        xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+        #endif
+        let manager = ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun)
+        let paths = configuration.paths
+        let directory = configuration.crashReportDirectory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
+        return AutomaticRecoveryService(paths: paths, coordinator: coordinator, identity: identity, devices: configuration.deviceManager ?? manager,
+            activity: { SimulatorActivityAudit().scan(lease: LeaseStatus(state: .free, owner: nil, waiters: [], error: nil), task: nil) },
+            canBoot: { HeadroomGate(paths: paths).check(ignoreAdmissionSpacing: true).open },
+            servicePIDs: { id in
+                guard configuration.deviceManager == nil else { throw DeviceManagementError.failed("service health probe unavailable") }
+                return try manager.servicePIDs(id)
+            },
+            inspect: {
+                let source = CrashReportSource(directory: directory, paths: paths)
+                _ = try source.inspect(store: CrashLoopStore(paths: paths))
+                return source.evidenceComplete
+            })
+    }
+
     private static func deviceService(arguments: [String], environment: [String: String], configuration: CLIConfiguration) throws -> DeviceRepairService {
         if insideManagedWork(configuration) {
             throw SimulatorTaskError.commandFailed("device recovery cannot nest inside a managed job or native session; finish and settle it first")
@@ -621,6 +657,7 @@ public enum SimLeaseCLI {
                 excluding: URL(fileURLWithPath: "/dev/null")
             )
         }
+        try preflightRecovery(invocation: command, deviceIDs: deviceIDs, environment: environment, configuration: configuration)
         let store = try MetadataStore(paths: configuration.paths)
         let ids = deviceIDs + SimulatorCommand.referencedDeviceIDs(in: command)
         let arguments = SimulatorCommand.argumentsForManagedTask(executable: executable.path, arguments: Array(command.dropFirst()), hasDevices: !ids.isEmpty)
@@ -689,6 +726,7 @@ public enum SimLeaseCLI {
         guard decision.requiresLease, !nested, native == nil else {
             return try ChildProcessRunner.run(executable: executable, arguments: arguments, environment: childEnvironment).exitCode
         }
+        try preflightRecovery(invocation: invocation, deviceIDs: ids, environment: environment, configuration: configuration)
         let store = try MetadataStore(paths: configuration.paths)
         let identity = try LeaseIdentity.resolve(
             environment: environment, cwd: FileManager.default.currentDirectoryPath,
@@ -699,6 +737,15 @@ public enum SimLeaseCLI {
             executable: executable, arguments: arguments, deviceIDs: ids,
             keepRunning: false, environment: childEnvironment, identity: identity
         )
+    }
+
+    private static func preflightRecovery(invocation: [String], deviceIDs: [String], environment: [String: String], configuration: CLIConfiguration) throws {
+        guard !insideManagedWork(configuration), !CrashLoopStore.permitsCleanup(invocation) else { return }
+        try configuration.inspectCrashes()
+        let targets = Set((deviceIDs + SimulatorCommand.referencedDeviceIDs(in: invocation)).map { $0.uppercased() })
+        if try CrashLoopStore(paths: configuration.paths).reasons().contains(where: { $0.kind == .criticalInfrastructure && targets.contains($0.trigger.deviceID) }) {
+            _ = try automaticService(environment: environment, configuration: configuration).maintain(onlyDeviceIDs: targets)
+        }
     }
 
     private static func insideManagedWork(_ configuration: CLIConfiguration) -> Bool {

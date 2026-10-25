@@ -468,7 +468,7 @@ The menu bar shows the title on the lane bar, in the running row and on the
 leased simulator tile. A leading `[Project]` that matches the job's project is
 dropped there, because the color chip already shows the project.
 
-## Repeated crashes and device recovery
+## Automatic simulator recovery
 
 Managed jobs, `status`, and `doctor` inspect simulator crash reports. The menu
 checks through `status` every five seconds. One verified runtime-service crash
@@ -488,9 +488,30 @@ Borrowed devices, preexisting system processes, and `--keep-running` devices
 are not automatically interrupted. Unowned quarantine does not accelerate warm
 device shutdown. Normal idle and capacity cleanup still applies.
 
-Historical critical-service evidence can also block a device. Blocks remain
-until the cause is investigated and fixed and retries are explicitly allowed.
-Boot success alone does not establish that a wallpaper-service failure is fixed.
+Critical-service failures queue automatic nondestructive recovery. The menu runs
+one maintenance worker each minute; blocked CLI admission also tries maintenance
+when the menu is closed. `simlease device maintain` runs the same worker.
+Recovery waits for exclusive lanes, settled tasks and native helpers, complete
+process/crash audits, host headroom, and an available, Shutdown, unpaired device.
+Booted devices are protected. Normal owned cleanup and warm expiry can shut them
+down first. Missing devices move to history only after successful full inventory.
+
+Each attempt boots the same UUID, requires positive stable SpringBoard PIDs and
+PosterBoard PIDs when relevant, observes 120 booted seconds without a new critical
+report, then verifies shutdown and scans again. Missing services, report backlog,
+unreadable evidence or changed identity prevent success. This establishes observed
+restart stability, not a repair of Apple's underlying bug or proof of wallpaper
+functionality. No wallpaper data is erased or modified. No automatic device
+replacement occurs. Recovery resolves only the exact verified infrastructure
+reason. Independent app failures and acknowledgment timestamps remain intact.
+
+Attempts persist across processes: at most two per device in 24 hours, at least
+ten minutes apart. Cooldown holds no lanes. Uncertain commands preserve the
+existing recovery journal and require verified settlement before any more work.
+Known runtime AppIntentsLiveEntityService and intelligencetasksd failures remain
+grouped diagnostics; they do not block or cancel app jobs. Classification requires
+exact Apple identity and executable suffix. Other unknown failures stay conservative.
+Legacy reports are reread in bounded batches to enrich classifications.
 
 Native sessions warn and reject new unsafe shimmed calls after a crash block.
 Queries, termination, shutdown and explicit settlement remain available. They
@@ -504,8 +525,10 @@ The menu, `status --json`, and `doctor` show crash blocks. Evidence is bounded
 to the latest 256 owned scopes and 512 incidents. Active jobs inspect at most
 once per second. Each scan reads at most 64 changed reports, each at most 5 MB,
 with a 16 MB scan budget. Scan progress survives CLI restarts and advances only
-after ingestion succeeds, including for invalid reports. Unchanged reports do
-not rewrite crash history. Unreadable files wait 30 seconds before another
+after ingestion succeeds, including for positively unrelated host reports.
+Malformed or unknown reports stay pending and prevent recovery verification.
+Unchanged consumed reports do not rewrite crash history. Unreadable files wait
+30 seconds before another
 attempt, so they cannot continuously hide older reports. Future-dated events
 remain pending until their event time. Directory enumeration still scales with
 the number of report files. Missing or unreadable reports limit detection.
@@ -514,8 +537,8 @@ Owned-job cancellation receipts use a separate bounded file so older CLI
 processes cannot erase them while rewriting history. Already-running processes
 retain their earlier watchdog and cleanup behavior until they finish.
 
-This prevents further managed retries after detection. It does not repair
-Apple's simulator services or guarantee that no crash dialog will appear.
+This contains failures and attempts a bounded restart automatically. It cannot
+fix Apple's runtime code or guarantee that no crash dialog will appear.
 Requests already running in detached native daemons remain outside shim
 enforcement and must be stopped and settled through their owning session.
 

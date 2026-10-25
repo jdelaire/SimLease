@@ -133,6 +133,7 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
     public let laneErrors: [LaneStatusError]?
     public let laneLimit: Int?
     public let gate: LaneGateStatus?
+    public let simulatorHealth: SimulatorHealthStatus?
 
     public init(
         state: State,
@@ -148,8 +149,10 @@ public struct LeaseStatus: Codable, Equatable, Sendable {
         lanes: [LaneStatus]? = nil,
         laneLimit: Int? = nil,
         gate: LaneGateStatus? = nil,
-        laneErrors: [LaneStatusError]? = nil
+        laneErrors: [LaneStatusError]? = nil,
+        simulatorHealth: SimulatorHealthStatus? = nil
     ) {
+        self.simulatorHealth = simulatorHealth
         self.laneErrors = laneErrors
         self.staleRuntimes = staleRuntimes
         self.lanes = lanes

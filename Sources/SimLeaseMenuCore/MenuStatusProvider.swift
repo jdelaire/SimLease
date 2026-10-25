@@ -79,7 +79,7 @@ public actor CLIStatusProvider: MenuStatusProviding {
     }
 
     public func reap() async throws {
-        _ = try await execute(["device", "reap"])
+        _ = try await execute(["device", "maintain"])
     }
 
     public func history(hours: Int) async throws -> HistoryReport {

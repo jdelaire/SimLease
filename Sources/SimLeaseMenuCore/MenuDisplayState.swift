@@ -181,9 +181,13 @@ public struct MenuDisplayState: Equatable, Sendable {
     public init(status: LeaseStatus, now: Date) {
         let base = Self(leaseStatus: status, now: now)
         let activity = status.activity
+        let infrastructure = status.simulatorHealth?.infrastructureBlocks ?? []
+        let historical = Set((status.simulatorHealth?.recoveries ?? []).filter { $0.state == .history }.map(\.deviceID))
+        let visibleBlocks = (status.crashBlocks ?? []).filter { !infrastructure.contains($0) && !historical.contains($0.deviceID) }
         let title: String
         if status.state == .metadataError { title = base.menuTitle }
-        else if status.crashBlocks?.isEmpty == false { title = "Simulator · Crash blocked" }
+        else if !visibleBlocks.isEmpty { title = "Simulator · Crash blocked" }
+        else if status.simulatorHealth?.recoveries.contains(where: { $0.state != .history && $0.state != .recovered }) == true { title = "Simulator · Automatic repair" }
         else if activity?.activities.contains(where: { $0.kind == .unmanaged }) == true { title = "Simulator · Unmanaged" }
         else if activity?.isIncomplete == true { title = "Simulator · Audit incomplete" }
         else if activity?.activities.isEmpty == false { title = "Simulator · Unverified" }
@@ -236,9 +240,9 @@ public struct MenuDisplayState: Equatable, Sendable {
         let ownerLabels = leased.map { Self.labels(title: $0.threadTitle, threadID: $0.threadID, source: $0.source, project: $0.project) }
         self.init(
             kind: base.kind, menuTitle: title,
-            symbolName: title != base.menuTitle ? "exclamationmark.triangle.fill" : base.symbolName,
+            symbolName: title == "Simulator · Automatic repair" ? "arrow.triangle.2.circlepath" : title != base.menuTitle ? "exclamationmark.triangle.fill" : base.symbolName,
             ownerName: base.ownerName, projectAndSource: base.projectAndSource,
-            command: base.command, elapsed: base.elapsed, waiters: waiters, error: base.error, activity: activity, crashBlocks: status.crashBlocks ?? [],
+            command: base.command, elapsed: base.elapsed, waiters: waiters, error: base.error, activity: activity, crashBlocks: visibleBlocks,
             devices: status.devices.map { Self.devices($0, status: status, ownerName: base.ownerName, waiters: waiters, now: now) },
             typicalDuration: ownerTypical.map { "usually ≈ \(Self.minutes($0))" },
             nativeIdle: idle.map { "No native device commands for \(Self.minutes($0)). Finish the session if it is done." },
@@ -323,7 +327,9 @@ public struct MenuDisplayState: Equatable, Sendable {
 
     private static func alerts(status: LeaseStatus, usage: [String: SimulatorUsage], idle: Double?) -> [MenuAlert] {
         var alerts = [MenuAlert]()
-        for block in status.crashBlocks ?? [] {
+        let infrastructure = status.simulatorHealth?.infrastructureBlocks ?? []
+        let historical = Set((status.simulatorHealth?.recoveries ?? []).filter { $0.state == .history }.map(\.deviceID))
+        for block in status.crashBlocks ?? [] where !infrastructure.contains(block) && !historical.contains(block.deviceID) {
             let place = usage[block.deviceID.uppercased()].map { "\($0.name) · \($0.runtime)" } ?? "simulator \(block.deviceID.prefix(8))"
             alerts.append(MenuAlert(
                 id: "crash-\(block.deviceID)", severity: .critical, title: "\(block.processName) crash blocked simulator",
@@ -331,6 +337,28 @@ public struct MenuDisplayState: Equatable, Sendable {
                 copyLabel: "Copy unblock command", copyText: "simlease device acknowledge --device \(block.deviceID)",
                 acknowledgeDeviceID: block.deviceID
             ))
+        }
+        let recoveries = status.simulatorHealth?.recoveries ?? []
+        for recovery in recoveries where recovery.state != .history {
+            let place = usage[recovery.deviceID]?.name ?? recovery.device?.name ?? "Simulator \(recovery.deviceID.prefix(8))"
+            let title: String
+            switch recovery.state {
+            case .waiting: title = "Automatic repair queued"
+            case .restarting: title = "Restarting simulator"
+            case .verifying: title = "Verifying simulator recovery"
+            case .cooldown: title = "Automatic repair cooling down"
+            case .recovered: title = "Simulator restart verified"
+            case .actionRequired: title = "Automatic repair paused"
+            case .history: continue
+            }
+            alerts.append(MenuAlert(id: "recovery-\(recovery.deviceID)", severity: recovery.state == .actionRequired ? .warning : .info, title: title, detail: "\(place). \(recovery.detail)"))
+        }
+        if let count = status.simulatorHealth?.backgroundIncidentCount, count > 0 {
+            alerts.append(MenuAlert(id: "background-diagnostics", severity: .info, title: "Apple background diagnostics", detail: "\(count) AppIntents and intelligence service crash reports retained. These background failures do not block jobs."))
+        }
+        let removed = recoveries.filter { $0.state == .history }.count
+        if removed > 0 {
+            alerts.append(MenuAlert(id: "removed-device-history", severity: .info, title: "Removed devices in history", detail: "\(removed) removed simulator\(removed == 1 ? "" : "s"). Crash evidence retained; no repair needed."))
         }
         let activities = status.activity?.activities ?? []
         let outside = activities.filter { $0.kind == .unmanaged }

@@ -5,6 +5,18 @@ final class LaneAdmissionTests: XCTestCase {
     private let a = "11111111-1111-4111-8111-111111111111"
     private let b = "22222222-2222-4222-8222-222222222222"
 
+    func testExclusiveMaintenanceIgnoresItsAdmissionSpacingButStillRequiresHeadroom() {
+        let now = Date()
+        var state = HeadroomGate.State()
+        state.cpuIdle = 0.5
+        state.lastAdmissionAt = now
+        let healthy = HeadroomSample(memoryFreePercent: 70, compressorBytes: 0, swapoutBytes: 0, idleTicks: 1, totalTicks: 2, load: 1, cpus: 10)
+        XCTAssertFalse(HeadroomGate.evaluate(&state, sample: healthy, now: now).open)
+        XCTAssertTrue(HeadroomGate.evaluate(&state, sample: healthy, now: now, ignoreAdmissionSpacing: true).open)
+        let pressured = HeadroomSample(memoryFreePercent: 20, compressorBytes: 0, swapoutBytes: 0, idleTicks: 1, totalTicks: 2, load: 1, cpus: 10)
+        XCTAssertFalse(HeadroomGate.evaluate(&state, sample: pressured, now: now, ignoreAdmissionSpacing: true).open)
+    }
+
     func testDisjointDevicesShareTheMachineWhileSameDeviceWaits() throws {
         let f = try LaneFixture(maxLanes: 2, gateOpen: true)
         defer { f.remove() }

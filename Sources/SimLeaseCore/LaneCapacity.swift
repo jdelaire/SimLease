@@ -114,10 +114,10 @@ public struct HeadroomGate: Sendable {
         self.sampler = sampler
     }
 
-    public func check(now: Date = Date()) -> LaneGateStatus {
+    public func check(now: Date = Date(), ignoreAdmissionSpacing: Bool = false) -> LaneGateStatus {
         (try? SharedStateLock.withLock(paths) {
             var state = (try? RecoveryFile.read(State.self, at: paths.gate)) ?? State()
-            let status = Self.evaluate(&state, sample: sampler(), now: now)
+            let status = Self.evaluate(&state, sample: sampler(), now: now, ignoreAdmissionSpacing: ignoreAdmissionSpacing)
             try? RecoveryFile.write(state, at: paths.gate)
             return status
         }) ?? LaneGateStatus(open: false, reason: "headroom unavailable", memoryFreePercent: nil, cpuIdlePercent: nil)
@@ -131,7 +131,7 @@ public struct HeadroomGate: Sendable {
         }
     }
 
-    static func evaluate(_ state: inout State, sample: HeadroomSample?, now: Date) -> LaneGateStatus {
+    static func evaluate(_ state: inout State, sample: HeadroomSample?, now: Date, ignoreAdmissionSpacing: Bool = false) -> LaneGateStatus {
         guard let sample else {
             state.lastBadAt = now
             state.reason = "headroom unavailable"
@@ -180,7 +180,7 @@ public struct HeadroomGate: Sendable {
         guard recovered else {
             return LaneGateStatus(open: false, reason: "recovering from \(state.reason ?? "low headroom")", memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent, load: sample.load, cpus: sample.cpus)
         }
-        if let admitted = state.lastAdmissionAt, now.timeIntervalSince(admitted) < admissionSpacing {
+        if !ignoreAdmissionSpacing, let admitted = state.lastAdmissionAt, now.timeIntervalSince(admitted) < admissionSpacing {
             return LaneGateStatus(open: false, reason: "spacing admissions", memoryFreePercent: sample.memoryFreePercent, cpuIdlePercent: idlePercent, load: sample.load, cpus: sample.cpus)
         }
         state.reason = nil

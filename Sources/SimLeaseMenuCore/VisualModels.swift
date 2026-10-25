@@ -165,6 +165,9 @@ public struct MenuBarIconState: Equatable, Sendable {
         if state.kind == .metadataError {
             shape = .error
             text = "Error"
+        } else if state.alerts.contains(where: { $0.id.hasPrefix("recovery-") && $0.title != "Simulator restart verified" }) && !state.alerts.contains(where: { $0.id.hasPrefix("crash-") }) {
+            shape = .free
+            text = "Auto repair"
         } else if !state.crashBlocks.isEmpty {
             shape = .crash
             text = "Crash blocked"
