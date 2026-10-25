@@ -2,6 +2,18 @@ import XCTest
 @testable import SimLeaseCore
 
 final class SimulatorShutdownServiceTests: XCTestCase {
+    func testUnownedCriticalCrashCannotAccelerateWarmDeviceShutdown() throws {
+        let f = try ShutdownFixture()
+        defer { f.remove() }
+        let id = f.add("Warm")
+        let now = Date()
+        try WarmDeviceStore(paths: f.paths).add([id], since: now.addingTimeInterval(-30))
+        let report = SimulatorCrashReport(incidentID: "system", deviceID: id, occurredAt: now, launchedAt: now, signature: "runtime", processName: "PosterBoard", isCriticalSystemService: true)
+        _ = try CrashLoopStore(paths: f.paths).ingest([report], now: now)
+        XCTAssertTrue(try XCTUnwrap(f.service.reap(now: now)).isEmpty)
+        XCTAssertTrue(f.devices.shutdowns.isEmpty)
+        XCTAssertNotNil(try WarmDeviceStore(paths: f.paths).read()[id])
+    }
     func testShutsDownOnlyDevicesWithoutVisibleUse() throws {
         let f = try ShutdownFixture()
         defer { f.remove() }

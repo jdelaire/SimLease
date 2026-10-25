@@ -470,13 +470,27 @@ dropped there, because the color chip already shows the project.
 
 ## Repeated crashes and device recovery
 
-Managed jobs inspect simulator app and test-runner crash reports. Two matching
-crashes from the same executable build within 120 seconds block new work on
-that device. Matching uses the crash event and process launch times, not the
-report file's modification time. History spans jobs and ignores duplicate
-incidents. SimLease stops only its current owned terminal child group when the
-triggering crash belongs to that scope, then runs normal owned-device cleanup.
-Borrowed and `--keep-running` devices are not automatically interrupted.
+Managed jobs, `status`, and `doctor` inspect simulator crash reports. The menu
+checks through `status` every five seconds. One verified runtime-service crash
+from PosterBoard or SpringBoard blocks further managed work on that device,
+including when it was borrowed or no owned job scope was recorded. Attribution
+requires the simulator's coalition UUID and a `launchd_sim` parent, plus the
+expected Apple bundle ID and executable path. An installed app with the same
+name does not receive this classification.
+
+Ordinary app and test-runner crashes still require two matching incidents from
+the same executable build within 120 seconds and an owned scope. Matching uses
+crash event and launch times, not the report file's modification time. History
+spans jobs and ignores duplicate incidents. Device quarantine does not grant
+ownership. SimLease stops only its current owned terminal child group when a
+newly received eligible crash belongs to that scope, then runs normal cleanup.
+Borrowed devices, preexisting system processes, and `--keep-running` devices
+are not automatically interrupted. Unowned quarantine does not accelerate warm
+device shutdown. Normal idle and capacity cleanup still applies.
+
+Historical critical-service evidence can also block a device. Blocks remain
+until the cause is investigated and fixed and retries are explicitly allowed.
+Boot success alone does not establish that a wallpaper-service failure is fixed.
 
 Native sessions warn and reject new unsafe shimmed calls after a crash block.
 Queries, termination, shutdown and explicit settlement remain available. They
@@ -487,10 +501,23 @@ Crash reports may arrive late, so this cannot guarantee immediate prevention
 of every crash dialog. SimLease does not disable macOS crash reporting.
 
 The menu, `status --json`, and `doctor` show crash blocks. Evidence is bounded
-to the latest 256 owned scopes and 512 attributed incidents. The reader polls
-at most once per second and reads at most 64 changed reports per scan. Missing
-or unreadable reports limit detection. Successful boot checks do not establish
-that an app or test-runner crash was fixed.
+to the latest 256 owned scopes and 512 incidents. Active jobs inspect at most
+once per second. Each scan reads at most 64 changed reports, each at most 5 MB,
+with a 16 MB scan budget. Scan progress survives CLI restarts and advances only
+after ingestion succeeds, including for invalid reports. Unchanged reports do
+not rewrite crash history. Unreadable files wait 30 seconds before another
+attempt, so they cannot continuously hide older reports. Future-dated events
+remain pending until their event time. Directory enumeration still scales with
+the number of report files. Missing or unreadable reports limit detection.
+
+Owned-job cancellation receipts use a separate bounded file so older CLI
+processes cannot erase them while rewriting history. Already-running processes
+retain their earlier watchdog and cleanup behavior until they finish.
+
+This prevents further managed retries after detection. It does not repair
+Apple's simulator services or guarantee that no crash dialog will appear.
+Requests already running in detached native daemons remain outside shim
+enforcement and must be stopped and settled through their owning session.
 
 Create a fresh device that SimLease may replace if its boot health later fails:
 

@@ -8,6 +8,7 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
     public let launchedAt: Date
     public let signature: String
     public let processName: String
+    public var isCriticalSystemService: Bool? = nil
 
     static func parse(_ data: Data) -> SimulatorCrashReport? {
         guard data.count <= 5_000_000 else { return nil }
@@ -27,11 +28,24 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
               let path = body["procPath"] as? String
         else { return nil }
         let parts = path.components(separatedBy: "/CoreSimulator/Devices/")
-        guard parts.count == 2, let first = parts[1].split(separator: "/").first,
-              let id = UUID(uuidString: String(first))?.uuidString,
-              parts[1].hasPrefix(String(first) + "/data/") else { return nil }
-        if let coalition = body["coalitionName"] as? String,
-           coalition != "com.apple.CoreSimulator.SimDevice." + id { return nil }
+        let prefix = "com.apple.CoreSimulator.SimDevice."
+        let id: String
+        let runtimeService: Bool
+        if parts.count > 1 {
+            guard parts.count == 2, let first = parts[1].split(separator: "/").first,
+                  let device = UUID(uuidString: String(first))?.uuidString,
+                  parts[1].hasPrefix(String(first) + "/data/") else { return nil }
+            if let coalition = body["coalitionName"] as? String, coalition != prefix + device { return nil }
+            id = device
+            runtimeService = false
+        } else {
+            guard body["parentProc"] as? String == "launchd_sim",
+                  let coalition = body["coalitionName"] as? String, coalition.hasPrefix(prefix),
+                  let device = UUID(uuidString: String(coalition.dropFirst(prefix.count)))?.uuidString,
+                  coalition == prefix + device else { return nil }
+            id = device
+            runtimeService = true
+        }
         guard let exception = body["exception"] as? [String: Any],
               let type = exception["type"] as? String,
               let threads = body["threads"] as? [[String: Any]],
@@ -48,9 +62,13 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
         }
         guard !identities.isEmpty else { return nil }
         let bundle = (body["bundleInfo"] as? [String: Any])?["CFBundleIdentifier"] as? String ?? process
+        let critical = runtimeService && (
+            (process == "PosterBoard" && bundle == "com.apple.PosterBoard" && path.hasSuffix("/PosterBoard.app/PosterBoard"))
+                || (process == "SpringBoard" && bundle == "com.apple.springboard" && path.hasSuffix("/SpringBoard.app/SpringBoard"))
+        )
         let key = ([bundle, process, type, exception["signal"] as? String ?? ""] + Set(identities).sorted() + symbols).joined(separator: "\n")
         let hash = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
-        return SimulatorCrashReport(incidentID: String(incident.prefix(128)), deviceID: id, occurredAt: occurred, launchedAt: launched, signature: hash, processName: String(process.prefix(128)))
+        return SimulatorCrashReport(incidentID: String(incident.prefix(128)), deviceID: id, occurredAt: occurred, launchedAt: launched, signature: hash, processName: String(process.prefix(128)), isCriticalSystemService: critical ? true : nil)
     }
 
     private static func parseDate(_ value: String) -> Date? {
@@ -65,35 +83,116 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
 
 public final class CrashReportSource {
     private let directory: URL
+    private let paths: LeasePaths?
     private var fingerprints: [String: String] = [:]
+    private var scanned: [String: String] = [:]
+    private var present = Set<String>()
+    private var retries: [String: Retry] = [:]
+    private var retryUpdates: [String: Retry] = [:]
+    private var eventTimes: [String: Date] = [:]
 
-    public init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")) {
+    public init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports"), paths: LeasePaths? = nil) {
         self.directory = directory
+        self.paths = paths
     }
 
-    public func scan() throws -> [SimulatorCrashReport] {
-        try autoreleasepool { try scanReports() }
+    public func inspect(store: CrashLoopStore, now: Date? = nil) throws -> [CrashLoopTrigger] {
+        if let paths {
+            let checkpoint = try RecoveryFile.read(Checkpoint.self, at: checkpointURL(paths))
+            fingerprints = checkpoint?.directory == directory.standardizedFileURL.path ? checkpoint!.fingerprints : [:]
+            retries = checkpoint?.directory == directory.standardizedFileURL.path ? checkpoint!.retries ?? [:] : [:]
+        }
+        let previous = fingerprints
+        do {
+            let reports = try scan(now: now ?? Date())
+            let observedAt = now ?? Date()
+            for (name, date) in eventTimes where date > observedAt {
+                if let fingerprint = scanned.removeValue(forKey: name) {
+                    fingerprints[name] = previous[name]
+                    retryUpdates[name] = Retry(fingerprint: fingerprint, after: date)
+                }
+            }
+            let triggers = try store.ingest(reports, now: observedAt)
+            if let paths {
+                try SharedStateLock.withLock(paths) {
+                    let url = checkpointURL(paths)
+                    let previous = try RecoveryFile.read(Checkpoint.self, at: url)
+                    var merged = previous?.directory == directory.standardizedFileURL.path ? previous!.fingerprints : [:]
+                    var deferred = previous?.directory == directory.standardizedFileURL.path ? previous!.retries ?? [:] : [:]
+                    merged.merge(scanned) { _, latest in latest }
+                    merged = merged.filter { present.contains($0.key) }
+                    deferred.merge(retryUpdates) { _, latest in latest }
+                    deferred = deferred.filter { present.contains($0.key) && scanned[$0.key] == nil }
+                    let checkpoint = Checkpoint(directory: directory.standardizedFileURL.path, fingerprints: merged, retries: deferred.isEmpty ? nil : deferred)
+                    if checkpoint != previous { try RecoveryFile.write(checkpoint, at: url) }
+                }
+            }
+            return triggers
+        } catch {
+            fingerprints = previous
+            throw error
+        }
     }
 
-    private func scanReports() throws -> [SimulatorCrashReport] {
+    public func scan(now: Date = Date()) throws -> [SimulatorCrashReport] {
+        try autoreleasepool { try scanReports(now: now) }
+    }
+
+    private func scanReports(now: Date) throws -> [SimulatorCrashReport] {
+        scanned.removeAll(keepingCapacity: true)
+        retryUpdates.removeAll(keepingCapacity: true)
+        eventTimes.removeAll(keepingCapacity: true)
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
-        var candidates = [(URL, String, Date)]()
+        var candidates = [(URL, String, Date, Int, Bool)]()
         for url in urls where url.pathExtension == "ips" {
             let info = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
             guard info.isRegularFile == true, info.isSymbolicLink != true,
                   let size = info.fileSize, size <= 5_000_000, let date = info.contentModificationDate else { continue }
             let fingerprint = "\(size):\(date.timeIntervalSince1970)"
-            if fingerprints[url.lastPathComponent] != fingerprint { candidates.append((url, fingerprint, date)) }
+            if let retry = retries[url.lastPathComponent], retry.fingerprint == fingerprint, retry.after > now { continue }
+            if fingerprints[url.lastPathComponent] != fingerprint {
+                candidates.append((url, fingerprint, date, size, retries[url.lastPathComponent]?.fingerprint == fingerprint))
+            }
         }
         var reports = [SimulatorCrashReport]()
-        for (url, fingerprint, _) in candidates.sorted(by: { $0.2 > $1.2 }).prefix(64) {
-            guard let data = try? Data(contentsOf: url) else { continue }
+        var bytes = 0
+        let ordered = candidates.sorted { $0.4 == $1.4 ? $0.2 > $1.2 : !$0.4 }
+        for (url, fingerprint, _, size, _) in ordered.prefix(64) {
+            guard bytes < 16_000_000, bytes + size <= 16_000_000 else { break }
+            let data: Data
+            do {
+                let file = try FileHandle(forReadingFrom: url)
+                defer { try? file.close() }
+                data = try file.read(upToCount: min(5_000_001, 16_000_000 - bytes)) ?? Data()
+                bytes += data.count
+            } catch {
+                retryUpdates[url.lastPathComponent] = Retry(fingerprint: fingerprint, after: now.addingTimeInterval(30))
+                continue
+            }
             fingerprints[url.lastPathComponent] = fingerprint
-            if let report = SimulatorCrashReport.parse(data) { reports.append(report) }
+            scanned[url.lastPathComponent] = fingerprint
+            if let report = SimulatorCrashReport.parse(data) {
+                reports.append(report)
+                eventTimes[url.lastPathComponent] = report.occurredAt
+            }
         }
-        let present = Set(urls.map(\.lastPathComponent))
+        present = Set(urls.map(\.lastPathComponent))
         fingerprints = fingerprints.filter { present.contains($0.key) }
+        retries.merge(retryUpdates) { _, latest in latest }
         return reports
+    }
+
+    private func checkpointURL(_ paths: LeasePaths) -> URL { paths.root.appendingPathComponent("crash-report-progress.json") }
+
+    private struct Checkpoint: Codable, Equatable {
+        let directory: String
+        let fingerprints: [String: String]
+        let retries: [String: Retry]?
+    }
+
+    private struct Retry: Codable, Equatable {
+        let fingerprint: String
+        let after: Date
     }
 }

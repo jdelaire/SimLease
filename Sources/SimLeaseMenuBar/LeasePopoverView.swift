@@ -276,7 +276,7 @@ private struct AlertCard: View {
                     if let id = alert.acknowledgeDeviceID {
                         Button("Allow retries") { onAcknowledge(id) }
                             .controlSize(.small)
-                            .help("Clears the block for this simulator. New repeated crashes block it again.")
+                            .help("Clears the block for this simulator. Another critical service crash or repeated app crashes block it again.")
                     }
                     if let label = alert.copyLabel, let text = alert.copyText {
                         Button(label) {

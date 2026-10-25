@@ -7,6 +7,175 @@ final class CrashLoopTests: XCTestCase {
     let device = "11111111-1111-4111-8111-111111111111"
     let other = "22222222-2222-4222-8222-222222222222"
 
+    func testCriticalCrashWithoutOwnedScopeQuarantinesDeviceWithoutCancellation() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let report = criticalEvent("system", at: 110, launch: 100)
+        XCTAssertTrue(try fixture.store.ingest([report], now: Date(timeIntervalSince1970: 120)).isEmpty)
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+        XCTAssertNoThrow(try fixture.store.requireHealthy([other]))
+        XCTAssertEqual(try fixture.store.read().incidents, [report])
+        XCTAssertTrue(try fixture.store.ingest([report], now: Date(timeIntervalSince1970: 125)).isEmpty)
+        XCTAssertEqual(try fixture.store.read().incidents.count, 1)
+    }
+
+    func testFirstCriticalOwnedCrashBlocksButOrdinaryCrashStillNeedsTwo() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device, other], startedAt: Date(timeIntervalSince1970: 90))
+        let critical = criticalEvent("system", at: 110, launch: 100)
+        XCTAssertEqual(try fixture.store.ingest([critical], now: Date(timeIntervalSince1970: 120)).map(\.scopeID), ["scope"])
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+        XCTAssertTrue(try fixture.store.ingest([event("app", at: 110, launch: 100, deviceID: other)], now: Date(timeIntervalSince1970: 120)).isEmpty)
+        XCTAssertNoThrow(try fixture.store.requireHealthy([other]))
+    }
+
+    func testPreexistingCriticalServiceBlocksWithoutAttributingCurrentScope() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: Date(timeIntervalSince1970: 100))
+        XCTAssertTrue(try fixture.store.ingest([criticalEvent("old-process", at: 110, launch: 90)], now: Date(timeIntervalSince1970: 120)).isEmpty)
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+        XCTAssertNotEqual(try fixture.store.read().blocks[device]?.scopeID, "scope")
+    }
+
+    func testCriticalFutureAndAcknowledgedReportsCannotReblock() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        XCTAssertTrue(try fixture.store.ingest([criticalEvent("future", at: 130, launch: 100)], now: Date(timeIntervalSince1970: 120)).isEmpty)
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        _ = try fixture.store.ingest([criticalEvent("one", at: 110, launch: 100)], now: Date(timeIntervalSince1970: 120))
+        try fixture.store.acknowledge(deviceID: device, at: Date(timeIntervalSince1970: 125))
+        _ = try fixture.store.ingest([criticalEvent("late", at: 115, launch: 100)], now: Date(timeIntervalSince1970: 140))
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        _ = try fixture.store.ingest([criticalEvent("new", at: 130, launch: 126)], now: Date(timeIntervalSince1970: 140))
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+    }
+
+    func testAcknowledgingOneDeviceDoesNotSuppressOtherScopeCancellation() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device, other], startedAt: Date(timeIntervalSince1970: 90))
+        let second = SimulatorCrashReport(incidentID: "second", deviceID: other, occurredAt: Date(timeIntervalSince1970: 111), launchedAt: Date(timeIntervalSince1970: 100), signature: "runtime", processName: "PosterBoard", isCriticalSystemService: true)
+        _ = try fixture.store.ingest([criticalEvent("first", at: 110, launch: 100), second], now: Date(timeIntervalSince1970: 120))
+        try fixture.store.acknowledge(deviceID: other, at: Date(timeIntervalSince1970: 125))
+        XCTAssertTrue(try fixture.store.shouldCancel(scopeID: "scope"))
+        try fixture.store.acknowledge(deviceID: device, at: Date(timeIntervalSince1970: 125))
+        XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+    }
+
+    func testFailedIngestionDoesNotCommitScanProgress() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let directory = fixture.paths.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try runtimeReport().write(to: directory.appendingPathComponent("critical.ips"))
+        let history = fixture.paths.root.appendingPathComponent("crash-history.json")
+        try Data("invalid".utf8).write(to: history)
+        let source = CrashReportSource(directory: directory, paths: fixture.paths)
+        let now = Date(timeIntervalSince1970: 1_792_920_700)
+        XCTAssertThrowsError(try source.inspect(store: fixture.store, now: now))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.paths.root.appendingPathComponent("crash-report-progress.json").path))
+        try FileManager.default.removeItem(at: history)
+        _ = try source.inspect(store: fixture.store, now: now)
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+    }
+
+    func testFutureReportRemainsPendingUntilItsEventTime() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let directory = fixture.paths.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try runtimeReport().write(to: directory.appendingPathComponent("critical.ips"))
+        _ = try CrashReportSource(directory: directory, paths: fixture.paths).inspect(store: fixture.store, now: Date(timeIntervalSince1970: 1_792_920_690))
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        _ = try CrashReportSource(directory: directory, paths: fixture.paths).inspect(store: fixture.store, now: Date(timeIntervalSince1970: 1_792_920_700))
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+    }
+
+    func testDueUnreadableRetriesCannotHideUnscannedEvidence() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let directory = fixture.paths.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try runtimeReport().write(to: directory.appendingPathComponent("critical.ips"))
+        for index in 0..<64 {
+            let url = directory.appendingPathComponent("unreadable-\(index).ips")
+            try Data("{}".utf8).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60), .posixPermissions: 0], ofItemAtPath: url.path)
+        }
+        _ = try CrashReportSource(directory: directory, paths: fixture.paths).inspect(store: fixture.store, now: Date(timeIntervalSince1970: 1_792_920_700))
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        _ = try CrashReportSource(directory: directory, paths: fixture.paths).inspect(store: fixture.store, now: Date(timeIntervalSince1970: 1_792_920_800))
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+    }
+
+    func testLegacyHistoryWriterCannotEraseOwnedCancellation() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: Date(timeIntervalSince1970: 90))
+        _ = try fixture.store.ingest([criticalEvent("system", at: 110, launch: 100)], now: Date(timeIntervalSince1970: 120))
+        let url = fixture.paths.root.appendingPathComponent("crash-history.json")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        legacy["scopes"] = (legacy["scopes"] as? [[String: Any]])?.map { item in item.filter { $0.key != "cancellations" } }
+        legacy["incidents"] = (legacy["incidents"] as? [[String: Any]])?.map { item in item.filter { $0.key != "isCriticalSystemService" } }
+        try JSONSerialization.data(withJSONObject: legacy).write(to: url)
+        XCTAssertTrue(try fixture.store.shouldCancel(scopeID: "scope"))
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+    }
+
+    func testRuntimePosterBoardReportUsesSimulatorCoalition() throws {
+        let parsed = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport()))
+        XCTAssertEqual(parsed.deviceID, device)
+        XCTAssertEqual(parsed.processName, "PosterBoard")
+        XCTAssertEqual(parsed.isCriticalSystemService, true)
+        XCTAssertEqual(parsed.occurredAt.timeIntervalSince1970, 1_792_920_696.4964, accuracy: 0.001)
+    }
+
+    func testCriticalClassificationRequiresRuntimeProcessBundleAndExecutable() throws {
+        let ordinary = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+            "procPath": "/Users/USER/Library/Developer/CoreSimulator/Devices/\(device)/data/PosterBoard.app/PosterBoard",
+        ])))
+        XCTAssertNotEqual(ordinary.isCriticalSystemService, true)
+        for changes: [String: Any] in [
+            ["procName": "Other"],
+            ["bundleInfo": ["CFBundleIdentifier": "test.PosterBoard"]],
+            ["procPath": "/Volumes/VOLUME/*/Other.app/PosterBoard"],
+        ] {
+            XCTAssertNotEqual(try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: changes))).isCriticalSystemService, true)
+        }
+        let spring = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+            "procName": "SpringBoard", "bundleInfo": ["CFBundleIdentifier": "com.apple.springboard"],
+            "procPath": "/Volumes/VOLUME/*/SpringBoard.app/SpringBoard",
+        ])))
+        XCTAssertEqual(spring.isCriticalSystemService, true)
+    }
+
+    func testCriticalClassificationSurvivesHistoryRoundTripAndLegacyReportsDecode() throws {
+        let critical = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport()))
+        XCTAssertEqual(try JSONDecoder().decode(SimulatorCrashReport.self, from: JSONEncoder().encode(critical)), critical)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(critical)) as? [String: Any])
+        legacy.removeValue(forKey: "isCriticalSystemService")
+        let decoded = try JSONDecoder().decode(SimulatorCrashReport.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertNil(decoded.isCriticalSystemService)
+    }
+
+    func testRuntimeReportRejectsMissingMalformedAndConflictingSimulatorEvidence() throws {
+        for coalition in ["", "com.apple.CoreSimulator.SimDevice.invalid", "com.apple.CoreSimulator.SimDevice.\(device).extra"] {
+            XCTAssertNil(SimulatorCrashReport.parse(try runtimeReport(changes: ["coalitionName": coalition])))
+        }
+        XCTAssertNil(SimulatorCrashReport.parse(try runtimeReport(changes: ["coalitionName": NSNull()])))
+        XCTAssertNil(SimulatorCrashReport.parse(try runtimeReport(changes: ["parentProc": "launchd"])))
+        XCTAssertNil(SimulatorCrashReport.parse(try runtimeReport(changes: ["parentProc": NSNull()])))
+        for path in [
+            "/Users/USER/Library/Developer/CoreSimulator/Devices/invalid/data/PosterBoard.app/PosterBoard",
+            "/Users/USER/Library/Developer/CoreSimulator/Devices/\(other)/data/PosterBoard.app/PosterBoard",
+            "/Users/USER/Library/Developer/CoreSimulator/Devices/\(device)/elsewhere/PosterBoard.app/PosterBoard",
+        ] {
+            XCTAssertNil(SimulatorCrashReport.parse(try runtimeReport(changes: ["procPath": path])))
+        }
+    }
+
     func testRepeatedUnchangedReportScansKeepResidentMemoryBounded() throws {
         let fixture = try CrashFixture()
         defer { fixture.remove() }
@@ -152,6 +321,10 @@ final class CrashLoopTests: XCTestCase {
         SimulatorCrashReport(incidentID: id, deviceID: deviceID ?? device, occurredAt: Date(timeIntervalSince1970: at), launchedAt: Date(timeIntervalSince1970: launch), signature: "same-build-and-stack", processName: "App")
     }
 
+    private func criticalEvent(_ id: String, at: TimeInterval, launch: TimeInterval) -> SimulatorCrashReport {
+        SimulatorCrashReport(incidentID: id, deviceID: device, occurredAt: Date(timeIntervalSince1970: at), launchedAt: Date(timeIntervalSince1970: launch), signature: "critical-runtime", processName: "PosterBoard", isCriticalSystemService: true)
+    }
+
     private func report(incident: String, build: String = "build", imageIndex: Int = 0, coalition: String? = nil, launch: String = "2026-10-19 07:59:59.1234 +0700") throws -> Data {
         var images: [[String: String]] = [["name": "App", "uuid": build]]
         if imageIndex == 1 { images.insert(["name": "unrelated", "uuid": "other"], at: 0) }
@@ -164,6 +337,26 @@ final class CrashLoopTests: XCTestCase {
             "threads": [["frames": [["imageIndex": imageIndex], ["imageIndex": imageIndex, "symbol": "static Date.<= infix(_:_:)"]]]], "usedImages": images,
         ]
         return Data("{\"bug_type\":\"309\"}\n".utf8) + (try JSONSerialization.data(withJSONObject: body))
+    }
+
+    private func runtimeReport(changes: [String: Any] = [:]) throws -> Data {
+        var threads = Array(repeating: [String: Any](), count: 7)
+        threads[6] = ["frames": [["symbol": "-[PRPosterDescriptor _initWithPath:].cold.1", "imageIndex": 55]]]
+        var images = Array(repeating: [String: String](), count: 56)
+        images[0] = ["name": "PosterBoard", "uuid": "3fba9cd1-df77-3558-8bac-6aad49a14356"]
+        images[55] = ["name": "PosterKit", "uuid": "c111572c-6af7-3c18-8606-60e379a5a8c1"]
+        var body: [String: Any] = [
+            "incident": "85EA7810-B83A-4654-8439-5E2C7C1610B4", "procName": "PosterBoard",
+            "captureTime": "2026-10-25 16:31:36.4964 +0700", "procLaunch": "2026-10-25 16:31:29.6029 +0700",
+            "procPath": "/Volumes/VOLUME/*/PosterBoard.app/PosterBoard", "parentProc": "launchd_sim",
+            "coalitionName": "com.apple.CoreSimulator.SimDevice.\(device)",
+            "bundleInfo": ["CFBundleIdentifier": "com.apple.PosterBoard"],
+            "exception": ["type": "EXC_BREAKPOINT", "signal": "SIGTRAP"], "faultingThread": 6,
+            "threads": threads, "usedImages": images,
+        ]
+        body.merge(changes) { _, replacement in replacement }
+        return Data("{\"app_name\":\"PosterBoard\",\"platform\":7,\"bug_type\":\"309\"}\n".utf8)
+            + (try JSONSerialization.data(withJSONObject: body))
     }
 }
 

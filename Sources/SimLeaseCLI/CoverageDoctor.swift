@@ -4,6 +4,7 @@ import SimLeaseCore
 
 enum CoverageDoctor {
     static func run(json: Bool, environment: [String: String], configuration: CLIConfiguration) throws -> Int32 {
+        try configuration.inspectCrashes()
         let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/lib/simlease/shims")
         let commands = ["xcrun", "xcodebuild", "axe", "agent-device"].map { name in
             let executable = try? ExecutableResolver.resolve(

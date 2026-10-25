@@ -326,8 +326,8 @@ public struct MenuDisplayState: Equatable, Sendable {
         for block in status.crashBlocks ?? [] {
             let place = usage[block.deviceID.uppercased()].map { "\($0.name) · \($0.runtime)" } ?? "simulator \(block.deviceID.prefix(8))"
             alerts.append(MenuAlert(
-                id: "crash-\(block.deviceID)", severity: .critical, title: "\(block.processName) keeps crashing",
-                detail: "New jobs on \(place) are blocked until the crash is reviewed. Allow retries once the cause is fixed; new repeated crashes block it again.",
+                id: "crash-\(block.deviceID)", severity: .critical, title: "\(block.processName) crash blocked simulator",
+                detail: "New jobs on \(place) are blocked until the crash is reviewed. Allow retries once the cause is fixed; another critical service crash or repeated app crashes block it again.",
                 copyLabel: "Copy unblock command", copyText: "simlease device acknowledge --device \(block.deviceID)",
                 acknowledgeDeviceID: block.deviceID
             ))

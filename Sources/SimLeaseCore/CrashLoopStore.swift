@@ -25,6 +25,7 @@ public struct CrashLoopState: Codable, Sendable {
 public struct CrashLoopStore: Sendable {
     private let url: URL
     private let paths: LeasePaths
+    private var cancellationURL: URL { paths.root.appendingPathComponent("crash-cancellations.json") }
 
     public init(paths: LeasePaths) {
         self.paths = paths
@@ -57,7 +58,15 @@ public struct CrashLoopStore: Sendable {
     public func requireHealthy(_ deviceIDs: [String]) throws {
         let state = try read()
         for id in deviceIDs where state.blocks[id] != nil {
-            throw SimulatorTaskError.commandFailed("repeated simulator crashes blocked \(id); inspect the crash cause, then use simlease device repair --device \(id) --acknowledge-crashes")
+            throw SimulatorTaskError.commandFailed("simulator crash blocked \(id); inspect and fix the crash cause before allowing retries")
+        }
+    }
+
+    public func shouldCancel(scopeID: String) throws -> Bool {
+        try SharedStateLock.withLock(paths) {
+            let state = try read()
+            let receipts = try RecoveryFile.read([String: [String: CrashLoopTrigger]].self, at: cancellationURL)?[scopeID] ?? [:]
+            return receipts.values.contains { $0.occurredAt > (state.acknowledgments[$0.deviceID] ?? .distantPast) }
         }
     }
 
@@ -108,29 +117,43 @@ public struct CrashLoopStore: Sendable {
             }
         }
         for report in reports.sorted(by: { $0.occurredAt < $1.occurredAt }) {
-            guard report.occurredAt <= now, scope(for: report) != nil, seen.insert(report.incidentID).inserted else { continue }
+            guard report.occurredAt <= now, report.isCriticalSystemService == true || scope(for: report) != nil,
+                  seen.insert(report.incidentID).inserted else { continue }
             state.incidents.append(report)
             added.append(report)
         }
+        guard !added.isEmpty else { return [] }
+        var receipts = try RecoveryFile.read([String: [String: CrashLoopTrigger]].self, at: cancellationURL) ?? [:]
+        var receiptsChanged = false
         var triggers = [CrashLoopTrigger]()
         for report in added {
             let acknowledgment = state.acknowledgments[report.deviceID] ?? .distantPast
-            guard report.occurredAt > acknowledgment, let receivedScope = scope(for: report) else { continue }
+            guard report.occurredAt > acknowledgment else { continue }
             let matches = state.incidents.filter {
                 $0.deviceID == report.deviceID && $0.signature == report.signature && $0.occurredAt > acknowledgment
                     && abs($0.occurredAt.timeIntervalSince(report.occurredAt)) <= 120
             }
-            guard matches.count >= 2 else { continue }
+            guard matches.count >= (report.isCriticalSystemService == true ? 1 : 2) else { continue }
             let newest = matches.max { $0.occurredAt < $1.occurredAt }!
-            guard let newestOwner = scope(for: newest) else { continue }
-            let trigger = CrashLoopTrigger(deviceID: report.deviceID, scopeID: newestOwner.id, processName: report.processName, signature: report.signature, occurredAt: newest.occurredAt)
+            let trigger = CrashLoopTrigger(deviceID: report.deviceID, scopeID: scope(for: newest)?.id ?? "unowned-system-service", processName: report.processName, signature: report.signature, occurredAt: newest.occurredAt)
             if state.blocks[report.deviceID] != trigger {
                 state.blocks[report.deviceID] = trigger
             }
+            guard let receivedScope = scope(for: report) else { continue }
             let cancellation = CrashLoopTrigger(deviceID: report.deviceID, scopeID: receivedScope.id, processName: report.processName, signature: report.signature, occurredAt: report.occurredAt)
+            if cancellation.occurredAt > (receipts[receivedScope.id]?[report.deviceID]?.occurredAt ?? .distantPast) {
+                receipts[receivedScope.id, default: [:]][report.deviceID] = cancellation
+                receiptsChanged = true
+            }
             if !triggers.contains(cancellation) { triggers.append(cancellation) }
         }
         state.incidents = Array(state.incidents.sorted { $0.occurredAt < $1.occurredAt }.suffix(512))
+        if receiptsChanged {
+            let latest = receipts.sorted { first, second in
+                (first.value.values.map(\.occurredAt).max() ?? .distantPast) < (second.value.values.map(\.occurredAt).max() ?? .distantPast)
+            }.suffix(256)
+            try RecoveryFile.write(Dictionary(uniqueKeysWithValues: latest.map { ($0.key, $0.value) }), at: cancellationURL)
+        }
         try RecoveryFile.write(state, at: url)
         return triggers
     }

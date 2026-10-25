@@ -4,6 +4,55 @@ import SimLeaseCore
 @testable import SimLeaseCLI
 
 final class DeviceCLITests: XCTestCase {
+    func testUnreadableReportsCannotStarveOlderCriticalEvidenceAcrossProcesses() throws {
+        let f = try DeviceCLIFixture()
+        defer { f.remove() }
+        try f.writeCriticalReport()
+        for index in 0..<64 {
+            let url = f.reports.appendingPathComponent("unreadable-\(index).ips")
+            try Data("{}".utf8).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60 + Double(index)), .posixPermissions: 0], ofItemAtPath: url.path)
+        }
+        XCTAssertEqual(f.call(["status", "--json"]), 0)
+        XCTAssertTrue(try CrashLoopStore(paths: f.paths).read().blocks.isEmpty)
+        XCTAssertEqual(f.call(["status", "--json"]), 0)
+        XCTAssertThrowsError(try CrashLoopStore(paths: f.paths).requireHealthy([f.device]))
+    }
+    func testStatusAndDoctorQuarantineCriticalCrashWithoutChangingActiveTask() throws {
+        for command in ["status", "doctor"] {
+            let f = try DeviceCLIFixture()
+            defer { f.remove() }
+            try f.writeCriticalReport()
+            let record = SimulatorTaskRecord(token: "active", owner: try ProcessReference.current(), deviceIDs: [f.device], ownedDeviceIDs: [], phase: .running)
+            try SimulatorTaskStore(paths: f.paths).write(record)
+            XCTAssertEqual(f.call([command, "--json"]), 0)
+            let blocks = try XCTUnwrap(try f.output()["crashBlocks"] as? [[String: Any]])
+            XCTAssertEqual(blocks.first?["deviceID"] as? String, f.device)
+            XCTAssertEqual(blocks.first?["processName"] as? String, "PosterBoard")
+            XCTAssertEqual(try SimulatorTaskStore(paths: f.paths).read(), record)
+            XCTAssertEqual(try String(contentsOf: f.state, encoding: .utf8), "Shutdown")
+        }
+    }
+
+    func testScanProgressSurvivesStatusProcessesAndReachesOlderEvidence() throws {
+        let f = try DeviceCLIFixture()
+        defer { f.remove() }
+        try f.writeCriticalReport()
+        for index in 0..<70 {
+            let url = f.reports.appendingPathComponent("invalid-\(index).ips")
+            try Data("{}".utf8).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60 + Double(index))], ofItemAtPath: url.path)
+        }
+        XCTAssertEqual(f.call(["status", "--json"]), 0)
+        XCTAssertTrue(try CrashLoopStore(paths: f.paths).read().blocks.isEmpty)
+        XCTAssertEqual(f.call(["status", "--json"]), 0)
+        XCTAssertThrowsError(try CrashLoopStore(paths: f.paths).requireHealthy([f.device]))
+        let history = f.paths.root.appendingPathComponent("crash-history.json")
+        let before = try FileManager.default.attributesOfItem(atPath: history.path)[.modificationDate] as? Date
+        XCTAssertEqual(f.call(["status", "--json"]), 0)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: history.path)[.modificationDate] as? Date, before)
+    }
+
     func testAuditedStatusPreservesQuarantinedDeviceReservationAndLaneDiagnostics() throws {
         let f = try DeviceCLIFixture()
         defer { f.remove() }
@@ -78,6 +127,7 @@ private struct DeviceCLIFixture {
     let device = "11111111-1111-4111-8111-111111111111"
     let type = "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro"
     let runtime = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
+    var reports: URL { paths.root.appendingPathComponent("reports") }
 
     init() throws {
         paths = LeasePaths(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
@@ -107,11 +157,23 @@ private struct DeviceCLIFixture {
         try Data(script.utf8).write(to: tool)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
         manager = ProcessSimulatorDeviceManager(environment: ["STATE": state.path, "CREATED": created.path, "INVENTORY": inventory.path], xcrunURL: tool)
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
     }
 
     func call(_ arguments: [String]) -> Int32 {
         let output = outputFile
-        return SimLeaseCLI.run(arguments: ["simlease"] + arguments, environment: [:], configuration: CLIConfiguration(paths: paths, timing: .production, standardOutput: { try? Data($0.utf8).write(to: output) }, standardError: { _ in }, deviceManager: manager))
+        return SimLeaseCLI.run(arguments: ["simlease"] + arguments, environment: [:], configuration: CLIConfiguration(paths: paths, timing: .production, standardOutput: { try? Data($0.utf8).write(to: output) }, standardError: { _ in }, deviceManager: manager, crashReportDirectory: reports))
+    }
+    func writeCriticalReport() throws {
+        let body: [String: Any] = [
+            "incident": "system", "procName": "PosterBoard", "captureTime": "2026-10-25 16:31:36.4964 +0700", "procLaunch": "2026-10-25 16:31:29.6029 +0700",
+            "procPath": "/Volumes/VOLUME/*/PosterBoard.app/PosterBoard", "parentProc": "launchd_sim",
+            "coalitionName": "com.apple.CoreSimulator.SimDevice.\(device)", "bundleInfo": ["CFBundleIdentifier": "com.apple.PosterBoard"],
+            "exception": ["type": "EXC_BREAKPOINT", "signal": "SIGTRAP"], "faultingThread": 0,
+            "threads": [["frames": [["symbol": "-[PRPosterDescriptor _initWithPath:].cold.1", "imageIndex": 0]]]],
+            "usedImages": [["name": "PosterBoard", "uuid": "build"]],
+        ]
+        try JSONSerialization.data(withJSONObject: body).write(to: reports.appendingPathComponent("critical.ips"))
     }
     func output() throws -> [String: Any] { try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: outputFile)) as? [String: Any]) }
     func remove() { try? FileManager.default.removeItem(at: paths.root) }

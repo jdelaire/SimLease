@@ -48,6 +48,11 @@ public struct CLIConfiguration: Sendable {
         )
     )
 
+    func inspectCrashes() throws {
+        let directory = crashReportDirectory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports")
+        _ = try CrashReportSource(directory: directory, paths: paths).inspect(store: CrashLoopStore(paths: paths))
+    }
+
     public static func production(
         environment: [String: String]
     ) -> CLIConfiguration {
@@ -452,6 +457,7 @@ public enum SimLeaseCLI {
     ) throws -> Int32 {
         let coordinator = try makeCoordinator(configuration: configuration)
         var status = try coordinator.status()
+        try configuration.inspectCrashes()
         let heldLanes = Set((status.lanes ?? []).map(\.owner).map(\.pid))
         let unresolvedLanes = Set((status.laneErrors ?? []).map(\.lane))
         let tasks = SimulatorTaskStore.records(base: configuration.paths).filter { heldLanes.contains($0.1.owner.pid) || unresolvedLanes.contains($0.0.lane) }.map { ($0.0.lane, $0.1) }

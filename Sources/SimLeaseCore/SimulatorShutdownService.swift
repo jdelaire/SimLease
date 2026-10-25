@@ -81,7 +81,7 @@ public struct SimulatorShutdownService: Sendable {
         try store.remove(warm.keys.filter { states[$0] == nil || states[$0] == "Shutdown" })
         let blocked = try CrashLoopStore(paths: paths).read().blocks
         let candidates = warm.filter { !excluding.contains($0.key) && states[$0.key] != nil && states[$0.key] != "Shutdown" }
-        let expired = candidates.filter { now.timeIntervalSince($0.value) >= WarmDeviceStore.idleLimit || blocked[$0.key] != nil }.map(\.key)
+        let expired = candidates.filter { now.timeIntervalSince($0.value) >= WarmDeviceStore.idleLimit || blocked[$0.key].map { $0.scopeID != "unowned-system-service" } == true }.map(\.key)
         let overflow = candidates.filter { !expired.contains($0.key) }.sorted { $0.value > $1.value }.dropFirst(WarmDeviceStore.capacity).map(\.key)
         var locks = [(URL, Int32)]()
         defer { for (url, descriptor) in locks { HostLaneLock.release(url: url, descriptor: descriptor) } }

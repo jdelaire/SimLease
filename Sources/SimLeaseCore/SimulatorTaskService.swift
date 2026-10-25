@@ -66,8 +66,8 @@ public final class SimulatorTaskService: Sendable {
             throw SimulatorTaskError.unverifiedProcess(client.pid)
         }
         let crashes = CrashLoopStore(paths: paths)
-        let source = CrashReportSource(directory: crashReportDirectory)
-        _ = try crashes.ingest(source.scan(), now: Date())
+        let source = CrashReportSource(directory: crashReportDirectory, paths: paths)
+        _ = try source.inspect(store: crashes)
         if !CrashLoopStore.permitsCleanup([executable.path] + arguments) { try crashes.requireHealthy(ids) }
         let warmStore = WarmDeviceStore(paths: paths)
         if let warmPolicy, try !warmStore.read().isEmpty { try warmPolicy.reap(excluding: Set(ids)) }
@@ -125,10 +125,10 @@ public final class SimulatorTaskService: Sendable {
                     guard uptime - lastScan >= 1 else { return }
                     lastScan = uptime
                     do {
-                        for trigger in try crashes.ingest(source.scan(), now: Date()) {
-                            report("SimLease: repeated \(trigger.processName) crashes blocked \(trigger.deviceID)\n")
+                        for trigger in try source.inspect(store: crashes) {
+                            report("SimLease: \(trigger.processName) crash blocked \(trigger.deviceID)\n")
                         }
-                        if !stoppedForCrash, externalSessionID == nil, try crashes.read().blocks.values.contains(where: { $0.scopeID == crashScopeID }) {
+                        if !stoppedForCrash, externalSessionID == nil, try crashes.shouldCancel(scopeID: crashScopeID) {
                             stoppedForCrash = true
                             signals.cancel()
                         }
@@ -150,7 +150,7 @@ public final class SimulatorTaskService: Sendable {
         if stoppedForCrash { code = 70 }
         var warmable = keepWarm && warmPolicy != nil && externalSessionID == nil && code == 0 && jobError == nil && !processCleanupFailed && !monitoringErrorReported && !stoppedForCrash && signals.current == nil
         if warmable {
-            do { _ = try crashes.ingest(source.scan(), now: Date()) }
+            do { _ = try source.inspect(store: crashes) }
             catch {
                 warmable = false
                 report("SimLease: crash inspection unavailable; shutting down owned devices: \(error)\n")

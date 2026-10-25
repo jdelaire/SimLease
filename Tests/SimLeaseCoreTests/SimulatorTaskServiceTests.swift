@@ -4,6 +4,71 @@ import XCTest
 @testable import SimLeaseCore
 
 final class SimulatorTaskServiceTests: XCTestCase {
+    func testBorrowedCriticalCrashBlocksRetriesWithoutStoppingJobOrDevice() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        try fixture.devices.set(fixture.borrowed, state: "Booted")
+        let crashes = CrashLoopStore(paths: fixture.paths)
+        let service = SimulatorTaskService(paths: fixture.paths, devices: fixture.devices, crashReportDirectory: fixture.root.appendingPathComponent("absent"))
+        let code = try service.run(
+            executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "/bin/sleep 0.2"],
+            deviceIDs: [fixture.borrowed], keepRunning: false, environment: [:], identity: fixture.identity,
+            onStarted: { _ in
+                let now = Date()
+                _ = try crashes.ingest([SimulatorCrashReport(incidentID: "borrowed", deviceID: fixture.borrowed, occurredAt: now, launchedAt: now, signature: "runtime", processName: "PosterBoard", isCriticalSystemService: true)], now: now)
+            }
+        )
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(try fixture.devices.state(fixture.borrowed), "Booted")
+        XCTAssertThrowsError(try crashes.requireHealthy([fixture.borrowed]))
+    }
+
+    func testFirstCriticalCrashStopsOwnedJobAndRejectsRetryAfterOtherPollerIngests() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let directory = fixture.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let service = SimulatorTaskService(paths: fixture.paths, devices: fixture.devices, crashReportDirectory: directory, warmPolicy: FakeWarmPolicy())
+        let crashes = CrashLoopStore(paths: fixture.paths)
+        let code = try service.run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "trap 'exit 0' TERM; printf Booted > \"$1\"; /bin/sleep 4", "job", fixture.devices.path(fixture.owned).path],
+            deviceIDs: [fixture.owned], keepRunning: false, keepWarm: true, environment: [:], identity: fixture.identity,
+            onStarted: { _ in
+                let now = Date()
+                _ = try crashes.ingest([SimulatorCrashReport(incidentID: "critical", deviceID: fixture.owned, occurredAt: now, launchedAt: now, signature: "runtime", processName: "PosterBoard", isCriticalSystemService: true)], now: now)
+                _ = try crashes.ingest([SimulatorCrashReport(incidentID: "preexisting", deviceID: fixture.owned, occurredAt: now.addingTimeInterval(0.001), launchedAt: now.addingTimeInterval(-100), signature: "runtime", processName: "PosterBoard", isCriticalSystemService: true)], now: now.addingTimeInterval(1))
+            }
+        )
+        XCTAssertEqual(code, 70)
+        XCTAssertEqual(try fixture.devices.state(fixture.owned), "Shutdown")
+        XCTAssertTrue(try WarmDeviceStore(paths: fixture.paths).read().isEmpty)
+        let marker = fixture.root.appendingPathComponent("must-not-launch")
+        XCTAssertThrowsError(try service.run(executable: URL(fileURLWithPath: "/usr/bin/touch"), arguments: [marker.path], deviceIDs: [fixture.owned], keepRunning: false, environment: [:], identity: fixture.identity))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testLateOldReportCannotCancelCurrentJobViaNewerBlockAttribution() throws {
+        let fixture = try TaskFixture()
+        defer { fixture.remove() }
+        let crashes = CrashLoopStore(paths: fixture.paths)
+        let old = Date().addingTimeInterval(-100)
+        try crashes.beginScope(id: "old", deviceIDs: [fixture.owned], startedAt: old)
+        try crashes.endScope(id: "old", endedAt: old.addingTimeInterval(2))
+        let service = SimulatorTaskService(paths: fixture.paths, devices: fixture.devices, crashReportDirectory: fixture.root.appendingPathComponent("absent"))
+        let code = try service.run(
+            executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "/bin/sleep 0.3"],
+            deviceIDs: [fixture.owned], keepRunning: false, environment: [:], identity: fixture.identity,
+            onStarted: { _ in
+                let now = Date()
+                _ = try crashes.ingest([SimulatorCrashReport(incidentID: "current", deviceID: fixture.owned, occurredAt: now, launchedAt: now, signature: "app", processName: "App")], now: now)
+                _ = try crashes.ingest([SimulatorCrashReport(incidentID: "old", deviceID: fixture.owned, occurredAt: old.addingTimeInterval(1), launchedAt: old, signature: "app", processName: "App")], now: now)
+            }
+        )
+        XCTAssertEqual(code, 0)
+        XCTAssertThrowsError(try crashes.requireHealthy([fixture.owned]))
+    }
+
     func testCrashLimitStopsOwnedJobEvenWhenTerminationHandlerExitsZero() throws {
         let fixture = try TaskFixture()
         defer { fixture.remove() }
