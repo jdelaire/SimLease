@@ -535,6 +535,10 @@ Malformed or unattributable reports stay pending and prevent recovery verificati
 Simulator reports with an exited parent can finish ingestion as unknown incidents
 when platform, coalition, Apple identity and mounted executable agree. This does
 not establish critical-service provenance or clear existing blocks.
+The system CoreSimulator `dtdeviceinfod` executable is also accepted at its exact
+iOS or watchOS framework location, and `dtpasteboardd` at its exact iOS location,
+when platform and executable-image proof agree. Both retain the same unknown
+classification and owned-crash protection.
 Unchanged consumed reports do not rewrite crash history. Unreadable files wait
 30 seconds before another
 attempt, so they cannot continuously hide older reports. Future-dated events

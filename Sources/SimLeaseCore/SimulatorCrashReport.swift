@@ -88,7 +88,7 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
 
     private static func isOrphanedRuntime(_ body: [String: Any], header: [String: Any]?, path: String, process: String) -> Bool {
         guard body["parentProc"] as? String == "Exited process", let header,
-              path.hasPrefix("/Volumes/"), URL(fileURLWithPath: path).lastPathComponent == process else { return false }
+              URL(fileURLWithPath: path).lastPathComponent == process else { return false }
         let platforms = [header["platform"], body["platform"]].compactMap { $0 }
         let simulatorPlatforms = [Int(PLATFORM_IOSSIMULATOR), Int(PLATFORM_TVOSSIMULATOR), Int(PLATFORM_WATCHOSSIMULATOR), Int(PLATFORM_VISIONOSSIMULATOR)]
         guard let platform = platforms.first as? Int, simulatorPlatforms.contains(platform),
@@ -96,7 +96,24 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
         let bundle = body["bundleInfo"] as? [String: Any]
         guard body["bundleInfo"] == nil || bundle != nil,
               let identity = (bundle?["CFBundleIdentifier"] ?? body["codeSigningID"]) as? String else { return false }
-        return identity.hasPrefix("com.apple.")
+        guard identity.hasPrefix("com.apple.") else { return false }
+        if path.hasPrefix("/Volumes/") { return true }
+        let supported = (process == "dtdeviceinfod" && [Int(PLATFORM_IOSSIMULATOR), Int(PLATFORM_WATCHOSSIMULATOR)].contains(platform))
+            || (process == "dtpasteboardd" && platform == Int(PLATFORM_IOSSIMULATOR))
+        guard supported, identity == "com.apple.CoreDevice." + process,
+              body["codeSigningID"] == nil || body["codeSigningID"] as? String == identity,
+              process != "dtpasteboardd" || header["platform"] as? Int == Int(PLATFORM_IOSSIMULATOR),
+              let slice = header["slice_uuid"] as? String, let uuid = UUID(uuidString: slice),
+              let images = body["usedImages"] as? [[String: Any]] else { return false }
+        let name = platform == Int(PLATFORM_IOSSIMULATOR) ? "iphoneos" : "watchos"
+        let paths = ["Versions/A/Resources", "Resources"].map {
+            "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/\($0)/Platforms/\(name)/usr/libexec/\(process)"
+        }
+        let executables = images.filter { $0["name"] as? String == process }
+        guard paths.contains(path), executables.count == 1,
+              let executable = executables.first, let imagePath = executable["path"] as? String, paths.contains(imagePath),
+              let imageID = executable["uuid"] as? String, UUID(uuidString: imageID) == uuid else { return false }
+        return true
     }
 
     static func isProvenUnrelated(_ data: Data) -> Bool {

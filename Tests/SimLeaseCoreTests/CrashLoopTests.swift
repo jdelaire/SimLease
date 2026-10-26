@@ -7,6 +7,215 @@ final class CrashLoopTests: XCTestCase {
     let device = "11111111-1111-4111-8111-111111111111"
     let other = "22222222-2222-4222-8222-222222222222"
 
+    func testDevelopmentPasteboardOrphansRequireExactIOSTuple() throws {
+        let process = "dtpasteboardd"
+        let path = "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/Platforms/iphoneos/usr/libexec/\(process)"
+        let image: [String: String] = ["name": process, "uuid": "33333333-3333-4333-8333-333333333333", "path": path]
+        for alias in [false, true] {
+            for bodyPlatform in [false, true] {
+                var changes: [String: Any] = ["usedImages": [image.merging(["path": alias ? path.replacingOccurrences(of: "/Versions/A/", with: "/") : path]) { _, value in value }]]
+                if bodyPlatform { changes["platform"] = 7 }
+                let report = try XCTUnwrap(SimulatorCrashReport.parse(developmentReport(process: process, changes: changes)))
+                XCTAssertEqual(report.processName, process)
+                XCTAssertEqual(report.kind, .unknown)
+                XCTAssertNotEqual(report.isCriticalSystemService, true)
+            }
+        }
+        for changes: [String: Any] in [
+            ["procName": "dtdeviceinfod"], ["codeSigningID": "com.apple.CoreDevice.dtdeviceinfod"],
+            ["codeSigningID": NSNull()], ["bundleInfo": ["CFBundleIdentifier": "com.apple.CoreDevice.dtdeviceinfod"]],
+            ["bundleInfo": ["CFBundleIdentifier": NSNull()]],
+            ["bundleInfo": ["CFBundleIdentifier": "com.apple.CoreDevice.dtpasteboardd"], "codeSigningID": "com.apple.Other"],
+            ["procPath": "/Users/USER" + path], ["procPath": path.replacingOccurrences(of: "/usr/", with: "/tmp/../usr/")],
+            ["procPath": path.replacingOccurrences(of: "/Versions/A/", with: "/Versions/B/")],
+            ["platform": 9], ["usedImages": []], ["usedImages": [image, image]],
+            ["usedImages": [image.filter { $0.key != "uuid" }]],
+            ["usedImages": [image.merging(["uuid": "invalid"]) { _, value in value }]],
+            ["usedImages": [image.merging(["uuid": "44444444-4444-4444-8444-444444444444"]) { _, value in value }]],
+            ["usedImages": [image.merging(["path": path.replacingOccurrences(of: "iphoneos", with: "watchos")]) { _, value in value }]],
+        ] {
+            XCTAssertNil(SimulatorCrashReport.parse(try developmentReport(process: process, changes: changes)))
+        }
+        XCTAssertNil(SimulatorCrashReport.parse(try developmentReport(process: process, platform: 9)))
+        for header: [String: Any] in [["platform": 9], ["platform": NSNull()], ["slice_uuid": NSNull()], ["slice_uuid": "invalid"]] {
+            XCTAssertNil(SimulatorCrashReport.parse(try developmentReport(process: process, headerChanges: header)))
+        }
+        let data = try developmentReport(process: process, changes: ["platform": 7])
+        let newline = try XCTUnwrap(data.firstIndex(of: 10))
+        let body = Data(data.suffix(from: data.index(after: newline)))
+        for header: [String: Any] in [["slice_uuid": "33333333-3333-4333-8333-333333333333"], ["platform": 7]] {
+            XCTAssertNil(SimulatorCrashReport.parse(try JSONSerialization.data(withJSONObject: header) + Data([10]) + body))
+        }
+    }
+
+    func testDevelopmentServiceOrphansRequireExactPlatformAndImageProvenance() throws {
+        for platform in [7, 9] {
+            for alias in [false, true] {
+                for bodyPlatform in [false, true] {
+                    let name = platform == 7 ? "iphoneos" : "watchos"
+                    let imagePath = "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/\(alias ? "Resources" : "Versions/A/Resources")/Platforms/\(name)/usr/libexec/dtdeviceinfod"
+                    var changes: [String: Any] = ["usedImages": [["name": "dtdeviceinfod", "uuid": "33333333-3333-4333-8333-333333333333", "path": imagePath]]]
+                    if bodyPlatform { changes["platform"] = platform }
+                    let parsed = try XCTUnwrap(SimulatorCrashReport.parse(developmentReport(platform: platform, changes: changes)))
+                    XCTAssertEqual(parsed.deviceID, device)
+                    XCTAssertEqual(parsed.processName, "dtdeviceinfod")
+                    XCTAssertEqual(parsed.kind, .unknown)
+                    XCTAssertNotEqual(parsed.isCriticalSystemService, true)
+                }
+            }
+        }
+    }
+
+    func testDevelopmentServiceOrphansRejectConflictingOrUnprovenTuples() throws {
+        let path = "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/Platforms/iphoneos/usr/libexec/dtdeviceinfod"
+        let rejected: [([String: Any], [String: Any])] = [
+            (["procPath": "/usr/libexec/dtdeviceinfod"], [:]),
+            (["procPath": "/Users/USER" + path], [:]),
+            (["procPath": path.replacingOccurrences(of: "/Versions/A/", with: "/Versions/B/")], [:]),
+            (["procPath": path.replacingOccurrences(of: "/usr/", with: "/tmp/../usr/")], [:]),
+            (["procName": "Other"], [:]),
+            (["procName": "dtpasteboardd"], [:]),
+            (["codeSigningID": "com.apple.Other"], [:]),
+            (["codeSigningID": NSNull()], [:]),
+            (["bundleInfo": ["CFBundleIdentifier": "test.dtdeviceinfod"]], [:]),
+            (["bundleInfo": ["CFBundleIdentifier": NSNull()]], [:]),
+            (["bundleInfo": ["CFBundleIdentifier": "com.apple.CoreDevice.dtdeviceinfod"], "codeSigningID": "com.apple.Other"], [:]),
+            (["bundleInfo": NSNull()], [:]),
+            (["parentProc": "launchd"], [:]),
+            (["coalitionName": "com.apple.CoreSimulator.SimDevice.\(device).extra"], [:]),
+            (["platform": 9], [:]),
+            ([:], ["platform": 9]),
+            ([:], ["platform": NSNull()]),
+            ([:], ["platform": "7"]),
+            ([:], ["platform": true]),
+            ([:], ["platform": 8]),
+            ([:], ["platform": 12]),
+            ([:], ["slice_uuid": "44444444-4444-4444-8444-444444444444"]),
+            ([:], ["slice_uuid": NSNull()]),
+            (["usedImages": [["name": "dtdeviceinfod", "uuid": "33333333-3333-4333-8333-333333333333", "path": "/usr/libexec/dtdeviceinfod"]]], [:]),
+            (["usedImages": [["name": "Other", "uuid": "33333333-3333-4333-8333-333333333333", "path": path]]], [:]),
+            (["usedImages": [["name": "dtdeviceinfod", "uuid": "invalid", "path": path]]], [:]),
+            (["captureTime": "invalid"], [:]),
+            (["procLaunch": "2026-10-25 16:31:40.0000 +0700"], [:]),
+            (["threads": [["frames": []]]], [:]),
+        ]
+        for (changes, header) in rejected {
+            XCTAssertNil(SimulatorCrashReport.parse(try developmentReport(changes: changes, headerChanges: header)))
+        }
+        let data = try developmentReport()
+        let newline = try XCTUnwrap(data.firstIndex(of: 10))
+        let bodyOnly = Data(data.suffix(from: data.index(after: newline)))
+        XCTAssertNil(SimulatorCrashReport.parse(bodyOnly))
+        XCTAssertNil(SimulatorCrashReport.parse(Data("{\"slice_uuid\":\"33333333-3333-4333-8333-333333333333\"}\n".utf8) + bodyOnly))
+        XCTAssertEqual(try XCTUnwrap(SimulatorCrashReport.parse(developmentReport(changes: ["bundleInfo": ["CFBundleIdentifier": "com.apple.CoreDevice.dtdeviceinfod"]]))).kind, .unknown)
+    }
+
+    func testDevelopmentServiceSourceConsumesUnownedAndPreexistingWithoutAttribution() throws {
+        for process in ["dtdeviceinfod", "dtpasteboardd"] {
+            for preexisting in [false, true] {
+                let fixture = try CrashFixture()
+                defer { fixture.remove() }
+                let data = try developmentReport(process: process)
+                let report = try XCTUnwrap(SimulatorCrashReport.parse(data))
+                try fixture.store.beginScope(id: "scope", deviceIDs: preexisting ? [device] : [], startedAt: report.launchedAt.addingTimeInterval(preexisting ? 1 : -1))
+                let directory = fixture.paths.root.appendingPathComponent("reports")
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let file = directory.appendingPathComponent("development.ips")
+                try data.write(to: file)
+                for _ in 0..<2 {
+                    let source = CrashReportSource(directory: directory, paths: fixture.paths)
+                    XCTAssertTrue(try source.inspect(store: fixture.store, now: report.occurredAt.addingTimeInterval(1)).isEmpty)
+                    XCTAssertTrue(source.evidenceComplete)
+                }
+                XCTAssertTrue(try fixture.store.read().incidents.isEmpty)
+                XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+                XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+                XCTAssertEqual(try Data(contentsOf: file), data)
+            }
+        }
+    }
+
+    func testDevelopmentServiceSourcePreservesOwnedUnknownProtectionAcrossRestartAndRecovery() throws {
+        for process in ["dtdeviceinfod", "dtpasteboardd"] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            let firstData = try developmentReport(process: process)
+            let first = try XCTUnwrap(SimulatorCrashReport.parse(firstData))
+            let secondData = try developmentReport(process: process, changes: ["incident": "development-second", "captureTime": "2026-10-25 16:31:37.4964 +0700"])
+            let second = try XCTUnwrap(SimulatorCrashReport.parse(secondData))
+            let directory = fixture.paths.root.appendingPathComponent("reports")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: first.launchedAt.addingTimeInterval(-1))
+            try firstData.write(to: directory.appendingPathComponent("first.ips"))
+            let initial = CrashReportSource(directory: directory, paths: fixture.paths)
+            XCTAssertTrue(try initial.inspect(store: fixture.store, now: second.occurredAt).isEmpty)
+            XCTAssertTrue(initial.evidenceComplete)
+            XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+            XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+            let critical = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport()))
+            _ = try fixture.store.ingest([critical], now: second.occurredAt)
+            try secondData.write(to: directory.appendingPathComponent("second.ips"))
+            let restarted = CrashReportSource(directory: directory, paths: fixture.paths)
+            XCTAssertEqual(try restarted.inspect(store: fixture.store, now: second.occurredAt).map(\.scopeID), ["scope"])
+            XCTAssertTrue(restarted.evidenceComplete)
+            XCTAssertTrue(try restarted.inspect(store: fixture.store, now: second.occurredAt).isEmpty)
+            let reason = try XCTUnwrap(fixture.store.reasons().first { $0.kind == .criticalInfrastructure })
+            XCTAssertTrue(try fixture.store.resolveInfrastructure(reason))
+            let reopened = CrashLoopStore(paths: fixture.paths)
+            XCTAssertEqual(try reopened.read().incidents.filter { $0.processName == process }.map(\.incidentID).sorted(), [first.incidentID, second.incidentID].sorted())
+            XCTAssertEqual(try reopened.reasons().map(\.kind), [.unknown])
+            XCTAssertThrowsError(try reopened.requireHealthy([device]))
+            XCTAssertTrue(try reopened.shouldCancel(scopeID: "scope"))
+        }
+    }
+
+    func testDevelopmentServiceSourceLeavesRejectedAndFutureEvidencePending() throws {
+        for process in ["dtdeviceinfod", "dtpasteboardd"] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            let valid = try developmentReport(process: process)
+            let report = try XCTUnwrap(SimulatorCrashReport.parse(valid))
+            let invalid = try developmentReport(process: process, changes: ["incident": "invalid", "codeSigningID": "com.apple.Other"])
+            let future = try developmentReport(process: process, changes: ["incident": "future", "captureTime": "2026-10-25 16:32:37.4964 +0700"])
+            let directory = fixture.paths.root.appendingPathComponent("reports")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for (name, data) in [("valid", valid), ("invalid", invalid), ("future", future)] { try data.write(to: directory.appendingPathComponent(name + ".ips")) }
+            try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: report.launchedAt.addingTimeInterval(-1))
+            let source = CrashReportSource(directory: directory, paths: fixture.paths)
+            XCTAssertTrue(try source.inspect(store: fixture.store, now: report.occurredAt).isEmpty)
+            XCTAssertFalse(source.evidenceComplete)
+            XCTAssertEqual(try fixture.store.read().incidents.map(\.incidentID), [report.incidentID])
+            XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+            for (name, data) in [("valid", valid), ("invalid", invalid), ("future", future)] { XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(name + ".ips")), data) }
+            let restarted = CrashReportSource(directory: directory, paths: fixture.paths)
+            XCTAssertEqual(try restarted.inspect(store: fixture.store, now: report.occurredAt.addingTimeInterval(62)).map(\.scopeID), ["scope"])
+            XCTAssertFalse(restarted.evidenceComplete)
+            XCTAssertEqual(try fixture.store.read().incidents.count, 2)
+            XCTAssertTrue(try fixture.store.shouldCancel(scopeID: "scope"))
+        }
+    }
+
+    func testDevelopmentServiceIngestionFailureDoesNotConsumeReports() throws {
+        for process in ["dtdeviceinfod", "dtpasteboardd"] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            let data = try developmentReport(process: process)
+            let report = try XCTUnwrap(SimulatorCrashReport.parse(data))
+            let directory = fixture.paths.root.appendingPathComponent("reports")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: directory.appendingPathComponent("development.ips"))
+            let history = fixture.paths.root.appendingPathComponent("crash-history.json")
+            try Data("invalid".utf8).write(to: history)
+            let source = CrashReportSource(directory: directory, paths: fixture.paths)
+            XCTAssertThrowsError(try source.inspect(store: fixture.store, now: report.occurredAt))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.paths.root.appendingPathComponent("crash-report-progress-v2.json").path))
+            try FileManager.default.removeItem(at: history)
+            XCTAssertTrue(try source.inspect(store: fixture.store, now: report.occurredAt).isEmpty)
+            XCTAssertTrue(source.evidenceComplete)
+            XCTAssertTrue(try fixture.store.read().incidents.isEmpty)
+        }
+    }
+
     func testOwnedOrphanReportCompletesIngestionAndIsRetainedOnceAcrossRestart() throws {
         let fixture = try CrashFixture()
         defer { fixture.remove() }
@@ -943,6 +1152,22 @@ final class CrashLoopTests: XCTestCase {
             "threads": [["frames": [["imageIndex": imageIndex], ["imageIndex": imageIndex, "symbol": "static Date.<= infix(_:_:)"]]]], "usedImages": images,
         ]
         return Data("{\"bug_type\":\"309\"}\n".utf8) + (try JSONSerialization.data(withJSONObject: body))
+    }
+
+    private func developmentReport(process: String = "dtdeviceinfod", platform: Int = 7, changes: [String: Any] = [:], headerChanges: [String: Any] = [:]) throws -> Data {
+        let name = platform == 9 ? "watchos" : "iphoneos"
+        let path = "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/Platforms/\(name)/usr/libexec/\(process)"
+        let uuid = "33333333-3333-4333-8333-333333333333"
+        let body: [String: Any] = [
+            "incident": "55555555-5555-4555-8555-555555555555",
+            "parentProc": "Exited process", "procName": process, "procPath": path,
+            "bundleInfo": [:], "codeSigningID": "com.apple.CoreDevice.\(process)",
+            "exception": ["type": "EXC_CRASH", "signal": "SIGKILL"], "faultingThread": 0,
+            "threads": [["frames": [["symbol": "__sigsuspend_nocancel", "imageIndex": 0]]]],
+            "usedImages": [["name": process, "uuid": uuid, "path": path]],
+        ]
+        let header: [String: Any] = ["platform": platform, "slice_uuid": uuid]
+        return try runtimeReport(changes: body.merging(changes) { _, value in value }, header: header.merging(headerChanges) { _, value in value })
     }
 
     private func runtimeReport(changes: [String: Any] = [:], header: [String: Any]? = ["app_name": "PosterBoard", "platform": 7, "bug_type": "309"]) throws -> Data {
