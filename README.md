@@ -531,7 +531,10 @@ to the latest 256 owned scopes and 512 incidents. Active jobs inspect at most
 once per second. Each scan reads at most 64 changed reports, each at most 5 MB,
 with a 16 MB scan budget. Scan progress survives CLI restarts and advances only
 after ingestion succeeds, including for positively unrelated host reports.
-Malformed or unknown reports stay pending and prevent recovery verification.
+Malformed or unattributable reports stay pending and prevent recovery verification.
+Simulator reports with an exited parent can finish ingestion as unknown incidents
+when platform, coalition, Apple identity and mounted executable agree. This does
+not establish critical-service provenance or clear existing blocks.
 Unchanged consumed reports do not rewrite crash history. Unreadable files wait
 30 seconds before another
 attempt, so they cannot continuously hide older reports. Future-dated events

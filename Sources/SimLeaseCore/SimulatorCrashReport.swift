@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import MachO
 
 public struct SimulatorCrashReport: Codable, Equatable, Sendable {
     public let incidentID: String
@@ -14,13 +15,16 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
     static func parse(_ data: Data) -> SimulatorCrashReport? {
         guard data.count <= 5_000_000 else { return nil }
         let body: [String: Any]
+        let header: [String: Any]?
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], object["procName"] != nil {
             body = object
+            header = [:]
         } else {
             guard let newline = data.firstIndex(of: 10),
                   let object = try? JSONSerialization.jsonObject(with: data.suffix(from: data.index(after: newline))) as? [String: Any]
             else { return nil }
             body = object
+            header = try? JSONSerialization.jsonObject(with: data.prefix(upTo: newline)) as? [String: Any]
         }
         guard let incident = body["incident"] as? String, !incident.isEmpty,
               let process = body["procName"] as? String, !process.isEmpty,
@@ -32,6 +36,7 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
         let prefix = "com.apple.CoreSimulator.SimDevice."
         let id: String
         let runtimeService: Bool
+        let verifiedRuntimeService: Bool
         if parts.count > 1 {
             guard parts.count == 2, let first = parts[1].split(separator: "/").first,
                   let device = UUID(uuidString: String(first))?.uuidString,
@@ -39,13 +44,16 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
             if let coalition = body["coalitionName"] as? String, coalition != prefix + device { return nil }
             id = device
             runtimeService = false
+            verifiedRuntimeService = false
         } else {
-            guard body["parentProc"] as? String == "launchd_sim",
+            let verifiedParent = body["parentProc"] as? String == "launchd_sim"
+            guard verifiedParent || isOrphanedRuntime(body, header: header, path: path, process: process),
                   let coalition = body["coalitionName"] as? String, coalition.hasPrefix(prefix),
                   let device = UUID(uuidString: String(coalition.dropFirst(prefix.count)))?.uuidString,
                   coalition == prefix + device else { return nil }
             id = device
             runtimeService = true
+            verifiedRuntimeService = verifiedParent
         }
         guard let exception = body["exception"] as? [String: Any],
               let type = exception["type"] as? String,
@@ -64,18 +72,31 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
         guard !identities.isEmpty else { return nil }
         let bundle = (body["bundleInfo"] as? [String: Any])?["CFBundleIdentifier"] as? String ?? process
         let systemIdentifier = (body["bundleInfo"] as? [String: Any])?["CFBundleIdentifier"] as? String ?? body["codeSigningID"] as? String ?? ""
-        let critical = runtimeService && (
+        let critical = verifiedRuntimeService && (
             (process == "PosterBoard" && bundle == "com.apple.PosterBoard" && path.hasSuffix("/PosterBoard.app/PosterBoard"))
                 || (process == "SpringBoard" && bundle == "com.apple.springboard" && path.hasSuffix("/SpringBoard.app/SpringBoard"))
         )
         let key = ([bundle, process, type, exception["signal"] as? String ?? ""] + Set(identities).sorted() + symbols).joined(separator: "\n")
         let hash = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
-        let background = runtimeService && (
+        let background = verifiedRuntimeService && (
             (process == "intelligencetasksd" && systemIdentifier == "com.apple.intelligencetasksd" && path.hasSuffix("/IntelligenceTasksEngine.framework/Support/intelligencetasksd"))
                 || (process == "AppIntentsLiveEntityService" && systemIdentifier == "com.apple.appintents.LiveEntityService" && path.hasSuffix("/AppIntentsLiveEntitySupport.framework/XPCServices/AppIntentsLiveEntityService.xpc/AppIntentsLiveEntityService"))
         )
         let kind: SimulatorCrashKind = critical ? .criticalInfrastructure : (background ? .backgroundService : (runtimeService ? .unknown : .application))
         return SimulatorCrashReport(incidentID: String(incident.prefix(128)), deviceID: id, occurredAt: occurred, launchedAt: launched, signature: hash, processName: String(process.prefix(128)), isCriticalSystemService: critical ? true : nil, kind: kind)
+    }
+
+    private static func isOrphanedRuntime(_ body: [String: Any], header: [String: Any]?, path: String, process: String) -> Bool {
+        guard body["parentProc"] as? String == "Exited process", let header,
+              path.hasPrefix("/Volumes/"), URL(fileURLWithPath: path).lastPathComponent == process else { return false }
+        let platforms = [header["platform"], body["platform"]].compactMap { $0 }
+        let simulatorPlatforms = [Int(PLATFORM_IOSSIMULATOR), Int(PLATFORM_TVOSSIMULATOR), Int(PLATFORM_WATCHOSSIMULATOR), Int(PLATFORM_VISIONOSSIMULATOR)]
+        guard let platform = platforms.first as? Int, simulatorPlatforms.contains(platform),
+              platforms.allSatisfy({ ($0 as? Int) == platform }) else { return false }
+        let bundle = body["bundleInfo"] as? [String: Any]
+        guard body["bundleInfo"] == nil || bundle != nil,
+              let identity = (bundle?["CFBundleIdentifier"] ?? body["codeSigningID"]) as? String else { return false }
+        return identity.hasPrefix("com.apple.")
     }
 
     static func isProvenUnrelated(_ data: Data) -> Bool {

@@ -21,22 +21,29 @@ struct CrashReasonStore {
     let paths: LeasePaths
     var url: URL { paths.root.appendingPathComponent("crash-reasons.json") }
 
-    static func key(deviceID: String, signature: String) -> String { deviceID + ":" + signature }
+    static func key(deviceID: String, signature: String, kind: SimulatorCrashKind) -> String { deviceID + ":" + signature + ":" + kind.rawValue }
 
     func read() throws -> CrashReasonState { try RecoveryFile.read(CrashReasonState.self, at: url) ?? CrashReasonState() }
 
     func merged(_ state: CrashLoopState, policy: CrashReasonState) -> CrashReasonState {
-        var result = policy
-        for (key, reason) in result.reasons {
-            if let proof = state.incidents.last(where: { $0.deviceID == reason.trigger.deviceID && $0.signature == reason.trigger.signature && $0.processName == reason.trigger.processName && $0.occurredAt == reason.trigger.occurredAt && $0.kind != nil }) {
-                result.reasons[key] = SimulatorCrashReason(trigger: reason.trigger, kind: proof.kind!)
+        var result = CrashReasonState()
+        for (key, date) in policy.resolvedThrough {
+            let resolvedKey = key.hasSuffix(":" + SimulatorCrashKind.criticalInfrastructure.rawValue) ? key : key + ":" + SimulatorCrashKind.criticalInfrastructure.rawValue
+            result.resolvedThrough[resolvedKey] = max(result.resolvedThrough[resolvedKey] ?? .distantPast, date)
+        }
+        for reason in policy.reasons.values {
+            let matching = state.incidents.filter { $0.deviceID == reason.trigger.deviceID && $0.signature == reason.trigger.signature && $0.processName == reason.trigger.processName && $0.occurredAt == reason.trigger.occurredAt }
+            let proof = matching.last { $0.kind == reason.kind } ?? matching.last { $0.kind != nil }
+            let observed = proof?.kind ?? (matching.contains { $0.isCriticalSystemService == true } ? .criticalInfrastructure : reason.kind)
+            let kind = observed == .unknown && reason.kind != .unknown ? reason.kind : observed
+            let key = Self.key(deviceID: reason.trigger.deviceID, signature: reason.trigger.signature, kind: kind)
+            if reason.trigger.occurredAt >= (result.reasons[key]?.trigger.occurredAt ?? .distantPast) {
+                result.reasons[key] = SimulatorCrashReason(trigger: reason.trigger, kind: kind)
             }
         }
         for trigger in state.blocks.values {
-            let key = Self.key(deviceID: trigger.deviceID, signature: trigger.signature)
-            let report = state.incidents.last { $0.deviceID == trigger.deviceID && $0.signature == trigger.signature && $0.occurredAt == trigger.occurredAt && $0.kind != nil }
-                ?? state.incidents.last { $0.deviceID == trigger.deviceID && $0.signature == trigger.signature }
-            let kind = report?.kind ?? (report?.isCriticalSystemService == true || trigger.signature == "simulator-boot-health" ? .criticalInfrastructure : result.reasons[key]?.kind ?? .unknown)
+            let kind = kind(of: trigger, state: state, policy: result)
+            let key = Self.key(deviceID: trigger.deviceID, signature: trigger.signature, kind: kind)
             if trigger.occurredAt >= (result.reasons[key]?.trigger.occurredAt ?? .distantPast) {
                 result.reasons[key] = SimulatorCrashReason(trigger: trigger, kind: kind)
             }
@@ -44,11 +51,19 @@ struct CrashReasonStore {
         return result
     }
 
+    func kind(of trigger: CrashLoopTrigger, state: CrashLoopState, policy: CrashReasonState) -> SimulatorCrashKind {
+        let matching = state.incidents.filter { $0.deviceID == trigger.deviceID && $0.signature == trigger.signature && $0.processName == trigger.processName && $0.occurredAt == trigger.occurredAt }
+        if let report = matching.last(where: { $0.kind != nil }) { return report.kind! }
+        if matching.contains(where: { $0.isCriticalSystemService == true }) || trigger.signature == "simulator-boot-health" { return .criticalInfrastructure }
+        return policy.reasons.values.first { $0.trigger == trigger }?.kind ?? .unknown
+    }
+
     func active(_ state: CrashLoopState, policy: CrashReasonState) -> [SimulatorCrashReason] {
-        merged(state, policy: policy).reasons.filter { key, reason in
+        let normalized = merged(state, policy: policy)
+        return normalized.reasons.filter { key, reason in
             reason.kind != .backgroundService
                 && reason.trigger.occurredAt > (state.acknowledgments[reason.trigger.deviceID] ?? .distantPast)
-                && reason.trigger.occurredAt > (policy.resolvedThrough[key] ?? .distantPast)
+                && reason.trigger.occurredAt > (normalized.resolvedThrough[key] ?? .distantPast)
         }.map(\.value)
     }
 

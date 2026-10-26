@@ -7,6 +7,343 @@ final class CrashLoopTests: XCTestCase {
     let device = "11111111-1111-4111-8111-111111111111"
     let other = "22222222-2222-4222-8222-222222222222"
 
+    func testOwnedOrphanReportCompletesIngestionAndIsRetainedOnceAcrossRestart() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let data = try runtimeReport(changes: ["parentProc": "Exited process"])
+        let report = try XCTUnwrap(SimulatorCrashReport.parse(data))
+        XCTAssertEqual(report.kind, .unknown)
+        let directory = fixture.paths.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: directory.appendingPathComponent("orphan.ips"))
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: report.launchedAt.addingTimeInterval(-1))
+        let now = report.occurredAt.addingTimeInterval(1)
+        let source = CrashReportSource(directory: directory, paths: fixture.paths)
+        for _ in 0..<2 {
+            XCTAssertTrue(try source.inspect(store: fixture.store, now: now).isEmpty)
+            XCTAssertTrue(source.evidenceComplete)
+        }
+        let restarted = CrashReportSource(directory: directory, paths: fixture.paths)
+        XCTAssertTrue(try restarted.inspect(store: fixture.store, now: now).isEmpty)
+        XCTAssertTrue(restarted.evidenceComplete)
+        XCTAssertEqual(try fixture.store.read().incidents.map(\.incidentID), [report.incidentID])
+        XCTAssertEqual(try fixture.store.read().incidents.first?.kind, .unknown)
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+    }
+
+    func testUnownedAndPreexistingOrphanReportsAreConsumedWithoutAttributingCurrentWork() throws {
+        for preexisting in [false, true] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            let data = try runtimeReport(changes: ["parentProc": "Exited process"])
+            let report = try XCTUnwrap(SimulatorCrashReport.parse(data))
+            try fixture.store.beginScope(id: "scope", deviceIDs: preexisting ? [device] : [], startedAt: report.launchedAt.addingTimeInterval(preexisting ? 1 : -1))
+            let directory = fixture.paths.root.appendingPathComponent("reports")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: directory.appendingPathComponent("orphan.ips"))
+            for _ in 0..<2 {
+                let source = CrashReportSource(directory: directory, paths: fixture.paths)
+                XCTAssertTrue(try source.inspect(store: fixture.store, now: report.occurredAt.addingTimeInterval(1)).isEmpty)
+                XCTAssertTrue(source.evidenceComplete)
+            }
+            XCTAssertTrue(try fixture.store.read().incidents.isEmpty)
+            XCTAssertTrue(try fixture.store.read().blocks.isEmpty)
+            XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+        }
+    }
+
+    func testOwnedOrphanReportsStillRequireTwoMatchingIncidentsToBlockAndCancel() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let first = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: ["parentProc": "Exited process"])))
+        let second = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+            "parentProc": "Exited process", "incident": "second", "captureTime": "2026-10-25 16:31:37.4964 +0700",
+        ])))
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: first.launchedAt.addingTimeInterval(-1))
+        XCTAssertTrue(try fixture.store.ingest([first], now: second.occurredAt).isEmpty)
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+        XCTAssertEqual(try fixture.store.ingest([second], now: second.occurredAt).map(\.scopeID), ["scope"])
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+        XCTAssertTrue(try fixture.store.shouldCancel(scopeID: "scope"))
+        XCTAssertEqual(try fixture.store.reasons().first?.kind, .unknown)
+    }
+
+    func testOrphanedSystemServiceNamesCannotAcquireVerifiedClassifications() throws {
+        for (name, bundle, path) in [
+            ("PosterBoard", "com.apple.PosterBoard", "/Volumes/VOLUME/*/PosterBoard.app/PosterBoard"),
+            ("SpringBoard", "com.apple.springboard", "/Volumes/VOLUME/*/SpringBoard.app/SpringBoard"),
+            ("AppIntentsLiveEntityService", "com.apple.appintents.LiveEntityService", "/Volumes/VOLUME/*/AppIntentsLiveEntitySupport.framework/XPCServices/AppIntentsLiveEntityService.xpc/AppIntentsLiveEntityService"),
+            ("intelligencetasksd", "com.apple.intelligencetasksd", "/Volumes/VOLUME/*/IntelligenceTasksEngine.framework/Support/intelligencetasksd"),
+        ] {
+            let report = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+                "parentProc": "Exited process", "procName": name, "procPath": path,
+                "bundleInfo": ["CFBundleIdentifier": bundle],
+            ])))
+            XCTAssertEqual(report.kind, .unknown)
+            XCTAssertNotEqual(report.isCriticalSystemService, true)
+        }
+    }
+
+    func testOrphanReportAcceptsOnlyConsistentNumericSimulatorPlatforms() throws {
+        for platform in [7, 8, 9, 12] {
+            for (body, header): ([String: Any], [String: Any]?) in [
+                ([:], ["platform": platform]),
+                (["platform": platform], nil),
+                (["platform": platform], ["platform": platform]),
+            ] {
+                let changes = body.merging(["parentProc": "Exited process"]) { _, value in value }
+                XCTAssertEqual(try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: changes, header: header))).kind, .unknown)
+            }
+        }
+        let rejected: [([String: Any], [String: Any]?)] = [
+            ([:], nil), ([:], ["platform": 1]), ([:], ["platform": 4]),
+            (["platform": 7], ["platform": 9]), (["platform": 9], ["platform": 7]),
+            ([:], ["platform": "7"]), ([:], ["platform": NSNull()]), ([:], ["platform": true]),
+            (["platform": "7"], ["platform": 7]), (["platform": NSNull()], ["platform": 7]),
+            (["platform": 7], ["platform": "7"]), (["platform": 7], ["platform": NSNull()]),
+            (["platform": 7.5], ["platform": 7]),
+        ]
+        for (body, header) in rejected {
+            let changes = body.merging(["parentProc": "Exited process"]) { _, value in value }
+            XCTAssertNil(SimulatorCrashReport.parse(try runtimeReport(changes: changes, header: header)))
+        }
+    }
+
+    func testOrphanAttributionRequiresAppleIdentityMountedExecutableAndSimulatorCoalition() throws {
+        let base: [String: Any] = ["parentProc": "Exited process"]
+        for changes: [String: Any] in [
+            ["bundleInfo": ["CFBundleIdentifier": "test.PosterBoard"], "codeSigningID": "com.apple.PosterBoard"],
+            ["bundleInfo": ["CFBundleIdentifier": NSNull()], "codeSigningID": "com.apple.PosterBoard"],
+            ["procPath": "/usr/libexec/PosterBoard"], ["procPath": "/Volumes/VOLUME/*/Other"],
+            ["coalitionName": "com.apple.CoreSimulator.SimDevice.invalid"],
+            ["coalitionName": "com.apple.CoreSimulator.SimDevice.\(device).extra"],
+            ["coalitionName": NSNull()], ["parentProc": "launchd"], ["parentProc": NSNull()],
+        ] {
+            XCTAssertNil(SimulatorCrashReport.parse(try runtimeReport(changes: base.merging(changes) { _, value in value })))
+        }
+        XCTAssertEqual(try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: base.merging([
+            "bundleInfo": [:], "codeSigningID": "com.apple.PosterBoard",
+        ]) { _, value in value }))).kind, .unknown)
+        XCTAssertEqual(try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: base.merging([
+            "procPath": "/Users/USER/Library/Developer/CoreSimulator/Devices/\(device)/data/PosterBoard.app/PosterBoard",
+        ]) { _, value in value }, header: nil))).kind, .application)
+    }
+
+    func testRejectedOrphanEvidenceRemainsPending() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let directory = fixture.paths.root.appendingPathComponent("reports")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try runtimeReport(changes: ["parentProc": "Exited process", "platform": 9])
+        let file = directory.appendingPathComponent("conflicting.ips")
+        try data.write(to: file)
+        let source = CrashReportSource(directory: directory, paths: fixture.paths)
+        XCTAssertTrue(try source.inspect(store: fixture.store).isEmpty)
+        XCTAssertFalse(source.evidenceComplete)
+        XCTAssertEqual(try Data(contentsOf: file), data)
+        XCTAssertTrue(try fixture.store.read().incidents.isEmpty)
+    }
+
+    func testActiveCriticalReasonSurvivesLaterOwnedUnknownRecurrenceAcrossRestart() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let critical = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport()))
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: critical.launchedAt.addingTimeInterval(-1))
+        _ = try fixture.store.ingest([critical], now: critical.occurredAt)
+        let reason = try XCTUnwrap(fixture.store.reasons().first)
+        let orphan = SimulatorCrashReport(incidentID: "orphan", deviceID: device, occurredAt: critical.occurredAt.addingTimeInterval(1), launchedAt: critical.launchedAt, signature: critical.signature, processName: critical.processName, kind: .unknown)
+        _ = try fixture.store.ingest([orphan], now: orphan.occurredAt)
+        let restarted = CrashLoopStore(paths: fixture.paths)
+        XCTAssertEqual(try restarted.reasons().filter { $0.kind == .criticalInfrastructure }, [reason])
+        XCTAssertEqual(try restarted.reasons().first { $0.kind == .unknown }?.trigger.occurredAt, orphan.occurredAt)
+        XCTAssertEqual(try restarted.read().incidents.first { $0.incidentID == orphan.incidentID }?.kind, .unknown)
+        XCTAssertEqual(try restarted.read().incidents.first { $0.incidentID == critical.incidentID }?.kind, .criticalInfrastructure)
+        XCTAssertThrowsError(try restarted.requireHealthy([device]))
+    }
+
+    func testWeakerDuplicateCannotEraseCriticalProofAfterLegacyRewrite() throws {
+        for classificationOnly in [false, true] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            let critical = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport()))
+            _ = try fixture.store.ingest([critical], now: critical.occurredAt)
+            let reason = try XCTUnwrap(fixture.store.reasons().first)
+            var weaker = critical
+            weaker.kind = .unknown
+            weaker.isCriticalSystemService = nil
+            if classificationOnly { try fixture.store.classifyRetained([weaker], now: critical.occurredAt) }
+            else { _ = try fixture.store.ingest([weaker], now: critical.occurredAt) }
+            let history = fixture.paths.root.appendingPathComponent("crash-history.json")
+            var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: history)) as? [String: Any])
+            legacy["incidents"] = (legacy["incidents"] as? [[String: Any]])?.map { $0.filter { $0.key != "kind" && $0.key != "isCriticalSystemService" } }
+            try JSONSerialization.data(withJSONObject: legacy).write(to: history)
+            let restarted = CrashLoopStore(paths: fixture.paths)
+            XCTAssertEqual(try restarted.reasons(), [reason])
+            XCTAssertEqual(try restarted.read().incidents.first?.kind, .criticalInfrastructure)
+            XCTAssertEqual(try restarted.read().incidents.first?.isCriticalSystemService, true)
+        }
+    }
+
+    func testUnknownRepeatsAfterResolvedCriticalEvidenceStillBlockConservatively() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let critical = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport()))
+        _ = try fixture.store.ingest([critical], now: critical.occurredAt)
+        XCTAssertTrue(try fixture.store.resolveInfrastructure(XCTUnwrap(fixture.store.reasons().first)))
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: critical.occurredAt.addingTimeInterval(180))
+        let reports = (0..<2).map { index in
+            SimulatorCrashReport(incidentID: "orphan-\(index)", deviceID: device, occurredAt: critical.occurredAt.addingTimeInterval(200 + Double(index)), launchedAt: critical.occurredAt.addingTimeInterval(190), signature: critical.signature, processName: critical.processName, kind: .unknown)
+        }
+        XCTAssertTrue(try fixture.store.ingest([reports[0]], now: reports[0].occurredAt).isEmpty)
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        XCTAssertEqual(try fixture.store.ingest([reports[1]], now: reports[1].occurredAt).map(\.scopeID), ["scope"])
+        XCTAssertEqual(try fixture.store.reasons().first?.kind, .unknown)
+        XCTAssertTrue(try fixture.store.shouldCancel(scopeID: "scope"))
+    }
+
+    func testUnknownDuplicateCannotReblockVerifiedBackgroundServiceAfterLegacyRewrite() throws {
+        for classificationOnly in [false, true] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            let report = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+                "procName": "intelligencetasksd", "procPath": "/Volumes/VOLUME/*/IntelligenceTasksEngine.framework/Support/intelligencetasksd",
+                "bundleInfo": ["CFBundleIdentifier": "com.apple.intelligencetasksd"],
+            ])))
+            _ = try fixture.store.ingest([report], now: report.occurredAt)
+            var weaker = report
+            weaker.kind = .unknown
+            if classificationOnly { try fixture.store.classifyRetained([weaker], now: report.occurredAt) }
+            else { _ = try fixture.store.ingest([weaker], now: report.occurredAt) }
+            let history = fixture.paths.root.appendingPathComponent("crash-history.json")
+            var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: history)) as? [String: Any])
+            legacy["incidents"] = (legacy["incidents"] as? [[String: Any]])?.map { $0.filter { $0.key != "kind" && $0.key != "isCriticalSystemService" } }
+            try JSONSerialization.data(withJSONObject: legacy).write(to: history)
+            let restarted = CrashLoopStore(paths: fixture.paths)
+            XCTAssertEqual(try restarted.read().incidents.first?.kind, .backgroundService)
+            XCTAssertNoThrow(try restarted.requireHealthy([device]))
+            XCTAssertTrue(try restarted.reasons().isEmpty)
+        }
+    }
+
+    func testMixedBatchKeepsCriticalAndUnknownReasonsOnTheirOwnEventTimes() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: Date(timeIntervalSince1970: 90))
+        let critical = criticalEvent("critical", at: 100, launch: 95)
+        let orphan = SimulatorCrashReport(incidentID: "orphan", deviceID: device, occurredAt: Date(timeIntervalSince1970: 110), launchedAt: Date(timeIntervalSince1970: 105), signature: critical.signature, processName: critical.processName, kind: .unknown)
+        _ = try fixture.store.ingest([critical, orphan], now: Date(timeIntervalSince1970: 120))
+        let reasons = try fixture.store.reasons()
+        let verified = try XCTUnwrap(reasons.first { $0.kind == .criticalInfrastructure })
+        XCTAssertEqual(verified.trigger.occurredAt, Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(reasons.first { $0.kind == .unknown }?.trigger.occurredAt, Date(timeIntervalSince1970: 110))
+        XCTAssertTrue(try fixture.store.resolveInfrastructure(verified))
+        XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+        XCTAssertTrue(try fixture.store.shouldCancel(scopeID: "scope"))
+    }
+
+    func testInfrastructureResolutionPreservesSameSignatureUnknownPairInEitherOrder() throws {
+        for unknownFirst in [false, true] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: Date(timeIntervalSince1970: 80))
+            let critical = criticalEvent("critical", at: 100, launch: 95)
+            let start: TimeInterval = unknownFirst ? 90 : 300
+            let unknown = (0..<2).map { index in
+                SimulatorCrashReport(incidentID: "orphan-\(index)", deviceID: device, occurredAt: Date(timeIntervalSince1970: start + Double(index)), launchedAt: Date(timeIntervalSince1970: start - 5), signature: critical.signature, processName: critical.processName, kind: .unknown)
+            }
+            for batch in unknownFirst ? [unknown, [critical]] : [[critical], unknown] {
+                _ = try fixture.store.ingest(batch, now: Date(timeIntervalSince1970: 400))
+            }
+            let reason = try XCTUnwrap(fixture.store.reasons().first { $0.kind == .criticalInfrastructure })
+            XCTAssertTrue(try fixture.store.resolveInfrastructure(reason))
+            let restarted = CrashLoopStore(paths: fixture.paths)
+            XCTAssertThrowsError(try restarted.requireHealthy([device]))
+            XCTAssertEqual(try restarted.reasons().first?.kind, .unknown)
+            XCTAssertEqual(try restarted.reasons().first?.trigger.occurredAt, Date(timeIntervalSince1970: start + 1))
+            XCTAssertTrue(try restarted.shouldCancel(scopeID: "scope"))
+        }
+    }
+
+    func testSameBatchStrongerDuplicateUsesCanonicalVerifiedIncident() throws {
+        for criticalFirst in [false, true] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            let critical = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport()))
+            var weaker = critical
+            weaker.kind = .unknown
+            weaker.isCriticalSystemService = nil
+            try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: critical.launchedAt.addingTimeInterval(-1))
+            let triggers = try fixture.store.ingest(criticalFirst ? [critical, weaker] : [weaker, critical], now: critical.occurredAt)
+            XCTAssertEqual(triggers.map(\.scopeID), ["scope"])
+            XCTAssertEqual(try fixture.store.read().incidents.count, 1)
+            XCTAssertEqual(try fixture.store.reasons().first?.kind, .criticalInfrastructure)
+            XCTAssertTrue(try fixture.store.shouldCancel(scopeID: "scope"))
+        }
+    }
+
+    func testLegacyInfrastructureResolutionStillSuppressesOnlyItsCriticalCancellation() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let report = criticalEvent("critical", at: 100, launch: 95)
+        let trigger = CrashLoopTrigger(deviceID: device, scopeID: "scope", processName: "PosterBoard", signature: "critical-runtime", occurredAt: Date(timeIntervalSince1970: 100))
+        var state = CrashLoopState()
+        state.incidents = [report]
+        state.blocks[device] = trigger
+        try RecoveryFile.write(state, at: fixture.paths.root.appendingPathComponent("crash-history.json"))
+        let key = "11111111-1111-4111-8111-111111111111:critical-runtime"
+        try CrashReasonStore(paths: fixture.paths).write(CrashReasonState(reasons: [key: SimulatorCrashReason(trigger: trigger, kind: .criticalInfrastructure)], resolvedThrough: [key: Date(timeIntervalSince1970: 110)]))
+        try RecoveryFile.write(["scope": [device: trigger]], at: fixture.paths.root.appendingPathComponent("crash-cancellations.json"))
+        XCTAssertNoThrow(try fixture.store.requireHealthy([device]))
+        XCTAssertFalse(try fixture.store.shouldCancel(scopeID: "scope"))
+    }
+
+    func testVerifiedBackgroundRecurrenceCannotEraseIndependentUnknownPair() throws {
+        let fixture = try CrashFixture()
+        defer { fixture.remove() }
+        let background = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+            "procName": "intelligencetasksd", "procPath": "/Volumes/VOLUME/*/IntelligenceTasksEngine.framework/Support/intelligencetasksd",
+            "bundleInfo": ["CFBundleIdentifier": "com.apple.intelligencetasksd"],
+        ])))
+        try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: background.launchedAt.addingTimeInterval(-40))
+        let unknown = (0..<2).map { index in
+            SimulatorCrashReport(incidentID: "orphan-\(index)", deviceID: device, occurredAt: background.occurredAt.addingTimeInterval(-20 + Double(index)), launchedAt: background.launchedAt.addingTimeInterval(-30), signature: background.signature, processName: background.processName, kind: .unknown)
+        }
+        _ = try fixture.store.ingest(unknown, now: background.occurredAt)
+        _ = try fixture.store.ingest([background], now: background.occurredAt)
+        let restarted = CrashLoopStore(paths: fixture.paths)
+        XCTAssertThrowsError(try restarted.requireHealthy([device]))
+        XCTAssertEqual(try restarted.reasons().first?.kind, .unknown)
+        XCTAssertTrue(try restarted.shouldCancel(scopeID: "scope"))
+    }
+
+    func testMixedBatchBackgroundRecurrencePreservesNewAndActiveUnknownReasons() throws {
+        for alreadyActive in [false, true] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            let background = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+                "procName": "intelligencetasksd", "procPath": "/Volumes/VOLUME/*/IntelligenceTasksEngine.framework/Support/intelligencetasksd",
+                "bundleInfo": ["CFBundleIdentifier": "com.apple.intelligencetasksd"],
+            ])))
+            try fixture.store.beginScope(id: "scope", deviceIDs: [device], startedAt: background.launchedAt.addingTimeInterval(-80))
+            func unknown(_ id: String, offset: TimeInterval) -> SimulatorCrashReport {
+                SimulatorCrashReport(incidentID: id, deviceID: device, occurredAt: background.occurredAt.addingTimeInterval(offset), launchedAt: background.launchedAt.addingTimeInterval(-60), signature: background.signature, processName: background.processName, kind: .unknown)
+            }
+            if alreadyActive {
+                _ = try fixture.store.ingest([unknown("prior-0", offset: -40), unknown("prior-1", offset: -39)], now: background.occurredAt)
+                XCTAssertThrowsError(try fixture.store.requireHealthy([device]))
+            }
+            _ = try fixture.store.ingest([unknown("current-0", offset: -20), unknown("current-1", offset: -19), background], now: background.occurredAt)
+            let restarted = CrashLoopStore(paths: fixture.paths)
+            XCTAssertThrowsError(try restarted.requireHealthy([device]))
+            XCTAssertEqual(try restarted.reasons().first?.kind, .unknown)
+            XCTAssertEqual(try restarted.reasons().first?.trigger.occurredAt, background.occurredAt.addingTimeInterval(-19))
+            XCTAssertTrue(try restarted.shouldCancel(scopeID: "scope"))
+            XCTAssertEqual(try restarted.read().incidents.first { $0.incidentID == background.incidentID }?.kind, .backgroundService)
+        }
+    }
+
     func testAppleBackgroundServiceCrashesNeverBlockOrCancelAppWork() throws {
         let fixture = try CrashFixture()
         defer { fixture.remove() }
@@ -608,7 +945,7 @@ final class CrashLoopTests: XCTestCase {
         return Data("{\"bug_type\":\"309\"}\n".utf8) + (try JSONSerialization.data(withJSONObject: body))
     }
 
-    private func runtimeReport(changes: [String: Any] = [:]) throws -> Data {
+    private func runtimeReport(changes: [String: Any] = [:], header: [String: Any]? = ["app_name": "PosterBoard", "platform": 7, "bug_type": "309"]) throws -> Data {
         var threads = Array(repeating: [String: Any](), count: 7)
         threads[6] = ["frames": [["symbol": "-[PRPosterDescriptor _initWithPath:].cold.1", "imageIndex": 55]]]
         var images = Array(repeating: [String: String](), count: 56)
@@ -624,8 +961,8 @@ final class CrashLoopTests: XCTestCase {
             "threads": threads, "usedImages": images,
         ]
         body.merge(changes) { _, replacement in replacement }
-        return Data("{\"app_name\":\"PosterBoard\",\"platform\":7,\"bug_type\":\"309\"}\n".utf8)
-            + (try JSONSerialization.data(withJSONObject: body))
+        let prefix = try header.map { try JSONSerialization.data(withJSONObject: $0) + Data([10]) } ?? Data()
+        return prefix + (try JSONSerialization.data(withJSONObject: body))
     }
 }
 
