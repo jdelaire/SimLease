@@ -36,11 +36,13 @@ final class LeasePopoverRenderingTests: XCTestCase {
             ("mixed-lane-error", mixedLaneError),
             ("automatic-recovery-before", recoveryStatus(automatic: false)),
             ("automatic-recovery-after", recoveryStatus(automatic: true)),
+            ("crash-blocked", crashBlockedStatus),
         ]
 
         for item in states {
             let model = MenuViewModel(
-                provider: RenderStatusProvider(status: item.status)
+                provider: RenderStatusProvider(status: item.status),
+                now: { item.name == "crash-blocked" ? Date(timeIntervalSince1970: 10_000) : Date() }
             )
             await model.setDevicesVisible(true)
             let hosting = NSHostingView(rootView: LeasePopoverView(viewModel: model).background(Color(nsColor: .windowBackgroundColor)))
@@ -61,7 +63,7 @@ final class LeasePopoverRenderingTests: XCTestCase {
 
             XCTAssertEqual(hosting.bounds.width, 380, accuracy: 1)
             XCTAssertGreaterThan(hosting.bounds.height, 80)
-            XCTAssertLessThanOrEqual(hosting.bounds.height, 820)
+            XCTAssertLessThanOrEqual(hosting.bounds.height, item.name == "crash-blocked" ? 850 : 820)
             print("popover-capture: \(output.path)")
         }
     }
@@ -73,6 +75,27 @@ final class LeasePopoverRenderingTests: XCTestCase {
             AutomaticRecoveryRecord(deviceID: "device", state: .verifying, detail: "Checking stable services and new crash reports for 120 booted seconds. App data preserved.")
         ], backgroundIncidentCount: 47, infrastructureBlocks: [block]) : nil
         return LeaseStatus(state: .free, owner: nil, waiters: [], error: nil, crashBlocks: [block], simulatorHealth: health)
+    }
+
+    private var crashBlockedStatus: LeaseStatus {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let ids = (1...4).map { "AABBCCDD-0000-4000-8000-00000000000\($0)" }
+        let names = ["Preview Watch", "Preview Watch Duo", "Preview Phone", "Preview Phone Duo"]
+        let processes = ["localspeechrecognition", "localspeechrecognition", "chronod", "ind"]
+        let blocks = ids.enumerated().map { index, id in
+            CrashLoopTrigger(deviceID: id, scopeID: "preview", processName: processes[index], signature: "preview-build", occurredAt: now)
+        }
+        return LeaseStatus(
+            state: .free, owner: nil, waiters: [], error: nil, crashBlocks: blocks,
+            devices: ids.enumerated().map { index, id in
+                SimulatorUsage(id: id, name: names[index], runtime: index < 2 ? "watchOS 27.2" : "iOS 27.2", state: "Shutdown", reservation: .unreserved)
+            },
+            laneLimit: 1,
+            gate: LaneGateStatus(open: true, reason: nil, memoryFreePercent: 82, cpuIdlePercent: 61, load: 46, cpus: 10),
+            simulatorHealth: SimulatorHealthStatus(recoveries: [
+                AutomaticRecoveryRecord(deviceID: ids[2], state: .recovered, detail: "Restart verified: stable services for 120 seconds, no critical recurrence, final shutdown confirmed.", updatedAt: now)
+            ], backgroundIncidentCount: 65)
+        )
     }
 
     func testWaiterRowsIncreasePopoverHeight() async throws {

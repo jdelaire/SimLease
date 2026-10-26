@@ -6,18 +6,36 @@ import SimLeaseCore
 struct LeasePopoverPresentation: Equatable {
     let title: String
     let description: String
+    let symbolName: String
+    let color: Color
 
     init(state: MenuDisplayState) {
         switch state.kind {
         case .free:
-            title = "Simulator free"
-            description = "Ready for simulator work"
+            let blockedDevices = Set(state.crashBlocks.map { $0.deviceID.uppercased() }).count
+            if blockedDevices > 0 {
+                title = "Lane free"
+                description = blockedDevices == 1
+                    ? "1 simulator crash blocked. See alerts below."
+                    : "\(blockedDevices) simulators crash blocked. See alerts below."
+                symbolName = "exclamationmark.triangle.fill"
+                color = ProjectColors.warning
+            } else {
+                title = "Simulator free"
+                description = "Ready for simulator work"
+                symbolName = "checkmark"
+                color = ProjectColors.good
+            }
         case .leased:
             title = "Simulator busy"
             description = state.waiters.isEmpty ? "Nobody waiting" : "\(state.waiters.count) waiting"
+            symbolName = "hourglass"
+            color = .blue
         case .metadataError:
             title = state.laneBars.isEmpty ? "Status unavailable" : "Lanes need attention"
             description = state.laneBars.isEmpty ? state.error ?? "" : "\(state.running.count) running · \(state.waiters.count) waiting"
+            symbolName = "exclamationmark"
+            color = ProjectColors.critical
         }
     }
 }
@@ -89,10 +107,10 @@ struct LeasePopoverView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 ZStack {
-                    Circle().fill(statusColor.opacity(0.18))
-                    Image(systemName: statusSymbol)
+                    Circle().fill(presentation.color.opacity(0.18))
+                    Image(systemName: presentation.symbolName)
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(statusColor)
+                        .foregroundStyle(presentation.color)
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .frame(width: 28, height: 28)
@@ -195,22 +213,6 @@ struct LeasePopoverView: View {
             }
         }
         .font(.callout)
-    }
-
-    private var statusColor: Color {
-        switch viewModel.state.kind {
-        case .free: ProjectColors.good
-        case .leased: .blue
-        case .metadataError: ProjectColors.critical
-        }
-    }
-
-    private var statusSymbol: String {
-        switch viewModel.state.kind {
-        case .free: "checkmark"
-        case .leased: "hourglass"
-        case .metadataError: "exclamationmark"
-        }
     }
 
     static func minutes(_ seconds: Double) -> String {
