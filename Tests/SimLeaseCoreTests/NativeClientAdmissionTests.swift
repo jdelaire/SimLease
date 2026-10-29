@@ -47,4 +47,68 @@ final class NativeClientAdmissionTests: XCTestCase {
             XCTAssertThrowsError(try NativeClientAdmission.validate(invocation: ["xcrun", "simctl"] + arguments, deviceIDs: [device]))
         }
     }
+
+    func testLeadingSimulatorOptionsPreserveDeclaredTargetAdmission() throws {
+        let cases: [[String]] = [
+            ["launch", "--terminate-running-process", device, "com.example.app"],
+            ["launch", "-w", "--console-pty", device, "com.example.app"],
+            ["launch", "--wait-for-debugger", "--console", device, "com.example.app"],
+            ["launch", "--stdout", "/tmp/x", device, "com.example.app"],
+            ["launch", "--stderr", "/tmp/x", device, "com.example.app"],
+            ["launch", "--stdout=/tmp/x", "--stderr=/tmp/y", device, "com.example.app"],
+            ["launch", "-a", "arm64", "--checked-allocations", device, "com.example.app"],
+            ["launch", "--arch", "arm64", device, "com.example.app"],
+            ["launch", "--arch=arm64", device, "com.example.app"],
+            ["spawn", "-w", "-s", device, "/bin/echo"],
+            ["spawn", "--wait-for-debugger", "--standalone", device, "/bin/echo"],
+            ["spawn", "-a", "arm64", "--checked-allocations", device, "/bin/echo"],
+            ["spawn", "--arch", "arm64", device, "/bin/echo"],
+            ["spawn", "--arch=arm64", device, "/bin/echo"],
+            ["pbcopy", "-v", device],
+            ["pbpaste", "-v", device],
+        ]
+        for prefix in [["simctl"], ["xcrun", "simctl"], ["/usr/bin/xcrun", "--sdk", "iphonesimulator", "simctl"]] {
+            for arguments in cases {
+                let invocation = prefix + arguments
+                XCTAssertNoThrow(try NativeClientAdmission.validate(invocation: invocation, deviceIDs: [device]), invocation.joined(separator: " "))
+                XCTAssertEqual(SimulatorCommand.referencedDeviceIDs(in: invocation), [device], invocation.joined(separator: " "))
+            }
+        }
+    }
+
+    func testLeadingSimulatorOptionsCannotHideInvalidTargets() throws {
+        let other = "22222222-2222-4222-8222-222222222222"
+        let prefixes = [
+            ["launch", "--terminate-running-process"],
+            ["spawn", "-w", "--standalone"],
+            ["pbcopy", "-v"],
+            ["pbpaste", "-v"],
+        ]
+        var cases = [[String]]()
+        for prefix in prefixes {
+            for target in ["booted", "all", "Named iPhone", other] {
+                cases.append(prefix + [target, device])
+            }
+            cases.append(prefix)
+            cases.append([prefix[0], "--unknown-flag", device])
+        }
+        cases += [
+            ["launch", "--stdout", device, "com.example.app"],
+            ["launch", "--stderr", device, "com.example.app"],
+            ["launch", "--stdout"],
+            ["launch", "--stderr"],
+            ["launch", "--arch", device, "com.example.app"],
+            ["launch", "--console=anything", device, "com.example.app"],
+            ["spawn", "-a", device, "/bin/echo"],
+            ["spawn", "--arch", device, "/bin/echo"],
+            ["spawn", "-a"],
+            ["spawn", "--arch"],
+            ["spawn", "--console", device, "/bin/echo"],
+            ["pbcopy", "--stdout", "/tmp/x", device],
+            ["pbpaste", "--console", device],
+        ]
+        for arguments in cases {
+            XCTAssertThrowsError(try NativeClientAdmission.validate(invocation: ["xcrun", "simctl"] + arguments, deviceIDs: [device]), arguments.joined(separator: " "))
+        }
+    }
 }

@@ -58,9 +58,7 @@ public final class NativeClientAdmission {
             throw SimulatorTaskError.commandFailed("bound native clients support only explicit simulator commands; use a separate managed scope")
         }
         if let action = arguments.first, ["list", "help", "--help", "--version"].contains(action) { return }
-        let scoped = Set(["boot", "bootstatus", "shutdown", "io", "getenv", "get_app_container", "get_app_info", "listapps", "launch", "terminate", "spawn", "install", "uninstall", "ui", "status_bar", "keychain", "push", "privacy", "pbcopy", "pbpaste", "openurl", "addmedia"])
-        guard arguments.count >= 2, scoped.contains(arguments[0]),
-              let id = UUID(uuidString: arguments[1])?.uuidString, deviceIDs.contains(id) else {
+        guard let id = SimulatorCommand.simctlDeviceTarget(in: arguments), deviceIDs.contains(id) else {
             throw SimulatorTaskError.commandFailed("bound native command requires a declared UUID in its device target position")
         }
     }

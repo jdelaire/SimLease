@@ -1,6 +1,43 @@
 import Foundation
 
 public enum SimulatorCommand {
+    static let scopedSimctlActions: Set<String> = ["boot", "bootstatus", "shutdown", "io", "getenv", "get_app_container", "get_app_info", "listapps", "launch", "terminate", "spawn", "install", "uninstall", "ui", "status_bar", "keychain", "push", "privacy", "pbcopy", "pbpaste", "openurl", "addmedia"]
+
+    static func simctlDeviceTarget(in arguments: [String]) -> String? {
+        guard let action = arguments.first, scopedSimctlActions.contains(action) else { return nil }
+        let flags: Set<String>
+        let values: Set<String>
+        switch action {
+        case "launch":
+            flags = ["-w", "--wait-for-debugger", "--console", "--console-pty", "--terminate-running-process", "--checked-allocations"]
+            values = ["-a", "--arch", "--stdout", "--stderr"]
+        case "spawn":
+            flags = ["-w", "--wait-for-debugger", "-s", "--standalone", "--checked-allocations"]
+            values = ["-a", "--arch"]
+        case "pbcopy", "pbpaste":
+            flags = ["-v"]
+            values = []
+        default:
+            flags = []
+            values = []
+        }
+        var index = 1
+        while arguments.indices.contains(index), arguments[index].hasPrefix("-") {
+            let argument = arguments[index]
+            if flags.contains(argument) {
+                index += 1
+            } else if values.contains(argument) {
+                guard arguments.indices.contains(index + 1), !arguments[index + 1].isEmpty else { return nil }
+                index += 2
+            } else if argument.hasPrefix("--"), let separator = argument.firstIndex(of: "="),
+                      values.contains(String(argument[..<separator])), argument.index(after: separator) < argument.endIndex {
+                index += 1
+            } else { return nil }
+        }
+        guard arguments.indices.contains(index) else { return nil }
+        return UUID(uuidString: arguments[index])?.uuidString
+    }
+
     public static func workspaceKey(in invocation: [String], cwd: String) -> String {
         let arguments = Array(invocation.dropFirst())
         func value(_ name: String) -> String? {
@@ -47,6 +84,9 @@ public enum SimulatorCommand {
             return deviceIDs(in: invocation)
         }
         if name == "simctl" || (name == "xcrun" && ProtectedCommand.selectedXcrunTool(in: Array(invocation.dropFirst())) == "simctl") {
+            if let arguments = simctlArguments(invocation), let action = arguments.first, scopedSimctlActions.contains(action) {
+                return simctlDeviceTarget(in: arguments).map { [$0] } ?? []
+            }
             return Array(Set(invocation.dropFirst().compactMap { UUID(uuidString: $0)?.uuidString })).sorted()
         }
         guard name == "agent-device" else { return [] }

@@ -365,7 +365,12 @@ threads must acquire their own reservation before sending requests.
 SimLease captures each PID's kernel start time before waiting for the lane
 and rechecks it before readiness. Bound helpers may use inventory queries and
 supported `simctl` actions with the declared UUID in the actual target
-position. Runner `xcodebuild` calls require every destination to contain a
+position. Known leading options for `launch`, `spawn`, `pbcopy`, and `pbpaste`
+are accepted, including separate option values such as `launch --stdout /tmp/app.log UUID bundle`.
+Unknown options before the device are rejected. Device inference for shimmed
+and standalone jobs uses the same target position for supported actions, so
+UUIDs in option values or application arguments do not count as device targets.
+Runner `xcodebuild` calls require every destination to contain a
 declared simulator UUID. Named targets, `booted`, `all`, alternate device sets,
 host-wide actions and unresolved build destinations fail immediately. Use a separate managed
 scope for those operations. Absolute paths still require the native session;

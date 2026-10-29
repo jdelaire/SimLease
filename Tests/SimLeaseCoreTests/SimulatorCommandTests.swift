@@ -40,4 +40,35 @@ final class SimulatorCommandTests: XCTestCase {
             executable: "xcrun", arguments: ["swift", "test", "xcodebuild"], hasDevices: true
         ), ["swift", "test", "xcodebuild"])
     }
+
+    func testSimulatorReferencesOnlyUseTheActualDevicePosition() {
+        let device = "11111111-1111-4111-8111-111111111111"
+        let other = "22222222-2222-4222-8222-222222222222"
+        for arguments in [
+            ["launch", "--stdout", other, device, "com.example.app", other],
+            ["spawn", "--arch", other, device, "/bin/echo", other],
+            ["pbcopy", "-v", device, other],
+            ["pbpaste", "-v", device, other],
+            ["io", device, "screenshot", "--display", other, "/tmp/x"],
+        ] {
+            XCTAssertEqual(SimulatorCommand.referencedDeviceIDs(in: ["xcrun", "simctl"] + arguments), [device], arguments.joined(separator: " "))
+        }
+        for action in ["boot", "bootstatus", "shutdown", "io", "getenv", "get_app_container", "get_app_info", "listapps", "launch", "terminate", "spawn", "install", "uninstall", "ui", "status_bar", "keychain", "push", "privacy", "pbcopy", "pbpaste", "openurl", "addmedia"] {
+            for target in ["booted", "all", "Named iPhone", "--unknown-flag"] {
+                let arguments = ["simctl", action, target, device]
+                XCTAssertEqual(SimulatorCommand.referencedDeviceIDs(in: arguments), [], arguments.joined(separator: " "))
+            }
+            XCTAssertEqual(SimulatorCommand.referencedDeviceIDs(in: ["simctl", action]), [])
+        }
+        for arguments in [
+            ["launch", "--stdout", device, "com.example.app"],
+            ["launch", "--stderr", device, "com.example.app"],
+            ["launch", "--stdout", device],
+            ["spawn", "--arch", device, "/bin/echo"],
+            ["spawn", "-a", device],
+        ] {
+            XCTAssertEqual(SimulatorCommand.referencedDeviceIDs(in: ["simctl"] + arguments), [], arguments.joined(separator: " "))
+        }
+        XCTAssertEqual(SimulatorCommand.referencedDeviceIDs(in: ["simctl", "clone", device, other]), [device, other])
+    }
 }

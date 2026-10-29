@@ -70,6 +70,34 @@ final class NativeSessionTests: XCTestCase {
         XCTAssertEqual(try fixture.exit(keeper), 0)
     }
 
+    func testBoundNativeLaunchOptionsPreserveTargetValidationThroughShim() throws {
+        let fixture = try NativeFixture()
+        let (keeper, _, record) = try fixture.begin(clientPID: getpid())
+        let forwarded = fixture.root.appendingPathComponent("launch-arguments")
+        let other = "22222222-2222-4222-8222-222222222222"
+        for arguments in [
+            ["simctl", "launch", "--terminate-running-process", fixture.device, "com.example.app"],
+            ["simctl", "launch", "-w", "--console-pty", fixture.device, "com.example.app"],
+            ["simctl", "launch", "--stdout", "/tmp/x", fixture.device, "com.example.app"],
+            ["simctl", "launch", "--stdout", other, fixture.device, "com.example.app"],
+        ] {
+            XCTAssertEqual(try fixture.callShim(arguments), 0)
+            XCTAssertEqual(try String(contentsOf: forwarded, encoding: .utf8), arguments.joined(separator: "\n") + "\n")
+        }
+        try FileManager.default.removeItem(at: forwarded)
+        for arguments in [
+            ["simctl", "launch", "--terminate-running-process", "booted", "com.example.app"],
+            ["simctl", "launch", "--unknown-flag", fixture.device, "com.example.app"],
+            ["simctl", "launch", "--terminate-running-process", other, "com.example.app"],
+            ["simctl", "launch", "--stdout", fixture.device, "com.example.app"],
+        ] {
+            XCTAssertEqual(try fixture.callShim(arguments), 74)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: forwarded.path))
+        }
+        XCTAssertEqual(try fixture.call(["session", "finish", record.externalSessionID!, "--settled"]), 0)
+        XCTAssertEqual(try fixture.exit(keeper), 0)
+    }
+
     func testInteractiveSessionKeepsDeviceBootedAcrossCallsAndPreservesBorrowedDevice() throws {
         let fixture = try NativeFixture()
         try fixture.setState("Booted")
@@ -195,6 +223,7 @@ private final class NativeFixture {
         let script = """
         #!/bin/sh
         if [ "$2" = list ]; then /bin/cat "$NATIVE_INVENTORY"; exit 0; fi
+        if [ "$2" = launch ]; then /usr/bin/printf '%s\\n' "$@" > "$NATIVE_ROOT/launch-arguments"; fi
         if [ "$2" = boot ]; then
           /usr/bin/grep -q Booted "$NATIVE_INVENTORY" && exit 149
           /usr/bin/touch "$NATIVE_ROOT/native-started"
