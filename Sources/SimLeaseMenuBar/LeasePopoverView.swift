@@ -393,6 +393,11 @@ private struct SimulatorSection: View {
             Text(roleLine(device))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let resources = device.resources {
+                Label(resources, systemImage: "memorychip")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if device.runtimeStale {
                 Label("Runtime older than Xcode SDK", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)

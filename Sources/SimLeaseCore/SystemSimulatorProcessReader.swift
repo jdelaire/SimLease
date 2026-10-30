@@ -50,12 +50,12 @@ struct SystemSimulatorProcessReader: SimulatorProcessReading {
         } else {
             let failure = errno
             guard failure == ENOENT else { throw ChildProcessError.systemCall("proc_pidpath", failure) }
-            executable = try Self.parseArguments(try procargs(pid: reference.pid)).executable
+            executable = try Self.parseArguments(try Self.procargs(pid: reference.pid)).executable
         }
         let tool = URL(fileURLWithPath: executable).lastPathComponent
         return SimulatorProcessSnapshot(
             process: reference, parentPID: Int32(info.pbi_ppid), executable: executable,
-            arguments: Self.isCandidate(tool) ? try Self.parseArguments(try procargs(pid: reference.pid)).arguments : []
+            arguments: Self.isCandidate(tool) ? try Self.parseArguments(try Self.procargs(pid: reference.pid)).arguments : []
         )
     }
 
@@ -67,7 +67,7 @@ struct SystemSimulatorProcessReader: SimulatorProcessReading {
         ["simctl", "xcrun", "xcodebuild", "axe", "agent-device"].contains(name) || isNode(name)
     }
 
-    private func procargs(pid: Int32) throws -> [UInt8] {
+    static func procargs(pid: Int32) throws -> [UInt8] {
         var query = [CTL_KERN, KERN_PROCARGS2, pid]
         var buffer = [UInt8](repeating: 0, count: 262_144)
         var size = buffer.count

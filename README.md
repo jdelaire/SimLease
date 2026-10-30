@@ -225,6 +225,20 @@ reservation. The menu popover lists the same simulators with the lease owner,
 queued threads that declared the device, and unmanaged processes targeting it.
 The menu queries the simulator inventory only while the popover is open.
 
+For booted simulators, `--devices` also reports memory, CPU and process count.
+Memory is the summed `phys_footprint` of every process under the device's
+`launchd_sim`, the figure Activity Monitor shows. CPU is measured against the
+previous status sample when it is under 30 seconds old, otherwise over a
+500 ms window, and can exceed 100% on multicore Macs. The menu shows the same
+figures on each phone card. Values that cannot be read are left out rather
+than shown as zero. To see which processes use the most memory in one booted
+simulator:
+
+```sh
+simlease measure --device DEVICE-UUID
+simlease measure --device DEVICE-UUID --limit 30 --json
+```
+
 With `--devices`, status also compares each installed iOS simulator runtime
 with the selected Xcode's simulator SDK. A runtime with the same iOS version
 but an older build than the SDK is reported in `staleRuntimes`, flagged on its

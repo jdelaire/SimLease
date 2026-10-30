@@ -16,6 +16,9 @@ public struct SimulatorUsage: Codable, Equatable, Sendable, Identifiable {
     public let warmSince: Date?
     public let runtimeStale: Bool?
     public let lane: Int?
+    public var memoryBytes: UInt64?
+    public var processCount: Int?
+    public var cpuPercent: Double?
 
     public init(id: String, name: String, runtime: String, state: String, reservation: Reservation, warmSince: Date? = nil, runtimeStale: Bool? = nil, lane: Int? = nil) {
         self.lane = lane
@@ -26,6 +29,14 @@ public struct SimulatorUsage: Codable, Equatable, Sendable, Identifiable {
         self.runtime = runtime
         self.state = state
         self.reservation = reservation
+    }
+
+    public func withResources(_ usage: SimulatorResourceUsage?) -> SimulatorUsage {
+        var copy = self
+        copy.memoryBytes = usage?.memoryBytes
+        copy.processCount = usage?.processCount
+        copy.cpuPercent = usage?.cpuPercent
+        return copy
     }
 
     public static func build(inventory: [ManagedSimulatorDevice], task: SimulatorTaskRecord?, relevantIDs: Set<String> = [], warm: [String: Date] = [:], staleRuntimes: Set<String> = []) -> [SimulatorUsage] {

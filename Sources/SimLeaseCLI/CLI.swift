@@ -12,6 +12,7 @@ public struct CLIConfiguration: Sendable {
     public let updateRunner: (any UpdateRunning)?
     public let deviceManager: (any SimulatorDeviceManaging)?
     public let crashReportDirectory: URL?
+    public let resourceSampler: (any SimulatorResourceSampling)?
 
     public init(
         paths: LeasePaths,
@@ -21,8 +22,10 @@ public struct CLIConfiguration: Sendable {
         cleanupService: (any CleanupServicing)? = nil,
         updateRunner: (any UpdateRunning)? = nil,
         deviceManager: (any SimulatorDeviceManaging)? = nil,
-        crashReportDirectory: URL? = nil
+        crashReportDirectory: URL? = nil,
+        resourceSampler: (any SimulatorResourceSampling)? = nil
     ) {
+        self.resourceSampler = resourceSampler
         self.paths = paths
         self.timing = timing
         self.standardOutput = standardOutput
@@ -204,6 +207,8 @@ public enum SimLeaseCLI {
                 return try NativeSessionController.waitForAcknowledgment(paths: configuration.paths, id: id, environment: environment)
             case .status(let json, let audit, let devices):
                 return try runStatus(json: json, audit: audit, devices: devices, environment: environment, configuration: configuration)
+            case .measure(let id, let json, let limit):
+                return try runMeasure(deviceID: id, json: json, limit: limit, configuration: configuration)
             case .doctor(let json):
                 return try CoverageDoctor.run(json: json, environment: environment, configuration: configuration)
             case .name(let title):
@@ -247,7 +252,7 @@ public enum SimLeaseCLI {
             }
         } catch CommandParserError.usage {
             configuration.standardError(
-                "Usage: simlease <run|session|device|recover|doctor|status|history|config|name|hold|clean|update|--version>\n"
+                "Usage: simlease <run|session|device|recover|doctor|status|measure|history|config|name|hold|clean|update|--version>\n"
             )
             return 64
         } catch UpdateRunnerError.missingUpdater {
@@ -490,6 +495,10 @@ public enum SimLeaseCLI {
                 SimulatorUsage.build(inventory: $0, tasks: tasks, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:], staleRuntimes: Set((stale ?? []).map(\.identifier)))
             }
         }
+        if let current = usage, current.contains(where: { $0.state == "Booted" }) {
+            let measured = measureResources(configuration: configuration)
+            usage = current.map { $0.state == "Booted" ? $0.withResources(measured[$0.id]) : $0 }
+        }
         let laneLimit = LaneConfig.read(configuration.paths).maxLanes
         let gateStatus = HeadroomGate(paths: configuration.paths).check()
         let busy = (status.lanes ?? []).contains(where: \.exclusive) ? laneLimit : (status.lanes ?? []).count
@@ -512,13 +521,84 @@ public enum SimLeaseCLI {
             configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
         } else {
             configuration.standardOutput("\(status.state.rawValue)\n")
-            for device in usage ?? [] { configuration.standardOutput("\(device.reservation.rawValue): \(device.name) \(device.id) \(device.state)\n") }
+            for device in usage ?? [] { configuration.standardOutput("\(device.reservation.rawValue): \(device.name) \(device.id) \(device.state)\(resourceText(device))\n") }
             for runtime in stale ?? [] { configuration.standardOutput("Stale runtime: iOS \(runtime.version) \(runtime.build) is older than the Xcode SDK \(runtime.sdkBuild)\n") }
             for block in blocks { configuration.standardOutput("Crash blocked: \(block.processName) on \(block.deviceID)\n") }
             if let activity = status.activity {
                 for item in activity.activities { configuration.standardOutput("\(item.kind.rawValue): \(item.tool) PID \(item.process.pid)\n") }
                 if activity.isIncomplete { configuration.standardOutput("Activity audit incomplete\n") }
             }
+        }
+        return 0
+    }
+
+    private static func resourceSnapshots(configuration: CLIConfiguration) throws -> (SimulatorResourceSnapshot, SimulatorResourceSnapshot) {
+        let sampler = configuration.resourceSampler ?? SystemSimulatorResourceSampler()
+        let cache = SimulatorResourceCache(paths: configuration.paths)
+        var latest = try sampler.snapshot()
+        var earlier = cache.read()
+        let age = earlier.map { Double(latest.takenAtNanoseconds) - Double($0.takenAtNanoseconds) } ?? -1
+        if !(200_000_000...30_000_000_000).contains(age) {
+            earlier = latest
+            usleep(500_000)
+            latest = try sampler.snapshot()
+        }
+        cache.write(latest)
+        return (earlier ?? latest, latest)
+    }
+
+    private static func measureResources(configuration: CLIConfiguration) -> [String: SimulatorResourceUsage] {
+        guard let (first, second) = try? resourceSnapshots(configuration: configuration) else { return [:] }
+        return SimulatorResources.measure(first, second)
+    }
+
+    private static func resourceText(_ device: SimulatorUsage) -> String {
+        guard let bytes = device.memoryBytes else { return "" }
+        var parts = [ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)]
+        if let cpu = device.cpuPercent { parts.append("\(Int(cpu.rounded()))% CPU") }
+        if let count = device.processCount { parts.append("\(count) processes") }
+        return ", " + parts.joined(separator: ", ")
+    }
+
+    private struct MeasureOutput: Encodable {
+        struct Process: Encodable {
+            let pid: Int32
+            let name: String
+            let memoryBytes: UInt64
+            let cpuPercent: Double?
+        }
+        let deviceID: String
+        let usage: SimulatorResourceUsage
+        let processes: [Process]
+    }
+
+    private static func runMeasure(deviceID: String, json: Bool, limit: Int, configuration: CLIConfiguration) throws -> Int32 {
+        let (first, second) = try resourceSnapshots(configuration: configuration)
+        guard second.roots[deviceID] != nil else {
+            configuration.standardError("SimLease: simulator \(deviceID) is not booted\n")
+            return 74
+        }
+        guard let usage = SimulatorResources.measure(first, second)[deviceID] else {
+            configuration.standardError("SimLease: resource usage for \(deviceID) is unavailable\n")
+            return 74
+        }
+        let elapsed = Double(second.takenAtNanoseconds) - Double(first.takenAtNanoseconds)
+        let processes = SimulatorResources.processes(deviceID: deviceID, in: second).prefix(limit).map { process in
+            let earlier = first.processes[process.pid].flatMap { $0.startMicroseconds == process.startMicroseconds && $0.cpuNanoseconds <= process.cpuNanoseconds ? $0 : nil }
+            let cpu = elapsed > 0 ? earlier.map { Double(process.cpuNanoseconds - $0.cpuNanoseconds) / elapsed * 100 } : nil
+            return MeasureOutput.Process(pid: process.pid, name: process.name, memoryBytes: process.footprintBytes, cpuPercent: cpu)
+        }
+        if json {
+            let data = try JSONEncoder.simLease.encode(MeasureOutput(deviceID: deviceID, usage: usage, processes: processes))
+            configuration.standardOutput(String(decoding: data, as: UTF8.self) + "\n")
+            return 0
+        }
+        let memory = { (bytes: UInt64) in ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory) }
+        let cpuText = usage.cpuPercent.map { ", \(Int($0.rounded()))% CPU" } ?? ""
+        configuration.standardOutput("\(deviceID): \(memory(usage.memoryBytes))\(cpuText), \(usage.processCount) processes\n")
+        configuration.standardOutput("PID\tMEMORY\tCPU%\tNAME\n")
+        for process in processes {
+            configuration.standardOutput("\(process.pid)\t\(memory(process.memoryBytes))\t\(process.cpuPercent.map { String(format: "%.1f", $0) } ?? "-")\t\(process.name)\n")
         }
         return 0
     }

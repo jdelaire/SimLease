@@ -29,6 +29,15 @@ final class CommandParserTests: XCTestCase {
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "session", "finish", id]))
     }
 
+    func testMeasureRequiresDeviceAndPositiveLimit() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        XCTAssertEqual(try CommandParser.parse(["simlease", "measure", "--device", id]), .measure(deviceID: id, json: false, limit: 15))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "measure", "--limit", "5", "--json", "--device", id]), .measure(deviceID: id, json: true, limit: 5))
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "measure", "--device", id, "--limit", "0"]))
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "measure", "--json"]))
+        XCTAssertThrowsError(try CommandParser.parse(["simlease", "measure", "--device", "booted"]))
+    }
+
     func testStatusAuditIsExplicitAndFlagsCanAppearInEitherOrder() throws {
         XCTAssertEqual(try CommandParser.parse(["simlease", "status", "--audit", "--json"]), .status(json: true, audit: true))
         XCTAssertEqual(try CommandParser.parse(["simlease", "status", "--json", "--audit"]), .status(json: true, audit: true))

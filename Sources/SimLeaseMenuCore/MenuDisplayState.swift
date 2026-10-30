@@ -69,8 +69,10 @@ public struct DeviceDisplayItem: Equatable, Sendable, Identifiable {
     public let lane: Int?
     public let ownerProject: String?
     public let ownerTitle: String?
+    public let resources: String?
 
-    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "", runtimeStale: Bool = false, lane: Int? = nil, ownerProject: String? = nil, ownerTitle: String? = nil) {
+    public init(id: String, name: String, detail: String, reservation: SimulatorUsage.Reservation, user: String, waiting: [String], unmanaged: [String], crashBlocked: Bool, canShutDown: Bool = false, runtime: String = "", state: String = "", runtimeStale: Bool = false, lane: Int? = nil, ownerProject: String? = nil, ownerTitle: String? = nil, resources: String? = nil) {
+        self.resources = resources
         self.ownerTitle = ownerTitle
         self.lane = lane
         self.ownerProject = ownerProject
@@ -430,9 +432,16 @@ public struct MenuDisplayState: Equatable, Sendable {
                 canShutDown: status.state != .metadataError && [.unreserved, .warm].contains(device.reservation) && device.state == "Booted" && waiting.isEmpty && !targeted,
                 runtime: device.runtime, state: device.state, runtimeStale: device.runtimeStale == true, lane: (status.laneLimit ?? 1) > 1 ? device.lane : nil,
                 ownerProject: owner?.project,
-                ownerTitle: owner.flatMap { displayTitle($0.threadTitle, project: $0.project) }
+                ownerTitle: owner.flatMap { displayTitle($0.threadTitle, project: $0.project) },
+                resources: resources(device)
             )
         }
+    }
+
+    static func resources(_ device: SimulatorUsage) -> String? {
+        guard device.state == "Booted", let bytes = device.memoryBytes else { return nil }
+        let memory = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
+        return device.cpuPercent.map { "\(memory) · \(Int($0.rounded()))% CPU" } ?? memory
     }
 
     private init(leaseStatus status: LeaseStatus, now: Date) {

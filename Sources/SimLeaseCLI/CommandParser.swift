@@ -19,6 +19,7 @@ enum ParsedCommand: Equatable {
     case nativeWait(String)
     case doctor(json: Bool)
     case status(json: Bool, audit: Bool = false, devices: Bool = false)
+    case measure(deviceID: String, json: Bool, limit: Int)
     case name(String)
     case hold(title: String, project: String, deviceIDs: [String] = [], keepRunning: Bool = false)
     case cleanPlan(json: Bool)
@@ -153,6 +154,31 @@ enum CommandParser {
                 throw CommandParserError.usage
             }
             return .status(json: flags.contains("--json"), audit: flags.contains("--audit"), devices: flags.contains("--devices"))
+        case "measure":
+            var id: String?
+            var json = false
+            var limit: Int?
+            var index = 2
+            while index < arguments.count {
+                switch arguments[index] {
+                case "--json":
+                    guard !json else { throw CommandParserError.usage }
+                    json = true
+                    index += 1
+                case "--device":
+                    guard id == nil, arguments.indices.contains(index + 1), let value = UUID(uuidString: arguments[index + 1]) else { throw CommandParserError.usage }
+                    id = value.uuidString
+                    index += 2
+                case "--limit":
+                    guard limit == nil, arguments.indices.contains(index + 1), let value = Int(arguments[index + 1]), value > 0 else { throw CommandParserError.usage }
+                    limit = value
+                    index += 2
+                default:
+                    throw CommandParserError.usage
+                }
+            }
+            guard let id else { throw CommandParserError.usage }
+            return .measure(deviceID: id, json: json, limit: limit ?? 15)
         case "doctor":
             guard arguments.count <= 3,
                   arguments.count == 2 || arguments[2] == "--json"

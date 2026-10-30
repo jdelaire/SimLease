@@ -3,6 +3,19 @@ import XCTest
 @testable import SimLeaseMenuCore
 
 final class MenuDisplayStateTests: XCTestCase {
+    func testDeviceResourcesShowOnlyForBootedMeasuredDevices() {
+        var booted = SimulatorUsage(id: "A", name: "iPhone", runtime: "iOS 27.2", state: "Booted", reservation: .unreserved)
+        booted.memoryBytes = 1_288_490_189
+        booted.cpuPercent = 34.4
+        let memory = ByteCountFormatter.string(fromByteCount: 1_288_490_189, countStyle: .memory)
+        XCTAssertEqual(MenuDisplayState.resources(booted), "\(memory) · 34% CPU")
+        booted.cpuPercent = nil
+        XCTAssertEqual(MenuDisplayState.resources(booted), memory)
+        var off = SimulatorUsage(id: "B", name: "iPhone", runtime: "iOS 27.2", state: "Shutdown", reservation: .unreserved)
+        off.memoryBytes = 5
+        XCTAssertNil(MenuDisplayState.resources(off))
+    }
+
     func testAutomaticInfrastructureProgressReplacesManualCardsWithoutHidingAppFailures() {
         let now = Date()
         let critical = CrashLoopTrigger(deviceID: "device", scopeID: "unowned-system-service", processName: "PosterBoard", signature: "poster", occurredAt: now)
