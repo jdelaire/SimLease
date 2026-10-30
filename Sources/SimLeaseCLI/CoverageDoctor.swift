@@ -46,7 +46,7 @@ enum CoverageDoctor {
                 let automatic = (health.infrastructureBlocks ?? []).contains(block)
                 configuration.standardOutput("Crash blocked: \(block.processName), device \(block.deviceID); \(automatic ? "automatic recovery queued" : "app failure requires a code fix")\n")
             }
-            for check in slimChecks where check.state != .ok {
+            for check in slimChecks where ![.ok, .notBooted].contains(check.state) {
                 var line = "Slim profile \(check.state.rawValue): \(check.deviceID)"
                 if !check.reenabled.isEmpty { line += "; re-enabled \(check.reenabled.joined(separator: ", "))" }
                 if !check.extraDisabled.isEmpty { line += "; also disabled \(check.extraDisabled.joined(separator: ", "))" }
