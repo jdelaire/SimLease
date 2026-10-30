@@ -4,11 +4,13 @@ public enum CleanupTargetKind: String, Codable, Equatable, Sendable {
     case device
     case runtime
     case filesystem
+    case deviceData
 }
 
 public enum CleanupCategory: String, Codable, Equatable, Sendable {
     case simulatorDevice
     case simulatorRuntime
+    case simulatorDeviceData
     case temporaryDerivedData
     case previews
     case derivedData
@@ -30,6 +32,7 @@ public enum CleanupAction: String, Codable, Equatable, Sendable {
 
 public enum CleanupFingerprint: Codable, Equatable, Sendable {
     case filesystem(path: String, sizeBytes: Int64, modifiedAt: Date)
+    case deviceData(path: String, digest: String)
 }
 
 public struct CleanupTarget: Codable, Equatable, Sendable {
@@ -71,6 +74,7 @@ public struct CleanupTarget: Codable, Equatable, Sendable {
             case .device: .simulatorDevice
             case .runtime: .simulatorRuntime
             case .filesystem: .derivedData
+            case .deviceData: .simulatorDeviceData
             }
         }()
         self.riskTier = riskTier

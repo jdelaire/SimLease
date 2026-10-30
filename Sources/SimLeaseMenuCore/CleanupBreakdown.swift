@@ -13,7 +13,7 @@ public enum CleanupGroup: Int, CaseIterable, Sendable, Identifiable {
 
     public init(_ category: CleanupCategory) {
         switch category {
-        case .simulatorDevice, .simulatorRuntime: self = .simulators
+        case .simulatorDevice, .simulatorRuntime, .simulatorDeviceData: self = .simulators
         case .derivedData, .temporaryDerivedData, .swiftBuild: self = .buildCaches
         case .previews: self = .previews
         case .resultBundle: self = .results

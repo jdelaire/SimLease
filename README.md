@@ -708,6 +708,17 @@ Rebuildable cache thresholds are:
 - Xcode previews: 7 days;
 - standard DerivedData and project `.build`: 14 days.
 
+Each shut-down simulator with at least 10 MB of caches, logs and temporary
+files also appears as a rebuildable `device-data:UUID` target. It covers every
+`Caches` and `tmp` directory in the device's data folder plus `Library/Logs`,
+`var/log`, `var/db/diagnostics` and `var/db/uuidtext`. App bundles,
+`Documents`, `Mobile Documents`, `Media` and `MobileAsset` are never searched.
+Applying it empties those directories but keeps them, removes symlinks without
+following them, and refuses a directory reached through a symlink. It takes
+the simulator lease, and is skipped if the device booted or its files changed
+since review. Apps rebuild caches on demand; old simulator logs are gone for
+good. SimLease reads crash reports from the Mac, not from these logs.
+
 Result bundles older than 30 days, Archives older than 90 days, and every
 Device Support folder appear as guarded storage. They are never preselected
 and move to Trash instead of being permanently deleted. SimLease never empties

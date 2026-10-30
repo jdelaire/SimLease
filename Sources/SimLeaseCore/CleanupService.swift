@@ -66,7 +66,7 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
                 throw CleanupServiceError.inventory(error)
             }
         } else {
-            deferred = [.simulatorDevice, .simulatorRuntime]
+            deferred = [.simulatorDevice, .simulatorRuntime, .simulatorDeviceData]
         }
 
         while true {
@@ -117,7 +117,7 @@ public final class CleanupService: CleanupServicing, @unchecked Sendable {
         var selection = selectedTargetIDs
             ?? Set(plan.targets.map(\.identifier))
         let simulatorIDs = Set(
-            (plan.devices + plan.runtimes).map(\.identifier)
+            (plan.devices + plan.runtimes + plan.storage.filter { $0.kind == .deviceData }).map(\.identifier)
         ).intersection(selection)
         var deferredItems = [CleanupItemResult]()
         var handle: LeaseHandle?

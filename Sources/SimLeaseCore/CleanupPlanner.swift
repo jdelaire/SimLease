@@ -1,15 +1,19 @@
 import Foundation
+import Synchronization
 
 public struct CleanupPlanner: Sendable {
     public let devicesRoot: URL
     public let staleAge: TimeInterval
     public let planLifetime: TimeInterval
+    public let minimumDeviceDataBytes: Int64
 
     public init(
         devicesRoot: URL,
         staleAge: TimeInterval = 30 * 24 * 60 * 60,
-        planLifetime: TimeInterval = 10 * 60
+        planLifetime: TimeInterval = 10 * 60,
+        minimumDeviceDataBytes: Int64 = 10 << 20
     ) {
+        self.minimumDeviceDataBytes = minimumDeviceDataBytes
         self.devicesRoot = devicesRoot.standardizedFileURL
         self.staleAge = staleAge
         self.planLifetime = planLifetime
@@ -125,7 +129,8 @@ public struct CleanupPlanner: Sendable {
         let devices = simulatorReview?.plan?.devices ?? []
         let runtimes = simulatorReview?.plan?.runtimes ?? []
         let protected = (simulatorReview?.protected ?? []) + storage.protected
-        let targets = devices + runtimes + storage.targets
+        let deviceData = inventory.map(deviceDataTargets) ?? []
+        let targets = devices + runtimes + deviceData + storage.targets
         let estimatedBytes = targets.reduce(Int64(0)) {
             $0 + ($1.sizeBytes ?? 0)
         }
@@ -145,7 +150,7 @@ public struct CleanupPlanner: Sendable {
             expiresAt: now.addingTimeInterval(planLifetime),
             devices: devices,
             runtimes: runtimes,
-            storage: storage.targets,
+            storage: deviceData + storage.targets,
             protected: protected,
             deferred: deferred,
             estimatedBytes: estimatedBytes,
@@ -157,6 +162,27 @@ public struct CleanupPlanner: Sendable {
             deferred: deferred,
             estimatedBytes: estimatedBytes
         )
+    }
+
+    public func deviceDataTargets(_ inventory: CleanupInventory) -> [CleanupTarget] {
+        guard !inventory.hasActiveXcodeTests else { return [] }
+        let records = inventory.devices.filter { $0.state == "Shutdown" && validDataPath($0.dataPath, identifier: $0.identifier) }
+        let found = Mutex([CleanupTarget]())
+        DispatchQueue.concurrentPerform(iterations: records.count) { index in
+            let record = records[index]
+            guard let path = record.dataPath else { return }
+            let data = URL(fileURLWithPath: path)
+            guard let targets = try? DeviceDataInventory.targets(dataPath: data), !targets.isEmpty,
+                  let measured = try? DeviceDataInventory.measure(targets, dataPath: data), measured.sizeBytes >= minimumDeviceDataBytes else { return }
+            let target = CleanupTarget(
+                kind: .deviceData, identifier: "device-data:\(record.identifier)", name: "\(record.name) caches & logs",
+                detail: "Caches, logs and temporary files", category: .simulatorDeviceData, path: path,
+                runtimeIdentifier: record.runtimeIdentifier, lastUsedAt: record.lastUsedAt, sizeBytes: measured.sizeBytes,
+                fingerprint: .deviceData(path: path, digest: measured.digest)
+            )
+            found.withLock { $0.append(target) }
+        }
+        return found.withLock { $0 }.sorted { ($1.sizeBytes ?? 0, $0.identifier) < ($0.sizeBytes ?? 0, $1.identifier) }
     }
 
     private func deviceProtection(

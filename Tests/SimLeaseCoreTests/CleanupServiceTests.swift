@@ -20,10 +20,24 @@ final class CleanupServiceTests: XCTestCase {
         XCTAssertEqual(review.plan?.storage.map(\.identifier), ["storage"])
         XCTAssertEqual(
             review.deferred,
-            [.simulatorDevice, .simulatorRuntime]
+            [.simulatorDevice, .simulatorRuntime, .simulatorDeviceData]
         )
         XCTAssertEqual(fixture.provider.inventoryCallCount, 0)
         XCTAssertEqual(fixture.storageProvider.inventoryCallCount, 1)
+    }
+
+    func testDeviceDataSelectionWaitsForBusyLease() throws {
+        let fixture = try ServiceFixture(now: now)
+        defer { fixture.stopHolder() }
+        let target = CleanupTarget(kind: .deviceData, identifier: "device-data:DEVICE-1", name: "Device caches & logs", category: .simulatorDeviceData, path: "/Devices/DEVICE-1/data", runtimeIdentifier: "runtime.current", lastUsedAt: nil, sizeBytes: 100, fingerprint: .deviceData(path: "/Devices/DEVICE-1/data", digest: "d"))
+        try fixture.store.save(CleanupPlan(id: "ABC123", createdAt: now, expiresAt: now.addingTimeInterval(600), devices: [], runtimes: [], storage: [target], protected: [], estimatedBytes: 100, availableBytesBefore: nil))
+        try fixture.startHolder()
+        try fixture.metadata.writeOwner(fixture.owner)
+
+        let result = try fixture.service().apply(planID: "ABC123", selectedTargetIDs: [target.identifier])
+
+        XCTAssertEqual(result.items.map(\.message), ["Simulator lease is in use"])
+        XCTAssertEqual(fixture.provider.inventoryCallCount, 0)
     }
 
     func testEmptyReviewIsReturnedWithoutSaving() throws {

@@ -38,7 +38,10 @@ public final class CleanupExecutor: @unchecked Sendable {
             selectedTargetIDs.contains($0.identifier)
         }
         let selectedStorage = plan.storage.filter {
-            selectedTargetIDs.contains($0.identifier)
+            selectedTargetIDs.contains($0.identifier) && $0.kind != .deviceData
+        }
+        let selectedDeviceData = plan.storage.filter {
+            selectedTargetIDs.contains($0.identifier) && $0.kind == .deviceData
         }
         let simulatorPlan = CleanupPlan(
             id: plan.id,
@@ -64,6 +67,7 @@ public final class CleanupExecutor: @unchecked Sendable {
         }
 
         var items = simulatorResult?.items ?? []
+        items.append(contentsOf: applyDeviceData(selectedDeviceData))
         items.append(
             contentsOf: applyStorage(
                 selectedStorage,
@@ -71,7 +75,7 @@ public final class CleanupExecutor: @unchecked Sendable {
             )
         )
         let estimatedBytes = (
-            selectedDevices + selectedRuntimes + selectedStorage
+            selectedDevices + selectedRuntimes + selectedDeviceData + selectedStorage
         ).reduce(Int64(0)) {
             $0 + ($1.sizeBytes ?? 0)
         }
@@ -239,6 +243,32 @@ public final class CleanupExecutor: @unchecked Sendable {
         }
     }
 
+    private func applyDeviceData(_ targets: [CleanupTarget]) -> [CleanupItemResult] {
+        guard !targets.isEmpty else { return [] }
+        let current: CleanupInventory
+        do { current = try provider.inventory() } catch {
+            return targets.map { skipped($0, "Inventory revalidation failed: \(error)") }
+        }
+        return targets.map { target in
+            guard !current.hasActiveXcodeTests else { return skipped(target, "An Xcode test action is active") }
+            guard let path = target.path,
+                  let record = current.devices.first(where: { "device-data:\($0.identifier)" == target.identifier }),
+                  record.state == "Shutdown", record.dataPath == path
+            else { return skipped(target, "Device is no longer eligible") }
+            do {
+                let data = URL(fileURLWithPath: path)
+                let targets = try DeviceDataInventory.targets(dataPath: data)
+                guard target.fingerprint == .deviceData(path: path, digest: try DeviceDataInventory.measure(targets, dataPath: data).digest) else {
+                    return skipped(target, "Target changed since review")
+                }
+                try DeviceDataInventory.clear(targets, within: data)
+                return deleted(target)
+            } catch {
+                return failed(target, error)
+            }
+        }
+    }
+
     private func eligibility(
         of target: CleanupTarget,
         in inventory: CleanupInventory,
@@ -258,7 +288,7 @@ public final class CleanupExecutor: @unchecked Sendable {
             return review.plan?.runtimes.contains {
                 $0.kind == target.kind && $0.identifier == target.identifier
             } == true
-        case .filesystem:
+        case .filesystem, .deviceData:
             return false
         }
     }

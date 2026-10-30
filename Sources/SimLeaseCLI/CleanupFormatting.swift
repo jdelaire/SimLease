@@ -88,6 +88,7 @@ enum CleanupFormatting {
         switch category {
         case .simulatorDevice: "Simulator Devices"
         case .simulatorRuntime: "Simulator Runtimes"
+        case .simulatorDeviceData: "Simulator Caches & Logs"
         case .temporaryDerivedData: "Temporary DerivedData"
         case .previews: "Xcode Previews"
         case .derivedData: "DerivedData"

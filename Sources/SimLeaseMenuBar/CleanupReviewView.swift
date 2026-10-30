@@ -415,6 +415,7 @@ struct CleanupReviewView: View {
         switch category {
         case .simulatorDevice: "Simulator devices"
         case .simulatorRuntime: "Simulator runtimes"
+        case .simulatorDeviceData: "Simulator caches & logs"
         case .temporaryDerivedData: "Temporary DerivedData"
         case .previews: "Xcode previews"
         case .derivedData: "DerivedData"
@@ -572,6 +573,7 @@ struct TargetRow: View {
         switch target.kind {
         case .device: "iphone"
         case .runtime: "cube"
+        case .deviceData: "internaldrive"
         case .filesystem: CleanupGroup(target.category) == .archives ? "archivebox" : "folder"
         }
     }
