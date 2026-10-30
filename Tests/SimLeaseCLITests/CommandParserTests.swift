@@ -29,6 +29,21 @@ final class CommandParserTests: XCTestCase {
         XCTAssertThrowsError(try CommandParser.parse(["simlease", "session", "finish", id]))
     }
 
+    func testSlimCommandsRequireDeviceAndValidKeepList() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "slim", "--list"]), .deviceSlimList(json: false))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "slim", "--list", "--json"]), .deviceSlimList(json: true))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "slim", "--device", id.lowercased(), "--keep", "widgets,health", "--settled"]), .deviceSlim(id: id, keep: ["widgets", "health"], settled: true))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "slim", "--device", id, "--json"]), .deviceSlim(id: id, keep: [], settled: false))
+        XCTAssertEqual(try CommandParser.parse(["simlease", "device", "unslim", "--device", id]), .deviceUnslim(id: id, settled: false))
+        for invalid in [
+            ["slim", "--keep", "widgets"], ["slim", "--list", "--device", id], ["slim", "--device", id, "--keep", "widgets,"],
+            ["slim", "--device", id, "--keep", "a,a"], ["unslim", "--device", id, "--keep", "widgets"], ["unslim", "--list"], ["slim", "--device", "booted"],
+        ] {
+            XCTAssertThrowsError(try CommandParser.parse(["simlease", "device"] + invalid), invalid.joined(separator: " "))
+        }
+    }
+
     func testMeasureRequiresDeviceAndPositiveLimit() throws {
         let id = "11111111-1111-4111-8111-111111111111"
         XCTAssertEqual(try CommandParser.parse(["simlease", "measure", "--device", id]), .measure(deviceID: id, json: false, limit: 15))

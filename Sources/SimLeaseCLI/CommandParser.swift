@@ -12,6 +12,9 @@ enum ParsedCommand: Equatable {
     case deviceMaintain
     case deviceReap
     case deviceAcknowledge(String)
+    case deviceSlimList(json: Bool)
+    case deviceSlim(id: String, keep: [String], settled: Bool)
+    case deviceUnslim(id: String, settled: Bool)
     case config(maxLanes: Int?)
     case history(hours: Int)
     case sessionBegin(title: String, project: String, deviceIDs: [String], clientPIDs: [Int32] = [])
@@ -294,6 +297,40 @@ enum CommandParser {
         if action == "reap" {
             guard arguments.count == 1 else { throw CommandParserError.usage }
             return .deviceReap
+        }
+        if action == "slim" || action == "unslim" {
+            var id: String?
+            var keep: [String]?
+            var flags = Set<String>()
+            var index = 1
+            while index < arguments.count {
+                let key = arguments[index]
+                if ["--list", "--settled", "--json"].contains(key) {
+                    guard flags.insert(key).inserted else { throw CommandParserError.usage }
+                    index += 1
+                    continue
+                }
+                guard arguments.indices.contains(index + 1) else { throw CommandParserError.usage }
+                let value = arguments[index + 1]
+                switch key {
+                case "--device":
+                    guard id == nil, let uuid = UUID(uuidString: value) else { throw CommandParserError.usage }
+                    id = uuid.uuidString
+                case "--keep" where action == "slim":
+                    let items = value.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+                    guard keep == nil, !items.contains(where: \.isEmpty), Set(items).count == items.count else { throw CommandParserError.usage }
+                    keep = items
+                default:
+                    throw CommandParserError.usage
+                }
+                index += 2
+            }
+            if flags.contains("--list") {
+                guard action == "slim", id == nil, keep == nil, !flags.contains("--settled") else { throw CommandParserError.usage }
+                return .deviceSlimList(json: flags.contains("--json"))
+            }
+            guard let id else { throw CommandParserError.usage }
+            return action == "slim" ? .deviceSlim(id: id, keep: keep ?? [], settled: flags.contains("--settled")) : .deviceUnslim(id: id, settled: flags.contains("--settled"))
         }
         if action == "shutdown" {
             var ids = [String]()

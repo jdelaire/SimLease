@@ -398,6 +398,11 @@ private struct SimulatorSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let slim = device.slim {
+                Label(slim, systemImage: device.slim == "Slim profile" ? "leaf" : "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(device.slim == "Slim profile" ? Color.secondary : Color.orange)
+            }
             if device.runtimeStale {
                 Label("Runtime older than Xcode SDK", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)

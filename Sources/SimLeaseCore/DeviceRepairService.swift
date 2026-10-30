@@ -62,6 +62,7 @@ struct DeviceRepairTransaction: Codable {
     var originalBootAttempts = 0
     var originalBootFailures = 0
     var originalBootHealthy = false
+    var purpose: String? = nil
 }
 
 public struct DeviceRepairService: Sendable {
@@ -104,6 +105,9 @@ public struct DeviceRepairService: Sendable {
         var registry = try readRegistry()
         var transaction: DeviceRepairTransaction
         if var pending = try RecoveryFile.read(DeviceRepairTransaction.self, at: paths.deviceRecovery) {
+            guard pending.purpose != SimulatorSlimService.purpose else {
+                throw DeviceManagementError.failed("a slim profile change is pending; rerun simlease device slim or unslim with --settled")
+            }
             guard pending.original?.id == deviceID else {
                 throw DeviceManagementError.failed("another recovery is pending; use simlease device recover --settled for interrupted device creation")
             }

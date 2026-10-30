@@ -24,8 +24,9 @@ enum CoverageDoctor {
             finish: ["simlease", "session", "finish", "SESSION-ID", "--settled"],
             client: "Wait for ready JSON, call device_open, then use its absolute agent-device launcher with every returned device/config/session flag. Bare PATH commands outside the owner still queue; do not nest another simlease run."
         )
+        let slimChecks = slimProfileChecks(environment: environment, configuration: configuration)
         let processes = activity.activities.filter { $0.kind == .unmanaged }.map { ToolProcess(pid: $0.process.pid, executable: $0.tool) }
-        let report = Report(commands: commands, unmanagedProcesses: processes, activity: activity, crashBlocks: blocks, simulatorHealth: health, nativeSessionRecipe: recipe, limitations: [
+        let report = Report(commands: commands, unmanagedProcesses: processes, activity: activity, crashBlocks: blocks, simulatorHealth: health, slimProfiles: slimChecks.isEmpty ? nil : slimChecks, nativeSessionRecipe: recipe, limitations: [
             "Absolute executable paths require simlease run; GUI/MCP work requires an explicit native session.",
             "The process audit detects known running tool binaries; it cannot prove that every launch path is coordinated.",
             "Native sessions require explicit external settlement; client exit alone cannot prove daemon work has finished.",
@@ -45,6 +46,13 @@ enum CoverageDoctor {
                 let automatic = (health.infrastructureBlocks ?? []).contains(block)
                 configuration.standardOutput("Crash blocked: \(block.processName), device \(block.deviceID); \(automatic ? "automatic recovery queued" : "app failure requires a code fix")\n")
             }
+            for check in slimChecks where check.state != .ok {
+                var line = "Slim profile \(check.state.rawValue): \(check.deviceID)"
+                if !check.reenabled.isEmpty { line += "; re-enabled \(check.reenabled.joined(separator: ", "))" }
+                if !check.extraDisabled.isEmpty { line += "; also disabled \(check.extraDisabled.joined(separator: ", "))" }
+                if [.drift, .incomplete].contains(check.state) { line += "; rerun simlease device slim with the recorded --keep list, or unslim" }
+                configuration.standardOutput(line + "\n")
+            }
             for recovery in health.recoveries { configuration.standardOutput("Recovery \(recovery.state.rawValue): \(recovery.deviceID), \(recovery.detail)\n") }
             for client in clients {
                 configuration.standardOutput("Known GUI/MCP client: \(client.role.rawValue) PID \(client.process.pid), start \(client.process.startMicroseconds) [\(client.bound ? "bound" : "unbound")]\n")
@@ -57,6 +65,20 @@ enum CoverageDoctor {
             report.limitations.forEach { configuration.standardOutput($0 + "\n") }
         }
         return 0
+    }
+
+    private static func slimProfileChecks(environment: [String: String], configuration: CLIConfiguration) -> [SlimProfileCheck] {
+        guard let profiles = try? SlimProfileStore(paths: configuration.paths).read(), !profiles.isEmpty else { return [] }
+        let manager = SimLeaseCLI.processDeviceManager(environment: environment)
+        let devices = configuration.deviceManager ?? manager
+        let launchd = (configuration.deviceManager as? any SimulatorLaunchdControlling) ?? manager
+        let inventory = (try? devices.inventory()).map { Dictionary($0.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
+        return profiles.keys.sorted().map { id in
+            let device = inventory?[id]
+            let disabled = device?.state == "Booted" ? (try? launchd.launchctl(id, ["print-disabled", "system"])).map(SimulatorServiceCatalog.parseDisabled) : nil
+            guard let inventory else { return SlimProfileCheck(deviceID: id, state: .unreadable, reenabled: [], extraDisabled: []) }
+            return SlimProfileCheck.check(deviceID: id, profile: profiles[id]!, device: inventory[id], disabled: disabled)
+        }
     }
 
     private struct Command: Encodable {
@@ -76,6 +98,7 @@ enum CoverageDoctor {
         let activity: SimulatorActivityReport
         let crashBlocks: [CrashLoopTrigger]
         let simulatorHealth: SimulatorHealthStatus
+        let slimProfiles: [SlimProfileCheck]?
         let nativeSessionRecipe: NativeRecipe
         let limitations: [String]
     }

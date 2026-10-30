@@ -637,6 +637,49 @@ device whose identity was not recorded and verified. Jobs already running at
 installation keep their earlier implementation; wait for those jobs to finish
 before using the new recovery commands.
 
+## Slim simulator profiles
+
+A stock iOS simulator runs around 180 background services such as Siri,
+Spotlight indexing, photo analysis, widgets and iCloud sync. A slim profile
+disables those launchd services inside one simulator so it uses less memory,
+which leaves more headroom for extra lanes. The service catalog comes from
+[simslim](https://github.com/MobAI-App/simslim); its README measured 4.0 GB
+stock and 0.9 GB slim for one device. Run `simlease measure` before and after
+to see the effect on your own projects.
+
+List the categories, what each one breaks, and its approximate saving:
+
+```sh
+simlease device slim --list
+```
+
+Slim a shut-down simulator, keeping the categories its tests need:
+
+```sh
+simlease device slim --device DEVICE-UUID --keep health,photos
+simlease device unslim --device DEVICE-UUID
+```
+
+Slimming disables every category you do not keep, including widgets and
+wallpaper posters (PosterBoard), Siri, Spotlight, iCloud, StoreKit and push
+connectivity. SpringBoard and the services simslim lists as required always
+stay enabled. Profiles need an iOS 18.5 or newer runtime, because older
+runtimes forget launchd overrides at reboot. The device must be available,
+unpaired and shut down, and `slim` refuses crash-blocked devices; `unslim` is
+allowed on them and keeps the block.
+
+The command takes every lane, boots the device, changes only the services
+whose state differs, reboots to verify the overrides persisted, and shuts the
+device down again. While it runs, `device-recovery.json` holds new simulator
+work. If it is interrupted, confirm no device work remains and rerun the same
+command with `--settled`. A failed change leaves the device shut down and its
+profile marked incomplete until `slim` or `unslim` succeeds.
+
+`status --devices` and the menu mark slim devices. `doctor` reports profiles
+whose booted device has drifted from the recorded profile, profiles left
+incomplete, and profiles whose device no longer exists, for example after a
+repair replaced it.
+
 ## Xcode storage cleanup
 
 Review without deleting:

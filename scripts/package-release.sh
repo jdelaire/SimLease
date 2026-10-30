@@ -40,6 +40,7 @@ mkdir -p \
   "$app/Contents/Resources/bin/simlease"
 /usr/bin/install -m 0755 "$bin_dir/simlease" \
   "$release_root/bin/simlease"
+/usr/bin/install -m 0644 NOTICE "$app/Contents/Resources/NOTICE"
 /usr/bin/install -m 0755 scripts/install.sh "$release_root/install.sh"
 /usr/bin/install -m 0755 scripts/install-release.sh \
   "$release_root/install-release.sh"

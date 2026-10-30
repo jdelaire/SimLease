@@ -19,6 +19,7 @@ public struct SimulatorUsage: Codable, Equatable, Sendable, Identifiable {
     public var memoryBytes: UInt64?
     public var processCount: Int?
     public var cpuPercent: Double?
+    public var slim: SlimProfile?
 
     public init(id: String, name: String, runtime: String, state: String, reservation: Reservation, warmSince: Date? = nil, runtimeStale: Bool? = nil, lane: Int? = nil) {
         self.lane = lane

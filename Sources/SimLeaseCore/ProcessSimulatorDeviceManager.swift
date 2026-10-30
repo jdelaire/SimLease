@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ProcessSimulatorDeviceManager: SimulatorDeviceManaging {
+public struct ProcessSimulatorDeviceManager: SimulatorDeviceManaging, SimulatorLaunchdControlling {
     private let controller: SimulatorDeviceController
     private let bootTimeout: TimeInterval
 
@@ -60,6 +60,10 @@ public struct ProcessSimulatorDeviceManager: SimulatorDeviceManaging {
     }
 
     public func delete(_ id: String) throws { _ = try run(["simctl", "delete", id]) }
+
+    public func launchctl(_ deviceID: String, _ arguments: [String]) throws -> String {
+        try run(["simctl", "spawn", deviceID, "launchctl"] + arguments)
+    }
 
     public func servicePIDs(_ id: String) throws -> [String: Int32] {
         Self.parseServicePIDs(try run(["simctl", "spawn", id, "launchctl", "list"]))

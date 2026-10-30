@@ -167,6 +167,29 @@ public enum SimLeaseCLI {
                 if blocked { try crashes.acknowledge(deviceID: id, at: Date()) }
                 configuration.standardOutput("{\"deviceID\":\"\(id)\",\"acknowledged\":\(blocked)}\n")
                 return 0
+            case .deviceSlimList(let json):
+                if json {
+                    configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(["categories": SimulatorServiceCatalog.categories]), as: UTF8.self) + "\n")
+                } else {
+                    for category in SimulatorServiceCatalog.categories {
+                        configuration.standardOutput("\(category.id)\t~\(category.approxMemoryMB) MB\t\(category.name): \(category.downside)\n")
+                    }
+                    configuration.standardOutput("Keep a category with: simlease device slim --device UUID --keep \(SimulatorServiceCatalog.categories.prefix(2).map(\.id).joined(separator: ","))\n")
+                }
+                return 0
+            case .deviceSlim(let id, let keep, let settled):
+                let result: SlimResult
+                do { result = try slimService(arguments: arguments, environment: environment, configuration: configuration).slim(deviceID: id, keep: Set(keep), settled: settled) }
+                catch let error as SimulatorServiceCatalogError {
+                    configuration.standardError("SimLease: \(error)\n")
+                    return 64
+                }
+                configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(result), as: UTF8.self) + "\n")
+                return 0
+            case .deviceUnslim(let id, let settled):
+                let result = try slimService(arguments: arguments, environment: environment, configuration: configuration).unslim(deviceID: id, settled: settled)
+                configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(result), as: UTF8.self) + "\n")
+                return 0
             case .deviceMaintain:
                 guard !insideManagedWork(configuration) else { throw SimulatorTaskError.commandFailed("automatic recovery cannot nest inside managed work") }
                 let health = try automaticService(environment: environment, configuration: configuration).maintain()
@@ -495,6 +518,13 @@ public enum SimLeaseCLI {
                 SimulatorUsage.build(inventory: $0, tasks: tasks, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:], staleRuntimes: Set((stale ?? []).map(\.identifier)))
             }
         }
+        if let current = usage, let profiles = try? SlimProfileStore(paths: configuration.paths).read(), !profiles.isEmpty {
+            usage = current.map { device in
+                var copy = device
+                copy.slim = profiles[device.id]
+                return copy
+            }
+        }
         if let current = usage, current.contains(where: { $0.state == "Booted" }) {
             let measured = measureResources(configuration: configuration)
             usage = current.map { $0.state == "Booted" ? $0.withResources(measured[$0.id]) : $0 }
@@ -553,11 +583,12 @@ public enum SimLeaseCLI {
     }
 
     private static func resourceText(_ device: SimulatorUsage) -> String {
-        guard let bytes = device.memoryBytes else { return "" }
+        let slim = device.slim.map { $0.complete ? ", slim" : ", slim incomplete" } ?? ""
+        guard let bytes = device.memoryBytes else { return slim }
         var parts = [ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)]
         if let cpu = device.cpuPercent { parts.append("\(Int(cpu.rounded()))% CPU") }
         if let count = device.processCount { parts.append("\(count) processes") }
-        return ", " + parts.joined(separator: ", ")
+        return slim + ", " + parts.joined(separator: ", ")
     }
 
     private struct MeasureOutput: Encodable {
@@ -718,6 +749,31 @@ public enum SimLeaseCLI {
         xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
         #endif
         return DeviceRepairService(paths: configuration.paths, coordinator: try makeCoordinator(configuration: configuration), identity: identity, devices: configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun))
+    }
+
+    private static func slimService(arguments: [String], environment: [String: String], configuration: CLIConfiguration) throws -> SimulatorSlimService {
+        if insideManagedWork(configuration) {
+            throw SimulatorTaskError.commandFailed("slim profile changes cannot nest inside a managed job or native session; finish and settle it first")
+        }
+        let store = try MetadataStore(paths: configuration.paths)
+        let identity = try LeaseIdentity.resolve(environment: environment, cwd: FileManager.default.currentDirectoryPath, command: arguments, store: store)
+        let manager = processDeviceManager(environment: environment)
+        return SimulatorSlimService(
+            paths: configuration.paths, coordinator: try makeCoordinator(configuration: configuration), identity: identity,
+            devices: configuration.deviceManager ?? manager,
+            launchd: (configuration.deviceManager as? any SimulatorLaunchdControlling) ?? manager,
+            inspect: { try configuration.inspectCrashes() }
+        )
+    }
+
+    static func processDeviceManager(environment: [String: String]) -> ProcessSimulatorDeviceManager {
+        let xcrun: URL
+        #if DEBUG || SIMLEASE_TESTING
+        xcrun = URL(fileURLWithPath: environment["SIMLEASE_XCRUN_PATH"] ?? "/usr/bin/xcrun")
+        #else
+        xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+        #endif
+        return ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun)
     }
 
     private static func runTask(
