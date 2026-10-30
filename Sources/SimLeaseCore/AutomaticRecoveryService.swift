@@ -216,7 +216,7 @@ public struct AutomaticRecoveryService: Sendable {
         progress.detail = "Checking stable services and new crash reports for 120 booted seconds."
         try save(progress)
         var labels = ["com.apple.SpringBoard"]
-        if expected.contains(where: { $0.trigger.processName == "PosterBoard" }), try SlimProfileStore(paths: paths).read()[device.id]?.disablesPosterBoard != true {
+        if expected.contains(where: { $0.trigger.processName == "PosterBoard" }), try SlimProfileStore(paths: paths).read()[device.id].map({ $0.complete && $0.disablesPosterBoard }) != true {
             labels.append("com.apple.PosterBoard")
         }
         var original: [String: Int32]?

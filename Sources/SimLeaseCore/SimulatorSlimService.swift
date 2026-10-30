@@ -184,12 +184,17 @@ public struct SimulatorSlimService: Sendable {
         for pass in 0..<3 where !pending.isEmpty {
             if pass > 0 { Thread.sleep(forTimeInterval: delays.indices.contains(pass - 1) ? delays[pass - 1] : 0) }
             let outcomes = Mutex([(verb: String, label: String, detail: String)]())
+            let uncertain = Mutex([String]())
             for start in stride(from: 0, to: pending.count, by: 8) {
                 let chunk = Array(pending[start..<min(start + 8, pending.count)])
                 DispatchQueue.concurrentPerform(iterations: chunk.count) { index in
                     let (verb, label) = chunk[index]
                     do { _ = try launchd.launchctl(id, [verb, "system/\(label)"]) }
-                    catch { outcomes.withLock { $0.append((verb, label, String(describing: error))) } }
+                    catch DeviceManagementError.failed(let detail) { outcomes.withLock { $0.append((verb, label, detail)) } }
+                    catch { uncertain.withLock { $0.append("\(verb) \(label): \(error)") } }
+                }
+                if let first = uncertain.withLock({ $0.sorted().first }) {
+                    throw DeviceManagementError.unsettled("launchctl outcome on \(id) is uncertain (\(first))")
                 }
             }
             let failed = outcomes.withLock { $0 }

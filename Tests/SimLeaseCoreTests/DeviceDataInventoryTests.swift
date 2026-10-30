@@ -31,6 +31,14 @@ final class DeviceDataInventoryTests: XCTestCase {
         ])
     }
 
+    func testNestedTargetsCollapseIntoTheirAncestor() throws {
+        try write("Library/Logs/Tool/Caches/a")
+        let targets = try DeviceDataInventory.targets(dataPath: data).map { $0.path.replacingOccurrences(of: data.path + "/", with: "") }
+        XCTAssertEqual(targets, ["Library/Logs"])
+        try DeviceDataInventory.clear(try DeviceDataInventory.targets(dataPath: data), within: data)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: data.appendingPathComponent("Library/Logs").path), [])
+    }
+
     func testClearEmptiesTargetsWithoutFollowingSymlinks() throws {
         try write("Library/Caches/a")
         try write("Documents/keep")

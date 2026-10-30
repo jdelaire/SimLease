@@ -503,6 +503,7 @@ public enum SimLeaseCLI {
         var usage: [SimulatorUsage]?
         var stale: [StaleRuntime]?
         var healthInventory: [ManagedSimulatorDevice]?
+        let slimProfiles = devices ? ((try? SlimProfileStore(paths: configuration.paths).read()) ?? [:]) : [:]
         if devices {
             let xcrun: URL
             #if DEBUG || SIMLEASE_TESTING
@@ -511,17 +512,17 @@ public enum SimLeaseCLI {
             xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
             #endif
             let manager = configuration.deviceManager ?? ProcessSimulatorDeviceManager(environment: environment, xcrunURL: xcrun)
-            let relevant = status.waiters.flatMap { $0.deviceIDs ?? [] } + (status.activity?.activities.flatMap(\.deviceIDs) ?? []) + blocks.map(\.deviceID)
+            let relevant = status.waiters.flatMap { $0.deviceIDs ?? [] } + (status.activity?.activities.flatMap(\.deviceIDs) ?? []) + blocks.map(\.deviceID) + slimProfiles.filter { !$0.value.complete }.map(\.key)
             stale = configuration.deviceManager == nil ? RuntimeCompatibility.cached(paths: configuration.paths, environment: environment, xcrunURL: xcrun) : []
             healthInventory = try? manager.inventory()
             usage = healthInventory.map {
                 SimulatorUsage.build(inventory: $0, tasks: tasks, relevantIDs: Set(relevant), warm: (try? WarmDeviceStore(paths: configuration.paths).read()) ?? [:], staleRuntimes: Set((stale ?? []).map(\.identifier)))
             }
         }
-        if let current = usage, let profiles = try? SlimProfileStore(paths: configuration.paths).read(), !profiles.isEmpty {
+        if let current = usage, !slimProfiles.isEmpty {
             usage = current.map { device in
                 var copy = device
-                copy.slim = profiles[device.id]
+                copy.slim = slimProfiles[device.id]
                 return copy
             }
         }

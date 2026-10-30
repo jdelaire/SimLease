@@ -98,6 +98,16 @@ final class AutomaticRecoveryTests: XCTestCase {
         XCTAssertNoThrow(try f.crashes.requireHealthy([f.id]))
     }
 
+    func testIncompleteSlimProfileStillRequiresPosterBoard() throws {
+        let f = try AutomaticFixture()
+        defer { f.remove() }
+        try f.block()
+        f.pids = ["com.apple.SpringBoard": 12]
+        try SlimProfileStore(paths: f.paths).set(f.id, SlimProfile(keep: [], disabledCount: 1, appliedAt: f.time.now, complete: false))
+        _ = try f.service().maintain()
+        XCTAssertThrowsError(try f.crashes.requireHealthy([f.id]))
+    }
+
     func testPairingChangedDuringObservationProtectsDeviceFromCleanup() throws {
         let f = try AutomaticFixture()
         defer { f.remove() }

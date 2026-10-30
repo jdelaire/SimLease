@@ -24,10 +24,10 @@ public enum DeviceDataInventory {
                 if namedTargets.contains(name) { found.append(child) } else { stack.append(child) }
             }
         }
-        for fixed in fixedTargets where !found.contains(where: { fixed == $0 || fixed.hasPrefix($0 + "/") }) {
-            if safeChain(fixed, under: root.path) { found.append(fixed) }
-        }
-        return found.sorted().map { root.appendingPathComponent($0, isDirectory: true) }
+        for fixed in fixedTargets where safeChain(fixed, under: root.path) { found.append(fixed) }
+        let unique = Set(found)
+        return unique.filter { target in !unique.contains { target.hasPrefix($0 + "/") } }
+            .sorted().map { root.appendingPathComponent($0, isDirectory: true) }
     }
 
     public static func measure(_ targets: [URL], dataPath: URL) throws -> (sizeBytes: Int64, digest: String) {
@@ -53,12 +53,46 @@ public enum DeviceDataInventory {
 
     public static func clear(_ targets: [URL], within dataPath: URL) throws {
         let root = dataPath.standardizedFileURL.path
+        let rootDescriptor = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard rootDescriptor >= 0 else { throw DeviceDataInventoryError.unsafeTarget(root) }
+        defer { close(rootDescriptor) }
         for target in targets {
-            let relative = try relativePath(target, under: root)
-            guard safeChain(relative, under: root) else { throw DeviceDataInventoryError.unsafeTarget(target.path) }
-            let directory = root + "/" + relative
-            for name in try FileManager.default.contentsOfDirectory(atPath: directory) {
-                try FileManager.default.removeItem(atPath: directory + "/" + name)
+            var descriptor = dup(rootDescriptor)
+            guard descriptor >= 0 else { throw DeviceDataInventoryError.unsafeTarget(target.path) }
+            for component in try relativePath(target, under: root).split(separator: "/") {
+                let next = openat(descriptor, String(component), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                close(descriptor)
+                guard next >= 0 else { throw DeviceDataInventoryError.unsafeTarget(target.path) }
+                descriptor = next
+            }
+            defer { close(descriptor) }
+            try removeContents(of: descriptor, path: target.path)
+        }
+    }
+
+    private static func removeContents(of descriptor: Int32, path: String) throws {
+        let listing = dup(descriptor)
+        guard listing >= 0, let directory = fdopendir(listing) else {
+            if listing >= 0 { close(listing) }
+            throw DeviceDataInventoryError.unsafeTarget(path)
+        }
+        var names = [String]()
+        while let entry = readdir(directory) {
+            let name = withUnsafeBytes(of: entry.pointee.d_name) { String(decoding: $0.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self) }
+            if name != "." && name != ".." { names.append(name) }
+        }
+        closedir(directory)
+        for name in names {
+            var info = stat()
+            guard fstatat(descriptor, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
+            if info.st_mode & S_IFMT == S_IFDIR {
+                let child = openat(descriptor, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard child >= 0 else { throw DeviceDataInventoryError.unsafeTarget(path + "/" + name) }
+                defer { close(child) }
+                try removeContents(of: child, path: path + "/" + name)
+                guard unlinkat(descriptor, name, AT_REMOVEDIR) == 0 else { throw DeviceDataInventoryError.unsafeTarget(path + "/" + name) }
+            } else {
+                guard unlinkat(descriptor, name, 0) == 0 || errno == ENOENT else { throw DeviceDataInventoryError.unsafeTarget(path + "/" + name) }
             }
         }
     }

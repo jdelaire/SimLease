@@ -58,6 +58,17 @@ final class SimulatorSlimServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: f.paths.deviceRecovery.path))
     }
 
+    func testUncertainTransitionKeepsJournal() throws {
+        let f = try SlimFixture()
+        defer { f.remove() }
+        f.devices.uncertainLabels.insert("com.apple.chronod")
+        XCTAssertThrowsError(try f.service.slim(deviceID: f.id, keep: [], settled: false)) {
+            guard case DeviceManagementError.unsettled = $0 else { return XCTFail("\($0)") }
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: f.paths.deviceRecovery.path))
+        XCTAssertEqual(try f.profiles.read()[f.id]?.complete, false)
+    }
+
     func testTransitionsAndReadsRetryTransientFailures() throws {
         let f = try SlimFixture()
         defer { f.remove() }
@@ -178,6 +189,7 @@ private final class SlimDevices: SimulatorDeviceManaging, SimulatorLaunchdContro
     var paired = Set<String>()
     var dropOnReboot = false
     var failingLabels = [String: Int]()
+    var uncertainLabels = Set<String>()
     var failingReads = 0
     var boots = 0
     private var bootBaseline = [String: Set<String>]()
@@ -207,6 +219,7 @@ private final class SlimDevices: SimulatorDeviceManaging, SimulatorLaunchdContro
                 return "disabled services = {\n" + lines.joined(separator: "\n") + "\n}\n"
             }
             let label = String(arguments[1].dropFirst("system/".count))
+            if uncertainLabels.contains(label) { throw DeviceManagementError.unsettled("launchctl timed out") }
             if let remaining = failingLabels[label], remaining > 0 {
                 failingLabels[label] = remaining - 1
                 throw DeviceManagementError.failed("launchctl failed")
