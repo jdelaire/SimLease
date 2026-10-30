@@ -76,13 +76,16 @@ public struct SimulatorCrashReport: Codable, Equatable, Sendable {
             (process == "PosterBoard" && bundle == "com.apple.PosterBoard" && path.hasSuffix("/PosterBoard.app/PosterBoard"))
                 || (process == "SpringBoard" && bundle == "com.apple.springboard" && path.hasSuffix("/SpringBoard.app/SpringBoard"))
         )
-        let key = ([bundle, process, type, exception["signal"] as? String ?? ""] + Set(identities).sorted() + symbols).joined(separator: "\n")
+        let termination = body["termination"] as? [String: Any]
+        let terminationTimeout = runtimeService && !["PosterBoard", "SpringBoard"].contains(process) && type == "EXC_CRASH" && exception["signal"] as? String == "SIGKILL"
+            && termination?["namespace"] as? String == "LIBXPC" && termination?["indicator"] as? String == "XPC_EXIT_REASON_SIGTERM_TIMEOUT"
+        let key = ([bundle, process, type, exception["signal"] as? String ?? ""] + Set(identities).sorted() + symbols + (terminationTimeout ? ["XPC_EXIT_REASON_SIGTERM_TIMEOUT"] : [])).joined(separator: "\n")
         let hash = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
         let background = verifiedRuntimeService && (
             (process == "intelligencetasksd" && systemIdentifier == "com.apple.intelligencetasksd" && path.hasSuffix("/IntelligenceTasksEngine.framework/Support/intelligencetasksd"))
                 || (process == "AppIntentsLiveEntityService" && systemIdentifier == "com.apple.appintents.LiveEntityService" && path.hasSuffix("/AppIntentsLiveEntitySupport.framework/XPCServices/AppIntentsLiveEntityService.xpc/AppIntentsLiveEntityService"))
         )
-        let kind: SimulatorCrashKind = critical ? .criticalInfrastructure : (background ? .backgroundService : (runtimeService ? .unknown : .application))
+        let kind: SimulatorCrashKind = critical ? .criticalInfrastructure : (background || terminationTimeout ? .backgroundService : (runtimeService ? .unknown : .application))
         return SimulatorCrashReport(incidentID: String(incident.prefix(128)), deviceID: id, occurredAt: occurred, launchedAt: launched, signature: hash, processName: String(process.prefix(128)), isCriticalSystemService: critical ? true : nil, kind: kind)
     }
 

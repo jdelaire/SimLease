@@ -279,6 +279,55 @@ final class CrashLoopTests: XCTestCase {
         XCTAssertEqual(try fixture.store.reasons().first?.kind, .unknown)
     }
 
+    func testSigtermTimeoutKillsAreRecordedWithoutBlocking() throws {
+        let timeout: [String: Any] = [
+            "procName": "nanoprefsyncd", "procPath": "/Volumes/VOLUME/*/NanoPreferencesSync.framework/nanoprefsyncd",
+            "bundleInfo": ["CFBundleIdentifier": "com.apple.nanoprefsyncd"], "codeSigningID": "com.apple.nanoprefsyncd",
+            "exception": ["type": "EXC_CRASH", "signal": "SIGKILL"],
+            "termination": ["namespace": "LIBXPC", "indicator": "XPC_EXIT_REASON_SIGTERM_TIMEOUT", "code": 4],
+        ]
+        for parent in ["Exited process", "launchd_sim"] {
+            let fixture = try CrashFixture()
+            defer { fixture.remove() }
+            let reports = try (0..<2).map { index in
+                try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: timeout.merging([
+                    "parentProc": parent, "incident": "TIMEOUT-\(index)",
+                    "captureTime": "2026-10-25 16:3\(index + 1):36.4964 +0700",
+                ]) { _, value in value })))
+            }
+            XCTAssertEqual(reports.map(\.kind), [.backgroundService, .backgroundService], parent)
+            for report in reports { _ = try fixture.store.ingest([report], now: report.occurredAt) }
+            XCTAssertNoThrow(try fixture.store.requireHealthy([device]), parent)
+        }
+        let unrelated: [[String: Any]] = [
+            ["termination": ["namespace": "LIBXPC", "indicator": "XPC_EXIT_REASON_FAULT"]],
+            ["termination": ["namespace": "JETSAM", "indicator": "XPC_EXIT_REASON_SIGTERM_TIMEOUT"]],
+            ["exception": ["type": "EXC_CRASH", "signal": "SIGABRT"]],
+            ["exception": ["type": "EXC_BAD_ACCESS", "signal": "SIGKILL"]],
+        ]
+        var signatures = Set<String>()
+        for change in unrelated {
+            let report = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: timeout.merging(["parentProc": "Exited process"].merging(change) { _, value in value }) { _, value in value })))
+            XCTAssertEqual(report.kind, .unknown)
+            signatures.insert(report.signature)
+        }
+        let ignored = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: timeout.merging(["parentProc": "Exited process"]) { _, value in value })))
+        XCTAssertFalse(signatures.contains(ignored.signature))
+        let poster = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+            "exception": ["type": "EXC_CRASH", "signal": "SIGKILL"],
+            "termination": ["namespace": "LIBXPC", "indicator": "XPC_EXIT_REASON_SIGTERM_TIMEOUT"],
+        ])))
+        XCTAssertEqual(poster.kind, .criticalInfrastructure)
+        for (name, bundle, path) in [("PosterBoard", "com.apple.PosterBoard", "/Volumes/VOLUME/*/PosterBoard.app/PosterBoard"), ("SpringBoard", "com.apple.springboard", "/Volumes/VOLUME/*/SpringBoard.app/SpringBoard")] {
+            let orphan = try XCTUnwrap(SimulatorCrashReport.parse(runtimeReport(changes: [
+                "parentProc": "Exited process", "procName": name, "procPath": path, "bundleInfo": ["CFBundleIdentifier": bundle],
+                "exception": ["type": "EXC_CRASH", "signal": "SIGKILL"],
+                "termination": ["namespace": "LIBXPC", "indicator": "XPC_EXIT_REASON_SIGTERM_TIMEOUT"],
+            ])))
+            XCTAssertEqual(orphan.kind, .unknown, name)
+        }
+    }
+
     func testOrphanedSystemServiceNamesCannotAcquireVerifiedClassifications() throws {
         for (name, bundle, path) in [
             ("PosterBoard", "com.apple.PosterBoard", "/Volumes/VOLUME/*/PosterBoard.app/PosterBoard"),
