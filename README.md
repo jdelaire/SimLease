@@ -697,7 +697,7 @@ simlease clean apply ABC123 \
   --target 'DEVICE-UUID'
 ```
 
-A device is eligible only when shut down and reported unused for at least 30
+A device is eligible only when shut down and reported unused for at least 7
 days. Booted devices, devices with unknown age, and devices whose data path
 does not exactly match their UUID are protected. A runtime is eligible only
 when Apple's dry run identifies its exact image and no booted device uses it.

@@ -9,7 +9,7 @@ public struct CleanupPlanner: Sendable {
 
     public init(
         devicesRoot: URL,
-        staleAge: TimeInterval = 30 * 24 * 60 * 60,
+        staleAge: TimeInterval = 7 * 24 * 60 * 60,
         planLifetime: TimeInterval = 10 * 60,
         minimumDeviceDataBytes: Int64 = 10 << 20
     ) {
@@ -207,7 +207,7 @@ public struct CleanupPlanner: Sendable {
             return protection(target, .invalidDataPath, "Device data path does not match its identifier")
         }
         guard lastUsedAt <= staleBoundary else {
-            return protection(target, .notOldEnough, "Device was used within 30 days")
+            return protection(target, .notOldEnough, "Device was used within \(Int(staleAge / 86_400)) days")
         }
         return nil
     }

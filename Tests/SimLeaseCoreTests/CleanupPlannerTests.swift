@@ -6,8 +6,8 @@ final class CleanupPlannerTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 3_000_000)
     private let devicesRoot = URL(fileURLWithPath: "/Users/test/Devices")
 
-    func testThirtyDayBoundaryIsEligibleButOneSecondNewerIsProtected() throws {
-        let boundary = now.addingTimeInterval(-30 * 24 * 60 * 60)
+    func testSevenDayBoundaryIsEligibleButOneSecondNewerIsProtected() throws {
+        let boundary = now.addingTimeInterval(-7 * 24 * 60 * 60)
         let review = planner.makeReview(
             inventory: inventory(devices: [
                 device(id: "OLD", lastUsedAt: boundary, sizeBytes: 100),
@@ -23,6 +23,7 @@ final class CleanupPlannerTests: XCTestCase {
 
         XCTAssertEqual(review.plan?.devices.map(\.identifier), ["OLD"])
         XCTAssertEqual(reason(for: "NEW", in: review), .notOldEnough)
+        XCTAssertEqual(review.protected.first { $0.target.identifier == "NEW" }?.explanation, "Device was used within 7 days")
         XCTAssertEqual(review.estimatedBytes, 100)
     }
 
