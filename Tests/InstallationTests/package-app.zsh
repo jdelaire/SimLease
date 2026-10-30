@@ -21,7 +21,7 @@ if "$app/Contents/Resources/bin/simlease" clean 2>"$usage_file"; then
   rm "$usage_file"
   fail "incomplete clean command unexpectedly succeeded"
 fi
-grep -q 'status|name|hold|clean' "$usage_file" \
+grep -qF 'status|measure|history|config|name|hold|clean' "$usage_file" \
   || fail "bundled CLI usage omits clean"
 rm "$usage_file"
 
