@@ -7,12 +7,12 @@ fail() {
 }
 
 SIMLEASE_TEST_MODE=1 \
-SIMLEASE_VERSION=0.7.0 \
+SIMLEASE_VERSION=0.8.0 \
 SIMLEASE_SIGN_IDENTITY=- \
 scripts/package-release.sh
 
-archive="$PWD/dist/SimLease-0.7.0-arm64.zip"
-checksum="$PWD/dist/SimLease-0.7.0-arm64.sha256"
+archive="$PWD/dist/SimLease-0.8.0-arm64.zip"
+checksum="$PWD/dist/SimLease-0.8.0-arm64.sha256"
 [[ -f "$archive" ]] || fail "release archive missing"
 [[ -f "$checksum" ]] || fail "release checksum missing"
 (cd "$PWD/dist" && /usr/bin/shasum -a 256 -c "${checksum:t}") \
