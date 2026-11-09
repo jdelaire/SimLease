@@ -34,6 +34,11 @@ mkdir -p \
   "$release_root/Resources"
 
 /usr/bin/install -m 0644 Resources/SimLease-Info.plist "$app/Contents/Info.plist"
+xcrun actool Resources/AppIcon.icon --compile "$app/Contents/Resources" \
+  --app-icon AppIcon --platform macosx --minimum-deployment-target 15.0 \
+  --output-partial-info-plist "$app/Contents/Resources/icon-partial.plist"
+/usr/bin/plutil -extract CFBundleIconName raw "$app/Contents/Resources/icon-partial.plist" | /usr/bin/grep -qx AppIcon
+/bin/rm "$app/Contents/Resources/icon-partial.plist"
 /usr/bin/install -m 0755 "$bin_dir/SimLeaseMenuBar" \
   "$app/Contents/MacOS/SimLeaseMenuBar"
 /usr/bin/install -m 0755 "$bin_dir/simlease" \

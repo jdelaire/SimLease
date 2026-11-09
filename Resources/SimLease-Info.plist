@@ -5,6 +5,10 @@
 <dict>
   <key>CFBundleExecutable</key>
   <string>SimLeaseMenuBar</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>com.jdelaire.simlease</string>
   <key>CFBundleName</key>

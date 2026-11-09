@@ -1,0 +1,14 @@
+{
+  "fill": {
+    "linear-gradient": ["srgb:0.18000,0.36000,0.46000,1.00000", "srgb:0.03500,0.10000,0.16000,1.00000"],
+    "orientation": {"start": {"x": 0.5, "y": 0}, "stop": {"x": 0.5, "y": 1}}
+  },
+  "fill-specializations": [
+    {"appearance": "dark", "value": {"linear-gradient": ["srgb:0.09000,0.17000,0.23000,1.00000", "srgb:0.01500,0.03500,0.06000,1.00000"], "orientation": {"start": {"x": 0.5, "y": 0}, "stop": {"x": 0.5, "y": 1}}}}
+  ],
+  "groups": [
+    {"name": "Simulator", "layers": [{"name": "Simulator frame", "image-name": "simulator.svg", "glass": true, "fill-specializations": [{"appearance": "tinted", "value": {"solid": "srgb:1.00000,1.00000,1.00000,1.00000"}}]}], "shadow": {"kind": "neutral", "opacity": 0.25}, "translucency": {"enabled": false, "value": 0}},
+    {"name": "Lanes", "layers": [{"name": "Project lanes", "image-name": "lanes.svg", "glass": true, "fill-specializations": [{"appearance": "tinted", "value": {"solid": "srgb:0.75000,0.75000,0.75000,1.00000"}}]}], "shadow": {"kind": "neutral", "opacity": 0.25}, "translucency": {"enabled": false, "value": 0}}
+  ],
+  "supported-platforms": {"squares": ["macOS"]}
+}

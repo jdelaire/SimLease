@@ -21,6 +21,8 @@ checksum="$PWD/dist/SimLease-0.8.1-arm64.sha256"
 entries="$(/usr/bin/unzip -Z1 "$archive")"
 for expected in \
   SimLease.app/Contents/MacOS/SimLeaseMenuBar \
+  SimLease.app/Contents/Resources/AppIcon.icns \
+  SimLease.app/Contents/Resources/Assets.car \
   bin/simlease \
   install.sh \
   install-release.sh \
