@@ -101,6 +101,10 @@ func performQuitAction(
 
 struct LeasePopoverView: View {
     @ObservedObject var viewModel: MenuViewModel
+    var updateStatus: AppUpdateStatus = .idle
+    var canCheckForUpdates = false
+    var onCheckForUpdates: () -> Void = {}
+    var onInstallUpdate: () -> Void = {}
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -110,6 +114,7 @@ struct LeasePopoverView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    UpdateCard(status: updateStatus, onInstall: onInstallUpdate)
                     ForEach(viewModel.state.alerts) { alert in
                         AlertCard(alert: alert) { id in Task { await viewModel.acknowledgeCrashes(deviceID: id) } }
                     }
@@ -242,6 +247,11 @@ struct LeasePopoverView: View {
             FooterIcon(symbol: "chart.bar.xaxis", help: "Open Dashboard") {
                 presentAppWindow { openWindow(id: "dashboard") }
             }
+            if canCheckForUpdates {
+                FooterIcon(symbol: "arrow.down.circle", help: "Check for Updates…") {
+                    onCheckForUpdates()
+                }
+            }
             FooterIcon(symbol: "doc.on.doc", help: "Copy details") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(viewModel.copyDetailsText, forType: .string)
@@ -269,6 +279,36 @@ private struct SectionTitle: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
             .tracking(0.5)
+    }
+}
+
+private struct UpdateCard: View {
+    let status: AppUpdateStatus
+    let onInstall: () -> Void
+
+    var body: some View {
+        switch status {
+        case .idle:
+            EmptyView()
+        case .available(let version):
+            row(title: "SimLease \(version) is available", action: "Update…")
+        case .ready(let version):
+            row(title: "SimLease \(version) is ready", action: "Restart Now")
+        }
+    }
+
+    private func row(title: String, action: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(.blue)
+            Text(title)
+                .font(.callout.weight(.medium))
+            Spacer(minLength: 8)
+            Button(action, action: onInstall)
+                .controlSize(.small)
+        }
+        .card()
     }
 }
 

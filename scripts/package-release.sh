@@ -27,25 +27,10 @@ bin_dir="$(swift build -c release -j "${SIMLEASE_BUILD_JOBS:-1}" --arch arm64 --
 release_root="$repository_root/dist/release"
 app="$release_root/SimLease.app"
 rm -rf "$release_root"
-mkdir -p \
-  "$app/Contents/MacOS" \
-  "$app/Contents/Resources/bin" \
-  "$release_root/bin" \
-  "$release_root/Resources"
-
-/usr/bin/install -m 0644 Resources/SimLease-Info.plist "$app/Contents/Info.plist"
-xcrun actool Resources/AppIcon.icon --compile "$app/Contents/Resources" \
-  --app-icon AppIcon --platform macosx --minimum-deployment-target 15.0 \
-  --output-partial-info-plist "$app/Contents/Resources/icon-partial.plist"
-/usr/bin/plutil -extract CFBundleIconName raw "$app/Contents/Resources/icon-partial.plist" | /usr/bin/grep -qx AppIcon
-/bin/rm "$app/Contents/Resources/icon-partial.plist"
-/usr/bin/install -m 0755 "$bin_dir/SimLeaseMenuBar" \
-  "$app/Contents/MacOS/SimLeaseMenuBar"
-/usr/bin/install -m 0755 "$bin_dir/simlease" \
-  "$app/Contents/Resources/bin/simlease"
+scripts/assemble-app.sh "$app" "$bin_dir"
+mkdir -p "$release_root/bin" "$release_root/Resources"
 /usr/bin/install -m 0755 "$bin_dir/simlease" \
   "$release_root/bin/simlease"
-/usr/bin/install -m 0644 NOTICE "$app/Contents/Resources/NOTICE"
 /usr/bin/install -m 0755 scripts/install.sh "$release_root/install.sh"
 /usr/bin/install -m 0755 scripts/install-release.sh \
   "$release_root/install-release.sh"
@@ -56,6 +41,10 @@ sign_options=(--force --sign "$identity")
 if [[ "$identity" != - ]]; then
   sign_options+=(--options runtime --timestamp)
 fi
+framework="$app/Contents/Frameworks/Sparkle.framework"
+/usr/bin/codesign "${sign_options[@]}" "$framework/Versions/B/Autoupdate"
+/usr/bin/codesign "${sign_options[@]}" "$framework/Versions/B/Updater.app"
+/usr/bin/codesign "${sign_options[@]}" "$framework"
 /usr/bin/codesign "${sign_options[@]}" "$release_root/bin/simlease"
 /usr/bin/codesign "${sign_options[@]}" \
   "$app/Contents/Resources/bin/simlease"

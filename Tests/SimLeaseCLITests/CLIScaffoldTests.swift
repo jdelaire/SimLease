@@ -233,7 +233,7 @@ final class CLIScaffoldTests: XCTestCase {
             ),
             0
         )
-        XCTAssertEqual(fixture.output.value, "simlease 0.8.1\n")
+        XCTAssertEqual(fixture.output.value, "simlease 0.8.2\n")
     }
 
     func testUpdatePassesCurrentVersionAndReturnsUpdaterStatus() throws {
@@ -248,7 +248,26 @@ final class CLIScaffoldTests: XCTestCase {
             ),
             17
         )
-        XCTAssertEqual(runner.arguments, ["--current-version", "0.8.1"])
+        XCTAssertEqual(runner.arguments, ["--current-version", "0.8.2"])
+    }
+
+    func testUpdateHandsOffToRunningAppWithoutRunningInstaller() throws {
+        let runner = UpdateRunnerStub(exitCode: 17, appAcknowledges: true)
+        let fixture = try CLIFixture(updateRunner: runner)
+
+        XCTAssertEqual(
+            SimLeaseCLI.run(
+                arguments: ["simlease", "update"],
+                environment: [:],
+                configuration: fixture.configuration
+            ),
+            0
+        )
+        XCTAssertNil(runner.arguments)
+        XCTAssertEqual(
+            fixture.output.value,
+            "SimLease is checking for an update and will restart when it is installed.\n"
+        )
     }
 
     func testDebugProductionConfigurationUsesCacheOverride() {
@@ -531,10 +550,16 @@ private final class CLIFixture {
 
 private final class UpdateRunnerStub: UpdateRunning, @unchecked Sendable {
     private let exitCode: Int32
-    private(set) var arguments: [String] = []
+    private let appAcknowledges: Bool
+    private(set) var arguments: [String]?
 
-    init(exitCode: Int32) {
+    init(exitCode: Int32, appAcknowledges: Bool = false) {
         self.exitCode = exitCode
+        self.appAcknowledges = appAcknowledges
+    }
+
+    func requestRunningApp() -> Bool {
+        appAcknowledges
     }
 
     func run(arguments: [String]) throws -> Int32 {

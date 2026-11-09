@@ -736,8 +736,15 @@ lease, stops tests, deletes worktrees, or runs automatically.
 simlease update
 ```
 
-Updates are manual. The command uses the installed verified release bootstrap,
-never downgrades, and exits successfully when already current.
+SimLease updates itself with [Sparkle](https://sparkle-project.org). It checks
+once a day, downloads new releases in the background, verifies their EdDSA and
+Developer ID signatures, and installs them the next time it is idle: no Cleanup
+or Dashboard window open and the menu closed. The menu shows when an update is
+ready, and the footer has a Check for Updates button.
+
+`simlease update` asks the running app to check now. When the app is not
+running, the command falls back to the verified release bootstrap, which never
+downgrades and exits successfully when already current.
 
 ## Managed paths
 
@@ -748,6 +755,9 @@ never downgrades, and exits successfully when already current.
 ~/.local/lib/simlease/install-release.sh
 ~/.local/lib/simlease/shims/
 ```
+
+The CLI and release bootstrap in `~/.local/lib/simlease` are symlinks into
+`SimLease.app`, so an app update also updates the CLI.
 
 The shims delegate to the next matching command on PATH, so an existing custom
 AXe remains the underlying AXe.

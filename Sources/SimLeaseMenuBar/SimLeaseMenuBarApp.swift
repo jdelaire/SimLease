@@ -4,14 +4,30 @@ import SimLeaseMenuCore
 @main
 struct SimLeaseMenuBarApp: App {
     @StateObject private var viewModel = MenuViewModel(provider: Self.makeProvider())
-    @StateObject private var cleanupViewModel = CleanupViewModel(
-        provider: Self.makeCleanupProvider()
-    )
+    @StateObject private var cleanupViewModel: CleanupViewModel
+    @StateObject private var updateController: UpdateController
     @StateObject private var dashboardViewModel = DashboardViewModel(provider: Self.makeProvider())
+
+    init() {
+        let cleanup = CleanupViewModel(provider: Self.makeCleanupProvider())
+        _cleanupViewModel = StateObject(wrappedValue: cleanup)
+        _updateController = StateObject(wrappedValue: UpdateController { [weak cleanup] in
+            switch cleanup?.state {
+            case .loading?, .applying?: true
+            default: false
+            }
+        })
+    }
 
     var body: some Scene {
         MenuBarExtra {
-            LeasePopoverView(viewModel: viewModel)
+            LeasePopoverView(
+                viewModel: viewModel,
+                updateStatus: updateController.status,
+                canCheckForUpdates: updateController.isAvailable,
+                onCheckForUpdates: updateController.checkForUpdates,
+                onInstallUpdate: updateController.installReadyUpdate
+            )
         } label: {
             let icon = MenuBarIconState(state: viewModel.state)
             Label {

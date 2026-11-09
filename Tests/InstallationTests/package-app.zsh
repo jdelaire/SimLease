@@ -17,6 +17,10 @@ plist="$app/Contents/Info.plist"
 [[ "$(/usr/bin/plutil -extract CFBundleIconName raw "$plist")" == AppIcon ]] || fail "missing icon name"
 [[ -x "$app/Contents/MacOS/SimLeaseMenuBar" ]] || fail "missing menu executable"
 [[ -x "$app/Contents/Resources/bin/simlease" ]] || fail "missing bundled CLI"
+[[ -x "$app/Contents/Resources/install-release.sh" ]] || fail "missing bundled release installer"
+[[ -d "$app/Contents/Frameworks/Sparkle.framework" ]] || fail "missing Sparkle framework"
+[[ "$(/usr/bin/plutil -extract SUFeedURL raw "$plist")" == https://github.com/jdelaire/SimLease/releases/latest/download/appcast.xml ]] \
+  || fail "wrong Sparkle feed"
 /usr/bin/codesign --verify --deep --strict "$app" || fail "invalid app signature"
 
 usage_file="$(mktemp)"

@@ -126,6 +126,12 @@ public enum SimLeaseCLI {
                 guard let runner = configuration.updateRunner else {
                     throw UpdateRunnerError.missingUpdater
                 }
+                if runner.requestRunningApp() {
+                    configuration.standardOutput(
+                        "SimLease is checking for an update and will restart when it is installed.\n"
+                    )
+                    return 0
+                }
                 return try runner.run(arguments: [
                     "--current-version",
                     SimLeaseBuild.currentVersion.description,

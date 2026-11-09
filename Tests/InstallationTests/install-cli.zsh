@@ -25,6 +25,9 @@ custom_axe="$test_root/custom-axe"
 source_app="$test_root/SimLease.app"
 mkdir -p "$source_app/Contents/MacOS"
 bin_dir="${SIMLEASE_TEST_BIN_DIR:-$(swift build -c release --show-bin-path)}"
+mkdir -p "$source_app/Contents/Resources/bin"
+/usr/bin/install -m 0755 "$bin_dir/simlease" "$source_app/Contents/Resources/bin/simlease"
+/usr/bin/install -m 0755 scripts/install-release.sh "$source_app/Contents/Resources/install-release.sh"
 print -r -- '#!/bin/sh' > "$source_app/Contents/MacOS/SimLeaseMenuBar"
 chmod +x "$source_app/Contents/MacOS/SimLeaseMenuBar"
 /usr/bin/install -m 0644 Resources/SimLease-Info.plist \
@@ -37,13 +40,15 @@ chmod +x "$custom_axe"
 ln -s "$custom_axe" "$test_home/.local/bin/axe"
 
 SIMLEASE_INSTALL_HOME="$test_home" \
-SIMLEASE_SOURCE_BINARY="$bin_dir/simlease" \
 SIMLEASE_SOURCE_APP="$source_app" \
 scripts/install.sh
 
 installed="$test_home/.local/lib/simlease/simlease"
 shim_directory="$test_home/.local/lib/simlease/shims"
-assert_file "$installed"
+installed_app="$test_home/Applications/SimLease.app"
+assert_symlink_target "$installed" "$installed_app/Contents/Resources/bin/simlease"
+assert_symlink_target "$test_home/.local/lib/simlease/install-release.sh" \
+  "$installed_app/Contents/Resources/install-release.sh"
 for command_name in simlease xcodebuild xcrun axe agent-device; do
   assert_symlink_target "$shim_directory/$command_name" "$installed"
 done
@@ -55,7 +60,6 @@ resolved_axe="$(
 [[ "$resolved_axe" == custom-d45fd82 ]] || fail "custom AXe not delegated"
 
 SIMLEASE_INSTALL_HOME="$test_home" \
-SIMLEASE_SOURCE_BINARY="$bin_dir/simlease" \
 SIMLEASE_SOURCE_APP="$source_app" \
 scripts/install.sh
 
@@ -65,7 +69,9 @@ grep -q '^export KEEP_ME=1$' "$test_home/.zprofile" || fail "profile content cha
 
 SIMLEASE_INSTALL_HOME="$test_home" scripts/uninstall.sh
 
-[[ ! -e "$installed" ]] || fail "installed binary remains"
+[[ ! -e "$installed" && ! -L "$installed" ]] || fail "installed binary remains"
+[[ ! -L "$test_home/.local/lib/simlease/install-release.sh" ]] \
+  || fail "release installer link remains"
 for command_name in simlease xcodebuild xcrun axe agent-device; do
   [[ ! -e "$shim_directory/$command_name" ]] || fail "shim remains: $command_name"
 done
@@ -79,8 +85,7 @@ conflict_shims="$conflict_home/.local/lib/simlease/shims"
 mkdir -p "$conflict_shims"
 print -r -- 'do not overwrite' > "$conflict_shims/xcrun"
 if SIMLEASE_INSTALL_HOME="$conflict_home" \
-   SIMLEASE_SOURCE_BINARY="$bin_dir/simlease" \
-   SIMLEASE_SOURCE_APP="$source_app" \
+      SIMLEASE_SOURCE_APP="$source_app" \
    scripts/install.sh; then
   fail "installer accepted conflicting executable"
 fi

@@ -16,12 +16,22 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.8.1</string>
+  <string>0.8.2</string>
   <key>CFBundleVersion</key>
-  <string>11</string>
+  <string>12</string>
   <key>LSMinimumSystemVersion</key>
   <string>15.0</string>
   <key>LSUIElement</key>
   <true/>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUFeedURL</key>
+  <string>https://github.com/jdelaire/SimLease/releases/latest/download/appcast.xml</string>
+  <key>SUPublicEDKey</key>
+  <string>cIER7Xp7zoQKVHWfb0GKOD6iz7SePm8CuRgEAAL/VgY=</string>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
 </dict>
 </plist>

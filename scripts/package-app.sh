@@ -10,17 +10,7 @@ swift build -c release -j "${SIMLEASE_BUILD_JOBS:-1}" --product simlease
 swift build -c release -j "${SIMLEASE_BUILD_JOBS:-1}" --product SimLeaseMenuBar
 bin_dir="$(swift build -c release --show-bin-path)"
 
-rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin"
-/usr/bin/install -m 0644 Resources/SimLease-Info.plist "$app/Contents/Info.plist"
-xcrun actool Resources/AppIcon.icon --compile "$app/Contents/Resources" \
-  --app-icon AppIcon --platform macosx --minimum-deployment-target 15.0 \
-  --output-partial-info-plist "$app/Contents/Resources/icon-partial.plist"
-/usr/bin/plutil -extract CFBundleIconName raw "$app/Contents/Resources/icon-partial.plist" | /usr/bin/grep -qx AppIcon
-/bin/rm "$app/Contents/Resources/icon-partial.plist"
-/usr/bin/install -m 0755 "$bin_dir/SimLeaseMenuBar" "$app/Contents/MacOS/SimLeaseMenuBar"
-/usr/bin/install -m 0755 "$bin_dir/simlease" "$app/Contents/Resources/bin/simlease"
-/usr/bin/install -m 0644 NOTICE "$app/Contents/Resources/NOTICE"
+scripts/assemble-app.sh "$app" "$bin_dir"
 /usr/bin/codesign --force --deep --sign - "$app"
 
 print -- "SimLease app packaged: $app"

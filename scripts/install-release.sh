@@ -114,9 +114,7 @@ if [[ "${SIMLEASE_TEST_SKIP_SECURITY:-0}" != 1 ]]; then
     || fail "release Gatekeeper assessment failed"
 fi
 
-SIMLEASE_SOURCE_BINARY="$payload/bin/simlease" \
 SIMLEASE_SOURCE_APP="$payload/SimLease.app" \
-SIMLEASE_SOURCE_UPDATER="$payload/install-release.sh" \
 SIMLEASE_SOURCE_AGENT="$payload/Resources/com.jdelaire.simlease.plist" \
 "$payload/install.sh" || fail "installation failed"
 

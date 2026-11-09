@@ -13,9 +13,7 @@ lib_parent="$simlease_user_home/.local/lib"
 simlease_lib_dir="$lib_parent/simlease"
 simlease_shim_dir="$simlease_lib_dir/shims"
 simlease_profile="$simlease_user_home/.zprofile"
-source_binary="${SIMLEASE_SOURCE_BINARY:-$repository_root/.build/release/simlease}"
 source_app="${SIMLEASE_SOURCE_APP:-$repository_root/dist/SimLease.app}"
-source_updater="${SIMLEASE_SOURCE_UPDATER:-$repository_root/scripts/install-release.sh}"
 source_agent="${SIMLEASE_SOURCE_AGENT:-$repository_root/Resources/com.jdelaire.simlease.plist}"
 installed_binary="$simlease_lib_dir/simlease"
 installed_app="$simlease_user_home/Applications/SimLease.app"
@@ -34,12 +32,12 @@ if [[ "${SIMLEASE_SKIP_LAUNCH_AGENT:-0}" != 1 \
   manage_launch_agent=1
 fi
 
-[[ -x "$source_binary" ]] \
-  || fail "source binary is missing or not executable: $source_binary" 66
 [[ -x "$source_app/Contents/MacOS/SimLeaseMenuBar" ]] \
   || fail "source app is missing or invalid: $source_app" 66
-[[ -r "$source_updater" ]] \
-  || fail "release installer is missing: $source_updater" 66
+[[ -x "$source_app/Contents/Resources/bin/simlease" ]] \
+  || fail "source app has no bundled CLI: $source_app" 66
+[[ -r "$source_app/Contents/Resources/install-release.sh" ]] \
+  || fail "source app has no bundled release installer: $source_app" 66
 if [[ "$manage_launch_agent" == 1 && ! -x "$launchctl_command" ]]; then
   fail "launchctl command is missing or not executable: $launchctl_command" 66
 fi
@@ -70,8 +68,9 @@ stage_agent="$work_root/com.jdelaire.simlease.plist"
 backup_root="$work_root/backup"
 mkdir -p "$stage_lib/shims" "$backup_root"
 
-/usr/bin/install -m 0755 "$source_binary" "$stage_lib/simlease"
-/usr/bin/install -m 0755 "$source_updater" "$stage_lib/install-release.sh"
+ln -s "$installed_app/Contents/Resources/bin/simlease" "$stage_lib/simlease"
+ln -s "$installed_app/Contents/Resources/install-release.sh" \
+  "$stage_lib/install-release.sh"
 for command_name in simlease xcodebuild xcrun axe agent-device; do
   ln -s "$installed_binary" "$stage_lib/shims/$command_name"
 done
@@ -81,14 +80,19 @@ done
   -string "$installed_app/Contents/MacOS/SimLeaseMenuBar" \
   "$stage_agent"
 
-[[ -x "$stage_lib/simlease" && -x "$stage_lib/install-release.sh" ]] \
-  || fail "staged command files are invalid"
+[[ -L "$stage_lib/simlease" && -L "$stage_lib/install-release.sh" ]] \
+  || fail "staged command links are invalid"
+[[ -x "$stage_app/Contents/Resources/bin/simlease" \
+   && -r "$stage_app/Contents/Resources/install-release.sh" ]] \
+  || fail "staged app has no bundled CLI or release installer"
 [[ -x "$stage_app/Contents/MacOS/SimLeaseMenuBar" ]] \
   || fail "staged app is invalid"
 /usr/bin/plutil -lint "$stage_agent" >/dev/null \
   || fail "staged LaunchAgent is invalid"
 
 stop_installed_app() {
+  "$launchctl_command" remove com.jdelaire.simlease-sparkle-updater >/dev/null 2>&1 || true
+  "$launchctl_command" remove com.jdelaire.simlease-sparkle-progress >/dev/null 2>&1 || true
   if "$launchctl_command" print "$service" >/dev/null 2>&1; then
     service_was_loaded=1
     "$launchctl_command" bootout "$service" || return 1

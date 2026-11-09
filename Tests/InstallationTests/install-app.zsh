@@ -16,7 +16,6 @@ print -r -- 'keep agent' > "$test_home/Library/LaunchAgents/keep.plist"
 print -r -- 'keep profile' > "$test_home/.zprofile"
 
 SIMLEASE_INSTALL_HOME="$test_home" \
-SIMLEASE_SOURCE_BINARY="$bin_dir/simlease" \
 SIMLEASE_SOURCE_APP="$PWD/dist/SimLease.app" \
 scripts/install.sh
 
@@ -35,7 +34,6 @@ program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$agent")"
   || fail "LaunchAgent has unexpected arguments"
 
 SIMLEASE_INSTALL_HOME="$test_home" \
-SIMLEASE_SOURCE_BINARY="$bin_dir/simlease" \
 SIMLEASE_SOURCE_APP="$PWD/dist/SimLease.app" \
 scripts/install.sh
 
@@ -48,7 +46,8 @@ SIMLEASE_INSTALL_HOME="$test_home" scripts/uninstall.sh
 
 [[ ! -e "$app" ]] || fail "app remains after uninstall"
 [[ ! -e "$agent" ]] || fail "LaunchAgent remains after uninstall"
-[[ ! -e "$test_home/.local/lib/simlease/install-release.sh" ]] \
+[[ ! -e "$test_home/.local/lib/simlease/install-release.sh" \
+   && ! -L "$test_home/.local/lib/simlease/install-release.sh" ]] \
   || fail "release installer remains after uninstall"
 [[ -f "$test_home/Applications/Keep.txt" ]] || fail "unrelated app file removed"
 [[ -f "$test_home/Library/LaunchAgents/keep.plist" ]] || fail "unrelated agent removed"
