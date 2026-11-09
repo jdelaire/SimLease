@@ -41,12 +41,53 @@ struct LeasePopoverPresentation: Equatable {
 }
 
 @MainActor
-func presentCleanupWindow(
+func presentAppWindow(
     openWindow: () -> Void,
+    showInDock: () -> Void = { AppWindowDockPresence.shared.show() },
     activateApplication: () -> Void = { NSApplication.shared.activate() }
 ) {
+    showInDock()
     openWindow()
     activateApplication()
+}
+
+func keepsDockPresence(isVisible: Bool, isMiniaturized: Bool, isTitled: Bool) -> Bool {
+    isTitled && (isVisible || isMiniaturized)
+}
+
+@MainActor
+final class AppWindowDockPresence {
+    static let shared = AppWindowDockPresence()
+    private var observer: NSObjectProtocol?
+
+    func show() {
+        NSApplication.shared.setActivationPolicy(.regular)
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let closing = ObjectIdentifier(notification.object as AnyObject)
+            MainActor.assumeIsolated {
+                AppWindowDockPresence.shared.windowWillClose(closing)
+            }
+        }
+    }
+
+    private func windowWillClose(_ closing: ObjectIdentifier) {
+        let hasOpenAppWindow = NSApplication.shared.windows.contains {
+            ObjectIdentifier($0) != closing
+                && keepsDockPresence(
+                    isVisible: $0.isVisible,
+                    isMiniaturized: $0.isMiniaturized,
+                    isTitled: $0.styleMask.contains(.titled)
+                )
+        }
+        if !hasOpenAppWindow {
+            NSApplication.shared.setActivationPolicy(.accessory)
+        }
+    }
 }
 
 @MainActor
@@ -191,7 +232,7 @@ struct LeasePopoverView: View {
     private var footer: some View {
         HStack(spacing: 4) {
             Button {
-                presentCleanupWindow { openWindow(id: "cleanup") }
+                presentAppWindow { openWindow(id: "cleanup") }
             } label: {
                 Label("Storage Cleanup…", systemImage: "internaldrive")
             }
@@ -199,7 +240,7 @@ struct LeasePopoverView: View {
             .accessibilityHint("Opens simulator storage cleanup review")
             Spacer()
             FooterIcon(symbol: "chart.bar.xaxis", help: "Open Dashboard") {
-                presentCleanupWindow { openWindow(id: "dashboard") }
+                presentAppWindow { openWindow(id: "dashboard") }
             }
             FooterIcon(symbol: "doc.on.doc", help: "Copy details") {
                 NSPasteboard.general.clearContents()

@@ -16,15 +16,23 @@ final class LeasePopoverPresentationTests: XCTestCase {
     }
 
     @MainActor
-    func testCleanupWindowPresentationOpensThenActivatesApplication() {
+    func testAppWindowPresentationShowsInDockOpensThenActivatesApplication() {
         var events: [String] = []
 
-        presentCleanupWindow(
+        presentAppWindow(
             openWindow: { events.append("open") },
+            showInDock: { events.append("dock") },
             activateApplication: { events.append("activate") }
         )
 
-        XCTAssertEqual(events, ["open", "activate"])
+        XCTAssertEqual(events, ["dock", "open", "activate"])
+    }
+
+    func testMinimizedAppWindowKeepsDockPresence() {
+        XCTAssertTrue(keepsDockPresence(isVisible: false, isMiniaturized: true, isTitled: true))
+        XCTAssertTrue(keepsDockPresence(isVisible: true, isMiniaturized: false, isTitled: true))
+        XCTAssertFalse(keepsDockPresence(isVisible: false, isMiniaturized: false, isTitled: true))
+        XCTAssertFalse(keepsDockPresence(isVisible: true, isMiniaturized: false, isTitled: false))
     }
 
     func testFreeStateExplainsThatTestingCanStart() {
