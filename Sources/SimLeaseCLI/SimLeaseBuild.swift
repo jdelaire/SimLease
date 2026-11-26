@@ -1,5 +1,5 @@
 import SimLeaseCore
 
 enum SimLeaseBuild {
-    static let currentVersion = SemanticVersion("0.8.3")!
+    static let currentVersion = SemanticVersion("0.8.4")!
 }
