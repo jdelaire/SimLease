@@ -65,6 +65,14 @@ public enum SimulatorCommand {
         return arguments.dropFirst().compactMap { UUID(uuidString: $0)?.uuidString }
     }
 
+    static func synchronousDefaultsTarget(in invocation: [String]) -> String? {
+        guard invocation.count >= 6, invocation.starts(with: ["/usr/bin/xcrun", "simctl", "spawn"]),
+              ["defaults", "/usr/bin/defaults"].contains(invocation[4]),
+              ["read", "write", "delete"].contains(invocation[5])
+        else { return nil }
+        return UUID(uuidString: invocation[3])?.uuidString
+    }
+
     private static func simctlArguments(_ invocation: [String]) -> [String]? {
         guard let executable = invocation.first else { return nil }
         let arguments = Array(invocation.dropFirst())

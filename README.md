@@ -332,6 +332,11 @@ recovery runs before the next protected job, or can be requested directly:
 simlease recover
 ```
 
+The menu app checks about once a minute for interrupted cleanup after
+`xcrun simctl spawn UUID defaults` commands. It clears journals with recorded
+settlement when the owner and process group are gone and every owned simulator
+is already shut down or removed. Native sessions require explicit settlement.
+
 Recovery requires proven process ownership. A live or unverifiable owner is
 never taken over. Failed cleanup retains its journal for a later retry; there
 is no force-release command.

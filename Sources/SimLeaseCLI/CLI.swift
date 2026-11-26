@@ -198,7 +198,7 @@ public enum SimLeaseCLI {
                 return 0
             case .deviceMaintain:
                 guard !insideManagedWork(configuration) else { throw SimulatorTaskError.commandFailed("automatic recovery cannot nest inside managed work") }
-                let health = try automaticService(environment: environment, configuration: configuration).maintain()
+                let health = try automaticService(environment: environment, configuration: configuration).maintain(report: configuration.standardError)
                 _ = try shutdownService(title: "Reap warm simulators", arguments: arguments, environment: environment, configuration: configuration).reap()
                 configuration.standardOutput(String(decoding: try JSONEncoder.simLease.encode(health), as: UTF8.self) + "\n")
                 return 0

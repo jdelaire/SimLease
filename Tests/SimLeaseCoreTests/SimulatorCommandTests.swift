@@ -2,6 +2,20 @@ import XCTest
 @testable import SimLeaseCore
 
 final class SimulatorCommandTests: XCTestCase {
+    func testAutomaticCleanupRecognizesOnlySynchronousDefaultsOnExplicitDevices() {
+        let id = "11111111-1111-4111-8111-111111111111"
+        XCTAssertEqual(SimulatorCommand.synchronousDefaultsTarget(in: ["/usr/bin/xcrun", "simctl", "spawn", id, "defaults", "write", "domain", "key", "value"]), id)
+        for invocation in [
+            ["/bin/sh", "-c", "xcrun simctl spawn \(id) defaults write domain key value"],
+            ["/usr/bin/xcrun", "simctl", "spawn", "booted", "defaults", "read"],
+            ["/usr/bin/xcrun", "simctl", "spawn", id, "/bin/sh", "-c", "sleep 60 &"],
+            ["/usr/bin/xcrun", "simctl", "spawn", id, "defaults", "import", "domain", "file"],
+            ["/tmp/xcrun", "simctl", "spawn", id, "defaults", "delete", "domain"],
+        ] {
+            XCTAssertNil(SimulatorCommand.synchronousDefaultsTarget(in: invocation))
+        }
+    }
+
     func testRecognizesExplicitDeviceReferencesInAutomationCommands() {
         let id = "11111111-1111-4111-8111-111111111111"
         XCTAssertEqual(SimulatorCommand.referencedDeviceIDs(in: ["xcrun", "simctl", "boot", id]), [id])

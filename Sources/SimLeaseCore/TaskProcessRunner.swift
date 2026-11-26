@@ -154,6 +154,23 @@ public enum TaskProcessRunner {
     static func runningMembers(
         group: Int32, listPIDs: ((UnsafeMutableRawPointer?, Int32) -> Int32)? = nil
     ) throws -> [Int32] {
+        try groupPIDs(group: group, listPIDs: listPIDs).filter { pid in
+            guard let info = ProcessReference.info(pid: pid) else {
+                return ProcessReference.isRunning(pid: pid)
+            }
+            return info.pbi_status != 5
+        }
+    }
+
+    static func groupIsEmpty(
+        _ group: Int32, listPIDs: ((UnsafeMutableRawPointer?, Int32) -> Int32)? = nil
+    ) throws -> Bool {
+        try groupPIDs(group: group, listPIDs: listPIDs).isEmpty
+    }
+
+    private static func groupPIDs(
+        group: Int32, listPIDs: ((UnsafeMutableRawPointer?, Int32) -> Int32)?
+    ) throws -> [Int32] {
         guard group > 1 else { throw SimulatorTaskError.unverifiedProcess(group) }
         var buffer = [Int32](repeating: 0, count: 4096)
         let size = buffer.count * MemoryLayout<Int32>.size
@@ -169,13 +186,7 @@ public enum TaskProcessRunner {
         guard bytes >= 0, bytes < size else {
             throw SimulatorTaskError.unverifiedProcess(group)
         }
-        return try buffer.prefix(Int(bytes) / MemoryLayout<Int32>.size).filter { pid in
-            guard pid > 0 else { return false }
-            guard let info = ProcessReference.info(pid: pid) else {
-                return ProcessReference.isRunning(pid: pid)
-            }
-            return info.pbi_status != 5
-        }
+        return buffer.prefix(Int(bytes) / MemoryLayout<Int32>.size).filter { $0 > 0 }
     }
 
     private static func withStrings<Value>(

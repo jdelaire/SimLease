@@ -118,6 +118,11 @@ public final class SimulatorTaskService: Sendable {
                 onExit: { _, code in
                     record.exitCode = code
                     record.phase = .cleaning
+                    if code < 128, externalSessionID == nil, !keepWarm,
+                       let target = SimulatorCommand.synchronousDefaultsTarget(in: invocation),
+                       record.ownedDeviceIDs.contains(target) {
+                        record.settledTerminalCleanup = true
+                    }
                     try store.write(record)
                 },
                 onPoll: {
@@ -190,6 +195,56 @@ public final class SimulatorTaskService: Sendable {
         try recoverPending(lanes: handle.lanes)
     }
 
+    static func recoverSettledTerminalTasks(
+        paths: LeasePaths, inventory: () throws -> [ManagedSimulatorDevice], report: (String) -> Void
+    ) throws {
+        guard SimulatorTaskStore.records(base: paths).contains(where: { isInterruptedTerminalCleanup($0.1) }) else { return }
+        try HostLaneLock.withAvailableLanes(paths: paths) {
+            guard let reapLock = try HostLaneLock.acquire(url: paths.reapLock) else { return }
+            defer { HostLaneLock.release(url: paths.reapLock, descriptor: reapLock) }
+            guard !FileManager.default.fileExists(atPath: paths.deviceRecovery.path),
+                  !FileManager.default.fileExists(atPath: paths.deviceShutdown.path)
+            else { return }
+
+            let candidates = SimulatorTaskStore.records(base: paths).filter { _, record in
+                guard isInterruptedTerminalCleanup(record), let child = record.child else { return false }
+                return (try? TaskProcessRunner.groupIsEmpty(child.pid)) == true
+            }
+            guard !candidates.isEmpty else { return }
+            let unsettledDevices = Set(try inventory().filter { $0.state != "Shutdown" }.map(\.id))
+            let warmStore = WarmDeviceStore(paths: paths)
+            for (lane, record) in candidates where unsettledDevices.isDisjoint(with: record.ownedDeviceIDs) {
+                do {
+                    try recordSettlement(record, paths: paths, warmStore: warmStore)
+                    try removeStaleOwner(of: record, lane: lane)
+                    try SimulatorTaskStore(paths: lane).remove()
+                } catch {
+                    report("SimLease: automatic terminal cleanup deferred for \(record.token): \(error)\n")
+                }
+            }
+        }
+    }
+
+    private static func isInterruptedTerminalCleanup(_ record: SimulatorTaskRecord) -> Bool {
+        guard record.phase == .cleaning, record.settledTerminalCleanup == true, record.child != nil,
+              record.externalSessionID == nil, record.nativeClients?.isEmpty != false
+        else { return false }
+        let owner = record.owner.state
+        return owner == .missing || owner == .reused
+    }
+
+    private static func removeStaleOwner(of record: SimulatorTaskRecord, lane: LeasePaths) throws {
+        let metadata = try MetadataStore(paths: lane)
+        guard let owner = try metadata.readOwner(), owner.pid == record.owner.pid else { return }
+        if record.exclusive == true {
+            for sibling in lane.allLanes where sibling != lane {
+                let siblingMetadata = try MetadataStore(paths: sibling)
+                if try siblingMetadata.readOwner() == owner { try siblingMetadata.removeOwner() }
+            }
+        }
+        try metadata.removeOwner()
+    }
+
     private func recoverPending(lanes: [Int]) throws {
         for lane in lanes.map(paths.lane) {
             let store = SimulatorTaskStore(paths: lane)
@@ -211,6 +266,7 @@ public final class SimulatorTaskService: Sendable {
         let store = SimulatorTaskStore(paths: lane)
         record.phase = .cleaning
         try store.write(record)
+        let resumableCleanup = record.settledTerminalCleanup == true
         do {
             if record.externalSessionID != nil {
                 let settlements = NativeSettlementStore(paths: paths)
@@ -224,9 +280,14 @@ public final class SimulatorTaskService: Sendable {
             var warmed = [String]()
             for id in record.ownedDeviceIDs {
                 guard let current = try devices.states()[id] else { continue }
+                if resumableCleanup, current == "Shutdown" { continue }
                 if warm, cancellationSignal() == nil, current == "Booted", let warmPolicy, (try? warmPolicy.canWarm(id)) == true, (try? warmPolicy.terminateApps(id)) != nil, cancellationSignal() == nil {
                     warmed.append(id)
                     continue
+                }
+                if record.settledTerminalCleanup == true {
+                    record.settledTerminalCleanup = nil
+                    try store.write(record)
                 }
                 try devices.shutdown(id)
                 let state = try devices.states()[id]
@@ -238,10 +299,13 @@ public final class SimulatorTaskService: Sendable {
                 for id in warmed { try shutdownAndVerify(id) }
                 warmed.removeAll()
             }
+            if resumableCleanup, record.settledTerminalCleanup == nil {
+                record.settledTerminalCleanup = true
+                try store.write(record)
+            }
             if record.externalSessionID != nil { try NativeSettlementStore(paths: paths).remove(record) }
-            if let scopeID = record.crashScopeID { try CrashLoopStore(paths: paths).endScope(id: scopeID, endedAt: Date()) }
             let warmStore = WarmDeviceStore(paths: paths)
-            try warmStore.remove(record.deviceIDs)
+            try Self.recordSettlement(record, paths: paths, warmStore: warmStore)
             if !warmed.isEmpty { try warmStore.add(warmed, since: Date()) }
             let cancellation = cancellationSignal()
             if cancellation != nil {
@@ -256,6 +320,11 @@ public final class SimulatorTaskService: Sendable {
             try store.write(record)
             throw SimulatorTaskError.unfinishedTask(String(describing: error))
         }
+    }
+
+    private static func recordSettlement(_ record: SimulatorTaskRecord, paths: LeasePaths, warmStore: WarmDeviceStore) throws {
+        if let scopeID = record.crashScopeID { try CrashLoopStore(paths: paths).endScope(id: scopeID, endedAt: Date()) }
+        try warmStore.remove(record.deviceIDs)
     }
 
     private func shutdownAndVerify(_ id: String) throws {

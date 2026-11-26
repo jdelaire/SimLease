@@ -4,6 +4,120 @@ import SimLeaseCore
 @testable import SimLeaseCLI
 
 final class DeviceCLITests: XCTestCase {
+    func testMaintenanceClearsSettledTerminalCleanupWithoutResettingLaneAdmission() throws {
+        let fixture = try DeviceCLIFixture()
+        defer { fixture.remove() }
+        XCTAssertEqual(fixture.call(["device", "create", "--name", "Disposable Check", "--type", fixture.type, "--runtime", fixture.runtime, "--disposable"]), 0)
+        let store = SimulatorTaskStore(paths: fixture.paths.lane(1))
+        var record = fixture.interruptedTerminalCleanup
+        record.crashScopeID = "interrupted"
+        let crashes = CrashLoopStore(paths: fixture.paths)
+        try crashes.beginScope(id: "interrupted", deviceIDs: [fixture.device], startedAt: Date())
+        try store.write(record)
+        let owner = LeaseOwner(
+            pid: record.owner.pid, acquiredAt: Date(), cwd: "/tmp/App", project: "App", command: [],
+            source: .terminal, threadID: nil, threadTitle: nil
+        )
+        try MetadataStore(paths: store.paths).writeOwner(owner)
+        let admission = try Data(contentsOf: fixture.paths.gate)
+        let coordinator = try LeaseCoordinator(paths: fixture.paths, store: MetadataStore(paths: fixture.paths))
+        XCTAssertEqual(try coordinator.status().state, .metadataError)
+
+        XCTAssertEqual(fixture.call(["device", "maintain"]), 0)
+
+        XCTAssertEqual(try coordinator.status().state, .free)
+        XCTAssertNil(try store.read())
+        XCTAssertNotNil(try crashes.read().scopes.first?.endedAt)
+        XCTAssertEqual(try Data(contentsOf: fixture.paths.gate), admission)
+        XCTAssertEqual(try String(contentsOf: fixture.state, encoding: .utf8), "Shutdown")
+    }
+
+    func testMaintenancePreservesCleanupWithUnsettledWork() throws {
+        let fixture = try DeviceCLIFixture()
+        defer { fixture.remove() }
+        XCTAssertEqual(fixture.call(["device", "create", "--name", "Disposable Check", "--type", fixture.type, "--runtime", fixture.runtime, "--disposable"]), 0)
+        let store = SimulatorTaskStore(paths: fixture.paths)
+        let interrupted = fixture.interruptedTerminalCleanup
+        var liveGroup = interrupted
+        liveGroup.child = ProcessReference(pid: getpgrp(), startMicroseconds: 1)
+        var native = interrupted
+        native.externalSessionID = UUID().uuidString
+        native.externalWorkSettled = false
+        var ambiguous = interrupted
+        ambiguous.settledTerminalCleanup = nil
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["90"]
+        try process.run()
+        defer {
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+        }
+        var liveOwner = SimulatorTaskRecord(
+            token: interrupted.token, owner: try XCTUnwrap(ProcessReference.capture(pid: process.processIdentifier)),
+            deviceIDs: interrupted.deviceIDs, ownedDeviceIDs: interrupted.ownedDeviceIDs, phase: .cleaning
+        )
+        liveOwner.child = interrupted.child
+        liveOwner.exitCode = interrupted.exitCode
+        liveOwner.settledTerminalCleanup = true
+        for (record, state) in [(interrupted, "Booted"), (liveGroup, "Shutdown"), (native, "Shutdown"), (liveOwner, "Shutdown"), (ambiguous, "Shutdown")] {
+            try Data(state.utf8).write(to: fixture.state)
+            try store.write(record)
+            XCTAssertEqual(fixture.call(["device", "maintain"]), 0)
+            XCTAssertEqual(try store.read(), record)
+            XCTAssertEqual(try String(contentsOf: fixture.state, encoding: .utf8), state)
+        }
+    }
+
+    func testMaintenanceDefersTerminalCleanupWhileAnotherLaneIsHeld() throws {
+        let fixture = try DeviceCLIFixture()
+        defer { fixture.remove() }
+        let coordinator = try LeaseCoordinator(paths: fixture.paths, store: MetadataStore(paths: fixture.paths))
+        let identity = LeaseIdentity(pid: getpid(), cwd: "/tmp/App", project: "App", command: [], source: .terminal, threadID: nil, threadTitle: nil)
+        let handle = try XCTUnwrap(coordinator.tryAcquire(identity: identity, request: LaneRequest(deviceIDs: [UUID().uuidString], exclusive: false)))
+        defer { handle.release() }
+        let store = SimulatorTaskStore(paths: fixture.paths.lane(1))
+        let record = fixture.interruptedTerminalCleanup
+        try store.write(record)
+
+        XCTAssertEqual(fixture.call(["device", "maintain"]), 0)
+
+        XCTAssertEqual(try store.read(), record)
+    }
+
+    func testMaintenanceDefersTerminalCleanupWhileDeviceRecoveryIsUnresolved() throws {
+        let fixture = try DeviceCLIFixture()
+        defer { fixture.remove() }
+        let store = SimulatorTaskStore(paths: fixture.paths)
+        let record = fixture.interruptedTerminalCleanup
+        try store.write(record)
+        for journal in [fixture.paths.deviceRecovery, fixture.paths.deviceShutdown] {
+            try Data("{}".utf8).write(to: journal)
+
+            XCTAssertEqual(fixture.call(["device", "maintain"]), 0)
+
+            XCTAssertEqual(try store.read(), record)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: journal.path))
+            try FileManager.default.removeItem(at: journal)
+        }
+    }
+
+    func testMaintenanceRecoversOtherLaneWhenOneCleanupFails() throws {
+        let fixture = try DeviceCLIFixture()
+        defer { fixture.remove() }
+        let broken = SimulatorTaskStore(paths: fixture.paths)
+        let healthy = SimulatorTaskStore(paths: fixture.paths.lane(1))
+        let record = fixture.interruptedTerminalCleanup
+        try broken.write(record)
+        try Data("invalid owner metadata".utf8).write(to: fixture.paths.owner)
+        try healthy.write(fixture.interruptedTerminalCleanup)
+
+        XCTAssertEqual(fixture.call(["device", "maintain"]), 0)
+
+        XCTAssertEqual(try broken.read(), record)
+        XCTAssertNil(try healthy.read())
+    }
+
     func testUnreadableReportsCannotStarveOlderCriticalEvidenceAcrossProcesses() throws {
         let f = try DeviceCLIFixture()
         defer { f.remove() }
@@ -128,6 +242,16 @@ private struct DeviceCLIFixture {
     let type = "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro"
     let runtime = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
     var reports: URL { paths.root.appendingPathComponent("reports") }
+    var interruptedTerminalCleanup: SimulatorTaskRecord {
+        var record = SimulatorTaskRecord(
+            token: UUID().uuidString, owner: ProcessReference(pid: 999_999, startMicroseconds: 1),
+            deviceIDs: [device], ownedDeviceIDs: [device], phase: .cleaning
+        )
+        record.child = ProcessReference(pid: 999_998, startMicroseconds: 1)
+        record.exitCode = 0
+        record.settledTerminalCleanup = true
+        return record
+    }
 
     init() throws {
         paths = LeasePaths(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))

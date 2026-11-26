@@ -25,6 +25,13 @@ final class TaskProcessRunnerTests: XCTestCase {
         }, [])
     }
 
+    func testGroupSnapshotDefersCleanupEvenIfListedProcessExits() throws {
+        XCTAssertFalse(try TaskProcessRunner.groupIsEmpty(getpid()) { buffer, _ in
+            buffer!.storeBytes(of: Int32(999_999), as: Int32.self)
+            return Int32(MemoryLayout<Int32>.size)
+        })
+    }
+
     func testCancellationWhileLeaderExitsKeepsOwnershipProof() throws {
         for _ in 0..<20 {
             let signals = TaskSignals()

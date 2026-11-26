@@ -9,6 +9,16 @@ enum HostLaneLock {
         try acquire(url: paths.lock)
     }
 
+    static func withAvailableLanes(paths: LeasePaths, _ body: () throws -> Void) throws {
+        var locks = [(LeasePaths, Int32)]()
+        defer { for (lane, descriptor) in locks.reversed() { release(paths: lane, descriptor: descriptor) {} } }
+        for lane in paths.allLanes {
+            guard let descriptor = try acquire(paths: lane) else { return }
+            locks.append((lane, descriptor))
+        }
+        try body()
+    }
+
     static func acquire(url: URL) throws -> Int32? {
         try gate.withLock {
             let key = url.resolvingSymlinksInPath().path

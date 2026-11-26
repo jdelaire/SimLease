@@ -108,7 +108,14 @@ public struct AutomaticRecoveryService: Sendable {
         return SimulatorHealthStatus(recoveries: records.values.sorted { $0.deviceID < $1.deviceID }, backgroundIncidentCount: background, infrastructureBlocks: reasons.map(\.trigger))
     }
 
-    public func maintain(onlyDeviceIDs: Set<String>? = nil) throws -> SimulatorHealthStatus {
+    public func maintain(onlyDeviceIDs: Set<String>? = nil, report: (String) -> Void = { _ in }) throws -> SimulatorHealthStatus {
+        if onlyDeviceIDs == nil {
+            do {
+                try SimulatorTaskService.recoverSettledTerminalTasks(paths: paths, inventory: devices.inventory, report: report)
+            } catch {
+                report("SimLease: automatic terminal cleanup deferred: \(error)\n")
+            }
+        }
         let evidenceComplete = try inspect()
         let inventory = try devices.inventory()
         try SharedStateLock.withLock(paths) { try RecoveryFile.write(inventory, at: paths.root.appendingPathComponent("automatic-inventory.json")) }

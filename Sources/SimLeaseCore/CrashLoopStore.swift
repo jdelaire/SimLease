@@ -88,7 +88,7 @@ public struct CrashLoopStore: Sendable {
     public func endScope(id: String, endedAt: Date) throws {
         try SharedStateLock.withLock(paths) {
             var state = try read()
-            if let index = state.scopes.firstIndex(where: { $0.id == id }) {
+            if let index = state.scopes.firstIndex(where: { $0.id == id && $0.endedAt == nil }) {
                 state.scopes[index].endedAt = endedAt
                 try RecoveryFile.write(state, at: url)
             }

@@ -38,6 +38,7 @@ public struct SimulatorTaskRecord: Codable, Equatable, Sendable {
     public var externalWorkSettled: Bool?
     public var nativeClients: [ProcessReference]?
     public var crashScopeID: String?
+    public var settledTerminalCleanup: Bool?
     public var warmClaimedDeviceIDs: [String]?
     public var exclusive: Bool?
 
